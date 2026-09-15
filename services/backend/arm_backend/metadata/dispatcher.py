@@ -6,7 +6,7 @@ import unicodedata
 import httpx
 
 from arm_backend.metadata.arm_server import ArmServerClient
-from arm_backend.metadata.base import LookupError, MetadataResult
+from arm_backend.metadata.base import LookupError, LookupTimeout, MetadataResult
 from arm_backend.metadata.musicbrainz import MusicBrainzClient
 from arm_backend.metadata.omdb import OMDBClient
 from arm_backend.metadata.tmdb import TMDBClient
@@ -66,22 +66,33 @@ class MetadataDispatcher:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def identify(self, scan: ScanResult, cfg: Config) -> MetadataResult | None:
+    async def identify(self, scan: ScanResult, cfg: Config, reasons: list[str] | None = None) -> MetadataResult | None:
+        # `reasons` is caller-owned and appended to in place, one human-readable
+        # entry per skipped/missed lookup, so the identify router can persist why
+        # a disc wasn't identified. It's passed per call (not stored on self)
+        # because the dispatcher is shared across requests.
+        if reasons is None:
+            reasons = []
         if scan.disc_type in (DiscType.DATA, DiscType.UNKNOWN):
+            self._skip(reasons, f"disc type {scan.disc_type.value} has no metadata lookup")
             return None
 
         if scan.disc_type == DiscType.CD:
-            return await self._identify_cd(scan, cfg)
+            return await self._identify_cd(scan, cfg, reasons)
 
-        return await self._identify_video(scan, cfg)
+        return await self._identify_video(scan, cfg, reasons)
 
-    async def _identify_cd(self, scan: ScanResult, cfg: Config) -> MetadataResult | None:
-        if not scan.musicbrainz_disc_id or not cfg.musicbrainz_user_agent:
+    async def _identify_cd(self, scan: ScanResult, cfg: Config, reasons: list[str]) -> MetadataResult | None:
+        if not scan.musicbrainz_disc_id:
+            self._skip(reasons, "musicbrainz: no disc id in scan")
+            return None
+        if not cfg.musicbrainz_user_agent:
+            self._skip(reasons, "musicbrainz: no user agent configured")
             return None
         client = MusicBrainzClient(cfg.musicbrainz_user_agent, self._http)
-        return await self._call("musicbrainz", client.lookup_disc_id(scan.musicbrainz_disc_id))
+        return await self._call("musicbrainz", client.lookup_disc_id(scan.musicbrainz_disc_id), reasons)
 
-    async def _identify_video(self, scan: ScanResult, cfg: Config) -> MetadataResult | None:
+    async def _identify_video(self, scan: ScanResult, cfg: Config, reasons: list[str]) -> MetadataResult | None:
         # 1337server first when we have a DVD CRC64. This is the
         # community-maintained crc64 → title DB; a hit beats fuzzy
         # title matching on TMDB/OMDB because the fingerprint is unique
@@ -92,40 +103,70 @@ class MetadataDispatcher:
         )
         if crc64:
             arm = ArmServerClient(self._http)
-            hit = await self._call("arm_server", arm.lookup_by_crc64(crc64))
+            hit = await self._call("arm_server", arm.lookup_by_crc64(crc64), reasons)
             if hit is not None:
                 return hit
 
         if not scan.volume_label:
+            self._skip(reasons, "no volume label to search by")
             return None
         title, year = _normalize_volume_label(scan.volume_label)
         if not title:
+            self._skip(reasons, f"volume label {scan.volume_label!r} is empty after cleanup")
             return None
 
         if cfg.tmdb_api_key:
             tmdb = TMDBClient(cfg.tmdb_api_key, self._http)
-            hit = await self._call("tmdb_movie", tmdb.search_movie(title, year))
+            hit = await self._call("tmdb_movie", tmdb.search_movie(title, year), reasons, title, year)
             if hit is not None:
                 return hit
-            hit = await self._call("tmdb_tv", tmdb.search_tv(title))
+            hit = await self._call("tmdb_tv", tmdb.search_tv(title), reasons, title)
             if hit is not None:
                 return hit
+        else:
+            self._skip(reasons, "tmdb: no api key configured")
 
         omdb_key = self._omdb_api_key_override or cfg.omdb_api_key
         if omdb_key:
             omdb = OMDBClient(omdb_key, self._http)
-            hit = await self._call("omdb_movie", omdb.lookup_by_title(title, year, kind="movie"))
+            hit = await self._call("omdb_movie", omdb.lookup_by_title(title, year, kind="movie"), reasons, title, year)
             if hit is not None:
                 return hit
+        else:
+            self._skip(reasons, "omdb: no api key configured")
 
         return None
 
-    async def _call(self, label: str, coro) -> MetadataResult | None:  # type: ignore[no-untyped-def]
+    @staticmethod
+    def _skip(reasons: list[str], reason: str) -> None:
+        logger.info("metadata.skip %s", reason)
+        reasons.append(reason)
+
+    async def _call(  # type: ignore[no-untyped-def]
+        self,
+        label: str,
+        coro,
+        reasons: list[str],
+        title: str | None = None,
+        year: int | None = None,
+    ) -> MetadataResult | None:
+        query = f" for {title!r}" + (f" ({year})" if year else "") if title else ""
         try:
             return await asyncio.wait_for(coro, timeout=PROVIDER_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
+            # Our own per-provider budget expired.
             logger.info("metadata.%s timeout", label)
+            reasons.append(f"{label}: timed out{query}")
+            return None
+        except LookupTimeout as e:
+            # Client-side (httpx) timeout, raised before our budget elapsed.
+            # LookupTimeout subclasses LookupError, so this arm must stay above
+            # the miss arm — otherwise a provider we never reached is recorded
+            # as "no match", the exact misdiagnosis these reasons exist to stop.
+            logger.info("metadata.%s timeout: %s", label, e)
+            reasons.append(f"{label}: timed out{query} ({e})")
             return None
         except LookupError as e:
             logger.info("metadata.%s miss: %s", label, e)
+            reasons.append(f"{label}: no match{query} ({e})")
             return None

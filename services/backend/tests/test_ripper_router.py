@@ -71,11 +71,20 @@ class _Dispatcher:
     """Mock MetadataDispatcher. `result` is returned from identify; set
     `raise_timeout` to simulate the asyncio.wait_for timeout path."""
 
-    def __init__(self, result: MetadataResult | None = None, *, raise_timeout: bool = False) -> None:
+    def __init__(
+        self,
+        result: MetadataResult | None = None,
+        *,
+        raise_timeout: bool = False,
+        miss_reasons: list[str] | None = None,
+    ) -> None:
         self.result = result
         self.raise_timeout = raise_timeout
+        self.miss_reasons = miss_reasons or []
 
-    async def identify(self, _scan: Any, _cfg: Any) -> MetadataResult | None:
+    async def identify(self, _scan: Any, _cfg: Any, reasons: list[str] | None = None) -> MetadataResult | None:
+        if reasons is not None:
+            reasons.extend(self.miss_reasons)
         if self.raise_timeout:
             raise asyncio.TimeoutError
         return self.result
@@ -551,6 +560,54 @@ def test_identify_timeout_records_diagnostic() -> None:
     assert r.status_code == 200
     assert r.json()["status"] == "awaiting_user_id"
     assert r.json()["metadata_json"]["dispatch_timeout"] is True
+
+
+@pytest.mark.parametrize("block_on_miss", [True, False])
+def test_identify_miss_persists_reasons(block_on_miss: bool) -> None:
+    db = FakeSession()
+    db.rows["drives"] = [_drive()]
+    db.rows["config"] = [_config(block_on_miss=block_on_miss)]
+    reasons = ["tmdb: no api key configured", "omdb_movie: no match (not found)"]
+    app = _make_app(db, dispatcher=_Dispatcher(None, miss_reasons=reasons))
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/ripper/identify",
+            json={"drive_id": "drv_x", "scan_result": _scan_dict()},
+            headers=_SERVICE_AUTH,
+        )
+    assert r.status_code == 200
+    assert r.json()["metadata_json"]["identify_miss_reasons"] == reasons
+
+
+def test_identify_timeout_keeps_reasons_gathered_before_timeout() -> None:
+    db = FakeSession()
+    db.rows["drives"] = [_drive()]
+    db.rows["config"] = [_config(block_on_miss=True)]
+    app = _make_app(db, dispatcher=_Dispatcher(raise_timeout=True, miss_reasons=["arm_server: timed out"]))
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/ripper/identify",
+            json={"drive_id": "drv_x", "scan_result": _scan_dict()},
+            headers=_SERVICE_AUTH,
+        )
+    md = r.json()["metadata_json"]
+    assert md["dispatch_timeout"] is True
+    assert md["identify_miss_reasons"] == ["arm_server: timed out"]
+
+
+def test_identify_hit_has_no_miss_reasons() -> None:
+    db = FakeSession()
+    db.rows["drives"] = [_drive()]
+    db.rows["config"] = [_config()]
+    hit = MetadataResult(title="The Matrix", year=1999, kind="movie", payload={})
+    app = _make_app(db, dispatcher=_Dispatcher(hit, miss_reasons=["tmdb_movie: no match"]))
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/ripper/identify",
+            json={"drive_id": "drv_x", "scan_result": _scan_dict()},
+            headers=_SERVICE_AUTH,
+        )
+    assert "identify_miss_reasons" not in r.json()["metadata_json"]
 
 
 # --- /jobs/{id} & in-flight --------------------------------------------------

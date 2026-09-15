@@ -197,3 +197,70 @@ async def test_omdb_skipped_when_config_key_empty():
         result = await dispatcher.identify(scan, _config(omdb_api_key=None))
     assert result is None
     assert omdb_route.call_count == 0
+
+
+async def _reasons_for(scan: ScanResult, cfg: Config) -> list[str]:
+    reasons: list[str] = []
+    async with httpx.AsyncClient() as client:
+        result = await MetadataDispatcher(client).identify(scan, cfg, reasons=reasons)
+    assert result is None
+    return reasons
+
+
+async def test_reasons_data_disc():
+    reasons = await _reasons_for(ScanResult(disc_type=DiscType.DATA), _config())
+    assert reasons == ["disc type data has no metadata lookup"]
+
+
+async def test_reasons_cd_prereqs():
+    assert await _reasons_for(ScanResult(disc_type=DiscType.CD), _config()) == ["musicbrainz: no disc id in scan"]
+    assert await _reasons_for(
+        ScanResult(disc_type=DiscType.CD, musicbrainz_disc_id="d"), _config(musicbrainz_user_agent=None)
+    ) == ["musicbrainz: no user agent configured"]
+
+
+async def test_reasons_no_volume_label():
+    assert await _reasons_for(ScanResult(disc_type=DiscType.DVD), _config()) == ["no volume label to search by"]
+
+
+async def test_reasons_label_empty_after_normalize():
+    reasons = await _reasons_for(ScanResult(disc_type=DiscType.DVD, volume_label="_NTSC"), _config())
+    assert reasons == ["volume label '_NTSC' is empty after cleanup"]
+
+
+async def test_reasons_no_keys_configured():
+    reasons = await _reasons_for(
+        ScanResult(disc_type=DiscType.DVD, volume_label="THE_MATRIX_1999"),
+        _config(tmdb_api_key=None, omdb_api_key=None),
+    )
+    assert reasons == ["tmdb: no api key configured", "omdb: no api key configured"]
+
+
+@respx.mock
+async def test_reasons_all_providers_miss():
+    respx.get("https://api.themoviedb.org/3/search/movie").mock(return_value=httpx.Response(200, json={"results": []}))
+    respx.get("https://api.themoviedb.org/3/search/tv").mock(return_value=httpx.Response(200, json={"results": []}))
+    respx.get("https://www.omdbapi.com/").mock(
+        return_value=httpx.Response(200, json={"Response": "False", "Error": "Movie not found!"})
+    )
+    reasons = await _reasons_for(ScanResult(disc_type=DiscType.DVD, volume_label="NOPE_1999"), _config())
+    assert [r.split(":")[0] for r in reasons] == ["tmdb_movie", "tmdb_tv", "omdb_movie"]
+    assert all("no match" in r for r in reasons)
+
+
+@respx.mock
+async def test_reasons_client_timeout_is_not_recorded_as_a_miss():
+    # httpx gives up before PROVIDER_TIMEOUT_SECONDS, so the clients raise
+    # LookupTimeout. It subclasses LookupError, so without a dedicated except
+    # arm a provider we never reached would be recorded as "no match" — the
+    # exact misdiagnosis these reasons exist to prevent.
+    for url in (
+        "https://api.themoviedb.org/3/search/movie",
+        "https://api.themoviedb.org/3/search/tv",
+        "https://www.omdbapi.com/",
+    ):
+        respx.get(url).mock(side_effect=httpx.TimeoutException("connect timeout"))
+    reasons = await _reasons_for(ScanResult(disc_type=DiscType.DVD, volume_label="NOPE_1999"), _config())
+    assert [r.split(":")[0] for r in reasons] == ["tmdb_movie", "tmdb_tv", "omdb_movie"]
+    assert all("timed out" in r for r in reasons)
+    assert not any("no match" in r for r in reasons)

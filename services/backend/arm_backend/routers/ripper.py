@@ -378,9 +378,12 @@ async def identify(
         result = None
         timed_out = False
     else:
+        # Filled in place by the dispatcher; entries appended before a dispatch
+        # timeout survive the cancellation.
+        miss_reasons: list[str] = []
         try:
             result = await asyncio.wait_for(
-                dispatcher.identify(scan, cfg),
+                dispatcher.identify(scan, cfg, reasons=miss_reasons),
                 timeout=DISPATCH_TIMEOUT_SECONDS,
             )
             timed_out = False
@@ -410,6 +413,8 @@ async def identify(
             diagnostic: dict[str, object] = {}
             if timed_out:
                 diagnostic["dispatch_timeout"] = True
+            if miss_reasons:
+                diagnostic["identify_miss_reasons"] = miss_reasons
             if cfg.block_on_miss:
                 job.status = JobStatus.AWAITING_USER_ID
                 job.title = scan.volume_label

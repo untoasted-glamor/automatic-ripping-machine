@@ -149,9 +149,11 @@ async def test_call_asyncio_timeout_branch(monkeypatch: object) -> None:
     async def _slow() -> None:
         await asyncio.sleep(1.0)
 
+    reasons: list[str] = []
     async with httpx.AsyncClient() as http:
         d = MetadataDispatcher(http)
-        assert await d._call("slow", _slow()) is None
+        assert await d._call("slow", _slow(), reasons) is None
+    assert reasons == ["slow: timed out"]
 
 
 async def test_call_lookup_error_branch() -> None:
@@ -160,9 +162,11 @@ async def test_call_lookup_error_branch() -> None:
     async def _boom() -> None:
         raise MetaLookupError("nope")
 
+    reasons: list[str] = []
     async with httpx.AsyncClient() as http:
         d = MetadataDispatcher(http)
-        assert await d._call("boom", _boom()) is None
+        assert await d._call("boom", _boom(), reasons) is None
+    assert reasons == ["boom: no match (nope)"]
 
 
 async def test_aclose_closes_http() -> None:
