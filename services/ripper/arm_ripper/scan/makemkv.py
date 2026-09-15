@@ -87,11 +87,16 @@ def parse_makemkvcon_info(
     - TINFO:t,8,...  — chapter count
     - TINFO:t,11,... — title size in bytes
     - TINFO:t,27,... — source filename (e.g. title_t00.mkv)
+    - TCOUNT:n       — MakeMKV's own title count. Cross-checked below against
+                       what we actually parsed so a title MakeMKV saw but we
+                       dropped (e.g. no usable duration) is logged instead of
+                       silently vanishing.
 
     Reference: https://github.com/automatic-ripping-machine/automatic-ripping-machine/wiki/MakeMKV-Codes
     """
     volume_label: str | None = None
     mkv_disc_type: DiscType | None = None
+    tcount: int | None = None
     titles: dict[int, dict[str, object]] = {}
 
     for raw in lines:
@@ -101,7 +106,13 @@ def parse_makemkvcon_info(
         msg_type, _, rest = line.partition(":")
         fields = [f.strip() for f in rest.split(",")]
 
-        if msg_type == "CINFO" and len(fields) >= 3:
+        if msg_type == "TCOUNT" and fields and fields[0]:
+            try:
+                tcount = int(fields[0])
+            except ValueError:
+                pass
+
+        elif msg_type == "CINFO" and len(fields) >= 3:
             try:
                 code = int(fields[0])
             except ValueError:
@@ -153,6 +164,20 @@ def parse_makemkvcon_info(
                 size_bytes=size_obj if isinstance(size_obj, int) else None,
                 source_file=source_obj if isinstance(source_obj, str) else None,
             )
+        )
+
+    if tcount is not None and len(parsed) != tcount:
+        parsed_indices = {t.index for t in parsed}
+        # Titles MakeMKV counted but never emitted any TINFO for are included too.
+        unparsed = sorted((set(range(tcount)) | set(titles)) - parsed_indices)
+        logger.warning(
+            "makemkvcon TCOUNT=%d does not match %d parsed usable title(s) (%d title(s) with TINFO; "
+            "indices not parsed: %s) — any MakeMKV output for unparsed titles will have no "
+            "matching scanned title",
+            tcount,
+            len(parsed),
+            len(titles),
+            unparsed,
         )
 
     return volume_label, parsed, mkv_disc_type
