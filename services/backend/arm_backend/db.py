@@ -30,7 +30,9 @@ def _build_engine(url: str) -> AsyncEngine:
     if clean_url.startswith("postgresql://"):
         clean_url = "postgresql+asyncpg://" + clean_url[len("postgresql://") :]
 
-    return create_async_engine(clean_url, echo=False, future=True, connect_args=connect_args)
+    return create_async_engine(
+        clean_url, echo=False, future=True, pool_pre_ping=True, connect_args=connect_args
+    )
 
 
 engine = _build_engine(settings.DATABASE_URL)
