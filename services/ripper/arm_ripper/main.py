@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import logging
 import ssl
 from collections.abc import Awaitable, Callable
@@ -157,16 +158,102 @@ async def makemkv_keycheck_loop(client: BackendClient) -> None:
         await asyncio.sleep(settings.MAKEMKV_KEYCHECK_INTERVAL_SECONDS)
 
 
+# Errnos that mean "the device node this container was created with is no
+# longer there" rather than "the drive is busy / the ioctl is unsupported".
+# The common cause on a WSL dev rig: the USB drive is detached and re-attached
+# with usbipd and the kernel hands it back as a *different* srN, while the
+# container keeps the node Docker copied into it at create time. `docker
+# compose restart` does NOT fix that — the container has to be recreated.
+_DEVICE_MISSING_ERRNOS = frozenset({errno.ENXIO, errno.ENODEV, errno.ENOENT})
+
+
+class DriveReadFailureTracker:
+    """Edge-triggers the log output for drive-status read failures.
+
+    `poll_loop` reads the drive every POLL_INTERVAL_SECONDS (2s), so logging
+    every failure writes ~30 identical lines a minute for as long as the drive
+    is gone — which is what buried the real cause on the dev rig. Log once on
+    the falling edge (with remediation, when we can name it), stay quiet while
+    the failure persists, and log once on recovery with how long it lasted.
+    """
+
+    def __init__(self, device_path: str) -> None:
+        self._device_path = device_path
+        self._consecutive = 0
+        # Latched per failure *class*, not once per outage. A single flag let a
+        # transient EBUSY (makemkv holding the drive) swallow the device-missing
+        # ERROR that followed it: the node never comes back on its own, so
+        # record_success never cleared the flag and the remediation was
+        # suppressed for the life of the container. Two latches also cap the
+        # output at one line per class however much the errno flaps.
+        self._reported_missing = False
+        self._reported_other = False
+
+    @staticmethod
+    def is_device_missing(exc: OSError) -> bool:
+        return exc.errno in _DEVICE_MISSING_ERRNOS
+
+    def record_failure(self, exc: OSError) -> None:
+        self._consecutive += 1
+        if self.is_device_missing(exc):
+            if self._reported_missing:
+                return  # already announced; stay quiet until it clears
+            self._reported_missing = True
+            # Deliberately blames neither open() nor the ioctl: read_drive_status
+            # does both and either can raise these errnos (the drive can be yanked
+            # in between). Naming the wrong one is what sent the last debugging
+            # session chasing the wrong call.
+            logger.error(
+                "drive %s: cannot read drive status (errno=%s %s) - the device node is gone. "
+                "Re-attach the drive on the host (usbipd attach --wsl --busid <id>), then "
+                "RECREATE this container (docker compose up -d --force-recreate arm-ripper-%s) - "
+                "a plain restart keeps the stale node. If the node was never there, check "
+                "ARM_DRIVE_DEV. Polling on, quietly, until it returns.",
+                self._device_path,
+                exc.errno,
+                exc.strerror or exc,
+                Path(self._device_path).name,
+            )
+        else:
+            if self._reported_other:
+                return
+            self._reported_other = True
+            # Busy / unsupported-ioctl territory (e.g. makemkv holding the
+            # device mid-rip). Transient and expected, so keep it a warning.
+            logger.warning(
+                "drive %s: status read failed (errno=%s %s); treating as NO_INFO and "
+                "polling on, quietly, until it recovers.",
+                self._device_path,
+                exc.errno,
+                exc.strerror or exc,
+            )
+
+    def record_success(self) -> None:
+        if self._consecutive == 0:
+            return
+        logger.info(
+            "drive %s: status read recovered after %d failed poll(s)",
+            self._device_path,
+            self._consecutive,
+        )
+        self._consecutive = 0
+        self._reported_missing = False
+        self._reported_other = False
+
+
 async def poll_loop(controller: JobController) -> None:
     detector = InsertDetector(not_ready_rearm_polls=settings.ARM_NOT_READY_REARM_POLLS)
+    failures = DriveReadFailureTracker(settings.ARM_DRIVE_DEV)
     last_state: DriveState | None = None
     active_task: asyncio.Task[None] | None = None
     while True:
         try:
             state = read_drive_status(settings.ARM_DRIVE_DEV)
         except OSError as exc:
-            logger.warning("ioctl failed: %s", exc)
+            failures.record_failure(exc)
             state = DriveState.NO_INFO
+        else:
+            failures.record_success()
 
         if state != last_state:
             logger.info("drive state %s -> %s", last_state, state)

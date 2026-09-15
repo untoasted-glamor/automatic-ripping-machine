@@ -77,6 +77,37 @@ describe('DriveCard', () => {
 			expect(screen.getByText('loaded')).toBeInTheDocument();
 		});
 
+		it('styles an unavailable drive as an error with remediation in the tooltip', () => {
+			// `unavailable` means the ripper cannot even open the device node, so
+			// nothing can be ripped - it must not read as just another neutral state.
+			renderDrive({ media_status: 'unavailable' });
+			const badge = screen.getByTestId('drive-media-status');
+			expect(badge).toHaveClass('bg-red-500/15');
+			expect(badge).not.toHaveClass('bg-primary/15');
+			expect(badge.getAttribute('title')).toMatch(/recreate the ripper container/i);
+		});
+
+		it('keeps the neutral badge style for healthy media states', () => {
+			renderDrive({ media_status: 'loaded' });
+			const badge = screen.getByTestId('drive-media-status');
+			expect(badge).toHaveClass('bg-primary/15');
+			expect(badge).not.toHaveClass('bg-red-500/15');
+			expect(badge.getAttribute('title')).toBeNull();
+		});
+
+		it('shows the unavailable remediation as visible text, not just a tooltip', () => {
+			// A title attribute is unreachable on touch and to most screen readers.
+			renderDrive({ media_status: 'unavailable' });
+			const hint = screen.getByTestId('drive-media-unavailable-hint');
+			expect(hint).toBeInTheDocument();
+			expect(hint.textContent).toMatch(/recreate the ripper container/i);
+		});
+
+		it('hides the remediation hint for healthy media states', () => {
+			renderDrive({ media_status: 'loaded' });
+			expect(screen.queryByTestId('drive-media-unavailable-hint')).not.toBeInTheDocument();
+		});
+
 		it('falls back to device path when no display name', () => {
 			renderDrive({ display_name: null });
 			const matches = screen.getAllByText('/dev/sr0');

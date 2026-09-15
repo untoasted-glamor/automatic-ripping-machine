@@ -299,7 +299,16 @@
 	<!-- Media status + 4K -->
 	<div class="mb-2 flex flex-wrap items-center gap-1">
 		{#if drive.media_status}
-			<span class="inline-flex items-center gap-1 rounded-sm bg-primary/15 px-1.5 py-0.5 text-[10px] text-primary-text dark:text-primary-text-dark">
+			{@const mediaUnavailable = drive.media_status === 'unavailable'}
+			<span
+				data-testid="drive-media-status"
+				class="inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] {mediaUnavailable
+					? 'bg-red-500/15 font-medium text-red-700 dark:text-red-400'
+					: 'bg-primary/15 text-primary-text dark:text-primary-text-dark'}"
+				title={mediaUnavailable
+					? 'The ripper cannot open this drive - its device node is missing, so no disc can be read. Re-attach the drive on the host, then recreate the ripper container (a plain restart keeps the stale device node).'
+					: undefined}
+			>
 				{drive.media_status.replace('_', ' ')}
 			</span>
 		{/if}
@@ -320,6 +329,15 @@
 			</svg>
 		</label>
 	</div>
+
+	{#if drive.media_status === 'unavailable'}
+		<!-- Visible, not tooltip-only: a title attribute is unreachable on touch and
+		     unannounced by most screen readers, and this is the one message whose
+		     entire purpose is telling the operator how to get the drive back. -->
+		<p class="mb-2 text-[11px] leading-relaxed text-red-600 dark:text-red-400" data-testid="drive-media-unavailable-hint">
+			No disc can be read - the device node is missing. Re-attach the drive on the host, then recreate the ripper container; a plain restart keeps the stale node.
+		</p>
+	{/if}
 
 	<!-- Consolidated action bar -->
 	<div class="flex items-center gap-1 rounded-lg border border-primary/10 bg-white/[0.025] p-1 dark:border-primary/10">
