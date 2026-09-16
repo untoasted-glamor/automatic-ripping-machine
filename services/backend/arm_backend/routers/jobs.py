@@ -914,6 +914,16 @@ async def resolve(
     job.disc_number = req.disc_number
     job.disc_total = req.disc_total
     job.metadata_json = new_metadata
+    # Picking a search candidate in the identify dialog sends its artwork as
+    # `metadata.poster_url`. Promote it onto the column the UI actually renders
+    # (`poster_url_manual || poster_url`) — otherwise correcting a mis-identified
+    # disc leaves the WRONG poster on screen with the right one inert in
+    # metadata_json. Same merge semantics as above: present-and-empty clears,
+    # missing leaves the existing poster alone. A manual poster override still
+    # wins, since `poster_url_manual` is untouched here.
+    if "poster_url" in req.metadata:
+        picked = req.metadata["poster_url"]
+        job.poster_url = picked if isinstance(picked, str) and picked else None
     if job.status in _RESOLVABLE_STATUSES_PROMOTE:
         # Only a PRE-rip job may enter the review gate. RIPPED_AWAITING_IDENTIFY is a
         # disc whose bits are already on disk (identity landed late), and identify

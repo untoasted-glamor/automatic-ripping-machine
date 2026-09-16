@@ -618,6 +618,64 @@ def test_resolve_accepts_ripped_awaiting_identify(signing_key: bytes) -> None:
     assert body["fan_out"] == []
 
 
+def test_resolve_applies_the_picked_candidates_poster(signing_key: bytes) -> None:
+    """Correcting a mis-identified disc from a search candidate must move the
+    poster too — the dialog sends it as metadata.poster_url, and the job detail
+    page renders job.poster_url, not metadata_json."""
+    db = FakeSession()
+    app, token = _make_app(signing_key, db)
+    job = _job(status=JobStatus.IDENTIFIED, title="Wrong Movie", meta={})
+    job.poster_url = "http://img/wrong.jpg"
+    db.rows["jobs"] = [job]
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/resolve",
+            json={
+                "title": "Iron Man",
+                "year": 2008,
+                "metadata": {"provider_id": "tt0371746", "poster_url": "http://img/right.jpg", "kind": "movie"},
+            },
+            headers=_auth(token),
+        )
+    assert r.status_code == 200
+    assert r.json()["job"]["poster_url"] == "http://img/right.jpg"
+
+
+def test_resolve_without_a_poster_keeps_the_existing_one(signing_key: bytes) -> None:
+    """A title-only edit (no candidate picked) must not blank the artwork."""
+    db = FakeSession()
+    app, token = _make_app(signing_key, db)
+    job = _job(status=JobStatus.IDENTIFIED, meta={})
+    job.poster_url = "http://img/keep.jpg"
+    db.rows["jobs"] = [job]
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/resolve",
+            json={"title": "Iron Man", "year": 2008},
+            headers=_auth(token),
+        )
+    assert r.status_code == 200
+    assert r.json()["job"]["poster_url"] == "http://img/keep.jpg"
+
+
+def test_resolve_with_an_empty_poster_clears_it(signing_key: bytes) -> None:
+    """An explicitly-sent empty/None poster clears the column, matching the
+    metadata merge semantics ("None clears, missing leaves alone")."""
+    db = FakeSession()
+    app, token = _make_app(signing_key, db)
+    job = _job(status=JobStatus.IDENTIFIED, meta={})
+    job.poster_url = "http://img/wrong.jpg"
+    db.rows["jobs"] = [job]
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/resolve",
+            json={"title": "Iron Man", "metadata": {"poster_url": None}},
+            headers=_auth(token),
+        )
+    assert r.status_code == 200
+    assert r.json()["job"]["poster_url"] is None
+
+
 def test_resolve_ripped_awaiting_identify_skips_review_gate(signing_key: bytes) -> None:
     """A disc that has ALREADY ripped must never be parked in the pre-rip review
     gate, even with hold_for_review on and a scan_result in metadata_json (identify
