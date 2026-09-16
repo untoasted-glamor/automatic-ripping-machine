@@ -1,12 +1,16 @@
 """End-to-end tests for resolve's `waiting_identify` → `queued` fan-out.
 
-Resolve transitions a job from `awaiting_user_id` (or `ripped_awaiting_identify`)
-to `identified` and, in the same handler, promotes every parked
-`session_application` for that job: load its session/preset/tracks, run the
-shared `_fan_out_tasks_for_application` helper, and either flip it to `queued`
-with TranscodeTask rows or leave it parked with a per-application
+Resolve promotes a job to `identified` and, in the same handler, fans out every
+parked `session_application` for that job: load its session/preset/tracks, run
+the shared `_fan_out_tasks_for_application` helper, and either flip it to
+`queued` with TranscodeTask rows or leave it parked with a per-application
 `skipped_reason` in the response body. Identify itself never fails because of
 a fan-out problem.
+
+Fan-out only happens for a disc whose bits are already on disk — i.e. resolving
+a `ripped_awaiting_identify` job, which is what most of these tests seed. A
+PRE-rip job (`awaiting_user_id`) keeps its applications parked until
+`rip-complete`, because a TranscodeTask has nothing to read until then.
 """
 
 from __future__ import annotations
@@ -60,7 +64,7 @@ def signing_key() -> bytes:
 def _seed(
     db: FakeSession,
     *,
-    job_status: JobStatus = JobStatus.AWAITING_USER_ID,
+    job_status: JobStatus = JobStatus.RIPPED_AWAITING_IDENTIFY,
     job_title: str | None = None,
     template: str = "{title} ({year})/{title} - {transcode_slug}.{ext}",
     extra_sessions: int = 0,
@@ -293,6 +297,97 @@ def test_resolve_ripped_awaiting_identify_status_fans_out(signing_key: bytes, tm
     assert body["job"]["status"] == "identified"
     assert len(body["fan_out"]) == 1
     assert body["fan_out"][0]["status"] == "queued"
+
+
+def _hold_for_review(db: FakeSession) -> None:
+    """Turn the review gate on and give the job a scan for it to park against."""
+    from arm_common import Config, RetentionPolicy
+
+    db.rows["config"] = [
+        Config(id=1, hold_for_review=True, default_retention_policy=RetentionPolicy.PRUNE_AFTER_SESSION)
+    ]
+    db.rows["jobs"][0].metadata_json = {
+        "scan_result": {"disc_type": "dvd", "titles": [{"index": 1, "duration_seconds": 8000}]}
+    }
+
+
+def test_resolve_into_review_gate_leaves_applications_parked(signing_key: bytes, tmp_path: Path) -> None:
+    """Resolving into AWAITING_REVIEW must NOT fan out: review Track rows exist by
+    then, so fan-out would build tasks from the gate's default keep/drop set —
+    locking in exclusions the operator hasn't made yet."""
+    db = FakeSession()
+    hub = _CapturingHub()
+    _seed(db, job_status=JobStatus.AWAITING_USER_ID)
+    _hold_for_review(db)
+    app, token = _make_app(signing_key, db, tmp_path, hub)
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/resolve",
+            json={"title": "Iron Man", "year": 2008},
+            headers=_auth(token),
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["job"]["status"] == "awaiting_review"
+    assert body["fan_out"] == []
+    assert db.rows["session_applications"][0].status == SessionApplicationStatus.WAITING_IDENTIFY
+    assert db.rows["transcode_tasks"] == []
+
+
+def test_resolve_of_a_pre_rip_job_leaves_applications_parked(signing_key: bytes, tmp_path: Path) -> None:
+    """Resolving an identify MISS promotes the job to IDENTIFIED and unblocks the
+    rip, but its parked applications stay parked: the tracks have no output_path
+    yet, so tasks fanned out here would be spawned by the dispatcher and rejected
+    by the transcoder on every tick until the rip finished."""
+    db = FakeSession()
+    hub = _CapturingHub()
+    _seed(db, job_status=JobStatus.AWAITING_USER_ID)
+    app, token = _make_app(signing_key, db, tmp_path, hub)
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/resolve",
+            json={"title": "Iron Man", "year": 2008},
+            headers=_auth(token),
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["job"]["status"] == "identified"
+    assert body["fan_out"] == []
+    assert db.rows["session_applications"][0].status == SessionApplicationStatus.WAITING_IDENTIFY
+    assert db.rows["transcode_tasks"] == []
+
+
+def test_rip_start_review_leaves_the_parked_session_for_rip_complete(signing_key: bytes, tmp_path: Path) -> None:
+    """Start closes the gate (so the keep/drop set is final) but does NOT fan out:
+    the ripped files don't exist yet, and the dispatcher spawns a transcoder for
+    any QUEUED task within a tick. `ripper.rip_complete` releases it instead."""
+    db = FakeSession()
+    hub = _CapturingHub()
+    _seed(db, job_title="Iron Man")
+    db.rows["jobs"][0].status = JobStatus.AWAITING_REVIEW
+    db.rows["jobs"][0].year = 2008
+    db.rows["tracks"].append(
+        Track(
+            id="trk_2",
+            job_id="job_01JZXR7K3M5Q8N4VWA00000001",
+            kind=TrackKind.VIDEO_TITLE,
+            index=2,
+            source_ref="2",
+            expected_duration_seconds=600,
+            status=TrackStatus.QUEUED,
+            excluded=True,  # dropped by the operator during review
+        )
+    )
+    app, token = _make_app(signing_key, db, tmp_path, hub)
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/rip-start-review",
+            headers=_auth(token),
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "ripping"
+    assert db.rows["session_applications"][0].status == SessionApplicationStatus.WAITING_IDENTIFY
+    assert db.rows["transcode_tasks"] == []
 
 
 def test_resolve_fan_out_template_error_returns_outcome_not_500(signing_key: bytes, tmp_path: Path) -> None:

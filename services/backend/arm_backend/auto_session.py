@@ -51,7 +51,27 @@ from arm_common.schemas import CollisionInfo
 logger = logging.getLogger("arm_backend.auto_session")
 
 
-_APPLY_OK_STATUSES: frozenset[JobStatus] = frozenset({JobStatus.IDENTIFIED, JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL})
+# Applying a session fans out TranscodeTask rows, and the dispatcher spawns a
+# transcoder for every QUEUED task on its next tick — so a session may only be
+# applied to a job whose rip has already produced files. IDENTIFIED is pre-rip
+# (its tracks carry no output_path), and the transcoder rejects such a task at
+# /register, so fanning out there means a container spawned and crashed every
+# dispatch interval for the whole rip. To pick a session for a disc that hasn't
+# ripped yet, use `POST /api/jobs/manual` with `session_id`: that threads
+# `pending_session_id` onto the job and rip-complete applies it against the
+# finished files.
+#
+# NB: resolve() promotes RIPPED_AWAITING_IDENTIFY to IDENTIFIED, so once that
+# (currently inert) deferred-placeholder path lands, an already-ripped job will
+# sit in a status this set refuses — revisit the promote target then.
+_APPLY_OK_STATUSES: frozenset[JobStatus] = frozenset({JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL})
+
+# Statuses where applying a session records the intent but must NOT fan out
+# tasks yet: the disc is parked behind a pre-rip gate whose outcome still
+# changes what would be transcoded.
+_PARK_UNTIL_GATE_RELEASE_STATUSES: frozenset[JobStatus] = frozenset(
+    {JobStatus.AWAITING_USER_ID, JobStatus.AWAITING_REVIEW}
+)
 
 
 class SessionNotFoundError(Exception):
@@ -141,6 +161,13 @@ async def _apply_session_internal(
     # colliding DONE/QUEUED tasks are deleted before we fan out fresh
     # rows. IN_PROGRESS collisions are still refused — can't safely
     # replace a transcoder that's actively writing.
+    #
+    # One exception to that idempotency: an existing application with NO tasks
+    # is a husk, not an answer. A session picked before the disc had ripped
+    # (which apply used to allow) fanned out against a job with zero Track rows,
+    # and its empty row would then suppress the automatic apply at rip-complete
+    # forever. Fan out onto the husk instead of returning it.
+    reuse_application: SessionApplication | None = None
     if source == "auto":
         existing = (
             await db.execute(
@@ -151,34 +178,47 @@ async def _apply_session_internal(
         ).scalar_one_or_none()
         if existing is not None:
             tasks = await _load_tasks(db, existing.id)
-            retried = await _retry_failed_tasks(db, tasks)
-            if retried > 0:
-                if existing.status in (
-                    SessionApplicationStatus.FAILED,
-                    SessionApplicationStatus.DONE_PARTIAL,
-                    SessionApplicationStatus.DONE,
-                ):
-                    existing.status = SessionApplicationStatus.RUNNING
-                    existing.completed_at = None
-                await db.commit()
-                tasks = await _load_tasks(db, existing.id)
+            if not tasks:
                 logger.info(
-                    "apply (auto): reset %d failed task(s) on existing session_application=%s",
-                    retried,
+                    "apply (auto): re-using task-less session_application=%s",
                     existing.id,
                 )
-            return ApplySessionOutcome(
-                application=existing,
-                tasks=tasks,
-                collisions=[],
-                idempotent=retried == 0,
-                skipped_reason=None,
-            )
+                reuse_application = existing
+            else:
+                retried = await _retry_failed_tasks(db, tasks)
+                if retried > 0:
+                    if existing.status in (
+                        SessionApplicationStatus.FAILED,
+                        SessionApplicationStatus.DONE_PARTIAL,
+                        SessionApplicationStatus.DONE,
+                    ):
+                        existing.status = SessionApplicationStatus.RUNNING
+                        existing.completed_at = None
+                    await db.commit()
+                    tasks = await _load_tasks(db, existing.id)
+                    logger.info(
+                        "apply (auto): reset %d failed task(s) on existing session_application=%s",
+                        retried,
+                        existing.id,
+                    )
+                return ApplySessionOutcome(
+                    application=existing,
+                    tasks=tasks,
+                    collisions=[],
+                    idempotent=retried == 0,
+                    skipped_reason=None,
+                )
 
-    # `awaiting_user_id` → park as `waiting_identify` with no tasks.
-    # In practice this only happens via the manual route — `rip-complete`
+    # Jobs sitting behind a pre-rip gate → park as `waiting_identify` with no
+    # tasks. In practice this only happens via the manual route — `rip-complete`
     # only fires for jobs already past identification.
-    if job.status == JobStatus.AWAITING_USER_ID:
+    #
+    # `awaiting_review` parks for a second reason: it HAS Track rows (the review
+    # gate persists them at identify), so fanning out now would freeze the gate's
+    # default keep/drop set into TranscodeTask rows before the operator has
+    # touched the review UI. `rip-complete` releases both kinds once the
+    # exclusions are final and the files exist (`fan_out_on_gate_release`).
+    if job.status in _PARK_UNTIL_GATE_RELEASE_STATUSES:
         application = SessionApplication(
             session_id=session_id,
             job_id=job.id,
@@ -231,7 +271,7 @@ async def _apply_session_internal(
 
     outcome = await _fan_out_tasks_for_application(
         db,
-        application=None,
+        application=reuse_application,
         job=job,
         sess=sess,
         transcode_preset=transcode_preset,
@@ -284,10 +324,11 @@ async def _fan_out_tasks_for_application(
         is created in `QUEUED` state. On collision-without-overwrite no
         application is created — caller sees `skipped_reason='collisions'`
         with `application=None`.
-      * Resolve fan-out path (`application=<existing WAITING_IDENTIFY row>`):
-        the existing application is flipped to `QUEUED` on success; on
-        collision-without-overwrite it is left untouched (still
-        WAITING_IDENTIFY) and returned with `skipped_reason='collisions'`.
+      * Reuse path (`application=<existing row>`): the gate release passes a
+        parked WAITING_IDENTIFY row, and the auto path passes a task-less husk
+        it wants healed. The row is flipped to `QUEUED` on success; on
+        collision-without-overwrite it is left untouched and returned with
+        `skipped_reason='collisions'`.
 
     Caller is responsible for the commit. The helper only `flush`es so the
     new application's id is populated for downstream task FKs.
@@ -468,6 +509,30 @@ async def fan_out_waiting_identify_applications(
         )
 
     return outcomes
+
+
+async def fan_out_on_gate_release(db: AsyncSession, *, job: Job, hub: WSHub | None) -> None:
+    """Fan out applications parked while `job` sat in a pre-rip gate.
+
+    Called from `ripper.rip_complete`, which is the first moment BOTH conditions
+    a fan-out needs are true: the operator's review keep/drop set is final (the
+    gate closed when the rip started) and the ripped files exist on disk. Fanning
+    out any earlier queues tasks the dispatcher spawns immediately and the
+    transcoder rejects at /register until the rip finishes.
+
+    A no-op when nothing is parked. Per-application failures are logged rather
+    than raised: releasing the gate must not fail rip-complete because a
+    session's template or output path has a problem, and the application stays
+    WAITING_IDENTIFY so the UI still shows it as unfinished. Caller commits.
+    """
+    for outcome in await fan_out_waiting_identify_applications(db, job=job, hub=hub):
+        if outcome.skipped_reason is not None:
+            logger.warning(
+                "gate release: session_application=%s stays waiting_identify (%s): %s",
+                outcome.application.id,
+                outcome.skipped_reason,
+                outcome.error_detail,
+            )
 
 
 async def _evict_colliding_tasks(db: AsyncSession, paths: list[str]) -> None:

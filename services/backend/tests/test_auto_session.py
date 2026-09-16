@@ -233,6 +233,45 @@ async def test_idempotent_reapply_does_not_re_emit(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_auto_heals_a_task_less_application(tmp_path: Path) -> None:
+    """A session applied before the disc had ripped left an application with zero
+    tasks (the job had no Track rows yet). The (session, job) idempotency would
+    otherwise hand that husk back at rip-complete and never transcode anything —
+    so the auto path fans out onto the existing row instead."""
+    _set_media_root(tmp_path)
+    db = FakeSession()
+    job = _seed(db)
+    db.rows["session_applications"] = [
+        SessionApplication(
+            id="sap_husk",
+            session_id="ses_x",
+            job_id="job_01JZXR7K3M5Q8N4VWA00000001",
+            status=SessionApplicationStatus.QUEUED,
+            overwrite=False,
+        )
+    ]
+    hub = CapturingHub()
+
+    outcome = await apply_session_internal(
+        db,
+        job=job,
+        session_id="ses_x",
+        overwrite=False,
+        created_by_user_id=None,
+        source="auto",
+        hub=hub,  # type: ignore[arg-type]
+    )
+
+    assert outcome.idempotent is False
+    assert outcome.application is not None
+    assert outcome.application.id == "sap_husk"
+    assert outcome.application.status == SessionApplicationStatus.QUEUED
+    assert [t.source_track_id for t in outcome.tasks] == ["trk_1"]
+    assert [t.session_application_id for t in outcome.tasks] == ["sap_husk"]
+    assert hub.events[0]["payload"]["task_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_collision_returns_skipped_reason_without_raising(tmp_path: Path) -> None:
     _set_media_root(tmp_path)
     db = FakeSession()

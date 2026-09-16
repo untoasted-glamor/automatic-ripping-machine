@@ -14,7 +14,7 @@ from arm_backend.auth import (
     require_drive_owner_by_track,
     require_service_token,
 )
-from arm_backend.auto_session import maybe_auto_apply_session
+from arm_backend.auto_session import fan_out_on_gate_release, maybe_auto_apply_session
 from arm_backend.crash_recovery import reset_job_for_recovery
 from arm_backend.db import get_session
 from arm_backend.metadata import MetadataDispatcher
@@ -893,6 +893,14 @@ async def rip_complete(
     await session.commit()
 
     if job.status in (JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL):
+        # Release first, auto-apply second. A session parked while the disc sat
+        # behind a pre-rip gate fans out here — not at rip-start — because the
+        # dispatcher spawns a transcoder for any QUEUED task on its next tick and
+        # the transcoder needs the ripped file to exist. By now the operator's
+        # keep/drop set is final AND the files are on disk. Releasing before
+        # auto-apply also means a `pending_session_id` naming the same session
+        # hits the idempotent branch instead of fanning out a second time.
+        await fan_out_on_gate_release(session, job=job, hub=hub)
         await maybe_auto_apply_session(session, job, hub)
 
     return JobView.model_validate(job)

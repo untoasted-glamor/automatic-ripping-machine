@@ -12,6 +12,7 @@ from sqlmodel import col, select
 
 from arm_backend.auth import require_jwt, require_writer
 from arm_backend.auto_session import (
+    ResolveFanOutOutcome,
     SessionNotFoundError,
     apply_session_internal,
     fan_out_waiting_identify_applications,
@@ -62,7 +63,7 @@ from arm_common.schemas import (
     TranscodeProgressSummary,
     TranscodeTaskView,
 )
-from arm_common.enums import NON_TERMINAL_JOB_STATUSES, TERMINAL_JOB_STATUSES
+from arm_common.enums import NON_TERMINAL_JOB_STATUSES, PRE_RIP_JOB_STATUSES, TERMINAL_JOB_STATUSES
 from arm_common.ulid import is_valid_id
 
 logger = logging.getLogger("arm_backend.routers.jobs")
@@ -447,6 +448,11 @@ async def rip_start_review(
     job.started_at = datetime.now(timezone.utc)
     db.add(job)
     await db.flush()
+
+    # NB: sessions parked while the disc was held are NOT fanned out here. The
+    # operator's keep/drop set is final at this point, but the ripped files don't
+    # exist yet and the dispatcher would spawn a transcoder against them within a
+    # tick. `ripper.rip_complete` releases them instead.
 
     payload = {"job_id": job.id, "drive_id": job.drive_id}
     await hub.emit(
@@ -890,6 +896,11 @@ async def resolve(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"job {job_id} is in status {job.status.value}, not in an identify-resolvable status",
         )
+    # Captured before the promote branch below rewrites it: RIPPED_AWAITING_IDENTIFY
+    # promotes to IDENTIFIED, so the post-resolve status can't tell a disc whose bits
+    # are already on disk from one that hasn't ripped. The fan-out decision needs the
+    # original.
+    prior_status = job.status
 
     # Merge semantics: req.metadata is overlaid on existing metadata_json, not a replacement.
     # The partial-edit case ("just fix the title") sends `metadata: {}` and must NOT wipe
@@ -929,7 +940,17 @@ async def resolve(
             job.status = JobStatus.IDENTIFIED
     session.add(job)
 
-    fan_out_outcomes = await fan_out_waiting_identify_applications(session, job=job, hub=hub)
+    # Parked applications are only fanned out for a disc that has ALREADY ripped
+    # (the RIPPED_AWAITING_IDENTIFY path — identity landed late, files are on
+    # disk, and this resolve is their only chance to be queued). A pre-rip job
+    # keeps them parked for two reasons: its tracks have no output_path yet, so
+    # the dispatcher would spawn a transcoder that the /register guard rejects on
+    # every tick until the rip finished; and for a disc entering the review gate,
+    # the tasks would freeze the gate's DEFAULT keep/drop set before the operator
+    # has touched the review UI. `ripper.rip_complete` releases them instead.
+    fan_out_outcomes: list[ResolveFanOutOutcome] = []
+    if prior_status not in PRE_RIP_JOB_STATUSES:
+        fan_out_outcomes = await fan_out_waiting_identify_applications(session, job=job, hub=hub)
 
     logger.info(
         "resolve job_id=%s -> identified title=%s fan_out=%d",

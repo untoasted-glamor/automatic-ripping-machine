@@ -860,6 +860,81 @@ def test_rip_start_awaiting_review_no_tracks_selects_and_rips() -> None:
     assert db.rows["jobs"][0].status == JobStatus.RIPPING
 
 
+def _seed_parked_session(db: FakeSession, *, track_status: TrackStatus, application_session_id: str = "ses_x") -> None:
+    """Seed a session applied while the disc sat behind a pre-rip gate.
+
+    One waiting_identify application, plus a kept track and one the operator
+    dropped during review, so a fan-out can be checked against the reviewed set.
+    Point `application_session_id` at a non-existent session to exercise the
+    skipped-outcome path.
+    """
+    from arm_common import (
+        ContainerFormat,
+        HwPreference,
+        Session,
+        SessionApplication,
+        SessionApplicationStatus,
+        TranscodePreset,
+        TranscodeTool,
+    )
+
+    kept = _track("trk_1", status=track_status)
+    dropped = _track("trk_2", status=track_status, index=2)
+    dropped.excluded = True
+    db.rows["tracks"] = [kept, dropped]
+    db.rows["transcode_presets"] = [
+        TranscodePreset(
+            id="tpr_x",
+            name="Plex 1080p",
+            media_type=MediaType.MOVIE,
+            is_builtin=True,
+            tool=TranscodeTool.HANDBRAKE,
+            container=ContainerFormat.MKV,
+            hw_preference=HwPreference.CPU_ONLY,
+        )
+    ]
+    db.rows["sessions"] = [
+        Session(
+            id="ses_x",
+            name="My Plex",
+            media_type=MediaType.MOVIE,
+            is_builtin=False,
+            rip_preset_id="rpr_x",
+            transcode_preset_id="tpr_x",
+            output_path_template="{title}/{title}.{ext}",
+        )
+    ]
+    db.rows["session_applications"] = [
+        SessionApplication(
+            id="sap_x",
+            session_id=application_session_id,
+            job_id="job_01JZXR7K3M5Q8N4VWA00000001",
+            status=SessionApplicationStatus.WAITING_IDENTIFY,
+            overwrite=False,
+        )
+    ]
+    db.rows["transcode_tasks"] = []
+
+
+def test_rip_start_leaves_the_parked_session_for_rip_complete() -> None:
+    """Rip-start closes the review gate but must NOT release the parked session:
+    the dispatcher spawns a transcoder for every queued task on its next tick and
+    there is no ripped file yet, so fanning out here means a container spawned and
+    rejected at /register every few seconds for the whole rip. rip-complete
+    releases instead."""
+    from arm_common import SessionApplicationStatus
+
+    db = FakeSession()
+    db.rows["drives"] = [_drive()]
+    db.rows["jobs"] = [_job(status=JobStatus.AWAITING_REVIEW)]
+    _seed_parked_session(db, track_status=TrackStatus.QUEUED)
+    with TestClient(_make_app(db)) as client:
+        r = client.post("/api/ripper/jobs/job_01JZXR7K3M5Q8N4VWA00000001/rip-start", headers=_OWNER_HEADERS)
+    assert r.status_code == 200
+    assert db.rows["session_applications"][0].status == SessionApplicationStatus.WAITING_IDENTIFY
+    assert db.rows["transcode_tasks"] == []
+
+
 def test_rip_start_not_identified_409() -> None:
     db = FakeSession()
     db.rows["drives"] = [_drive()]
@@ -1123,6 +1198,40 @@ def test_rip_complete_zero_tracks_failed(monkeypatch: pytest.MonkeyPatch) -> Non
     r = _rip_complete(db, _Hub(), monkeypatch)
     assert r.status_code == 200
     assert r.json()["status"] == "failed"
+
+
+def test_rip_complete_releases_the_parked_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The gate release lands here, where the reviewed keep/drop set is final AND
+    the files exist: the parked application flips to queued with a task for the
+    kept track only, never the one the operator dropped."""
+    from arm_common import SessionApplicationStatus
+
+    db = FakeSession()
+    db.rows["jobs"] = [_job(status=JobStatus.RIPPING)]
+    db.rows["drives"] = [_drive()]
+    _seed_parked_session(db, track_status=TrackStatus.DONE)
+    r = _rip_complete(db, _Hub(), monkeypatch)
+    assert r.status_code == 200
+    assert r.json()["status"] == "ripped"
+    assert db.rows["session_applications"][0].status == SessionApplicationStatus.QUEUED
+    assert [t.source_track_id for t in db.rows["transcode_tasks"]] == ["trk_1"]
+
+
+def test_rip_complete_survives_a_broken_parked_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A parked application whose session was deleted meanwhile is logged and left
+    waiting_identify — it must not fail rip-complete, which the ripper cannot
+    retry, or the disc would never leave RIPPING."""
+    from arm_common import SessionApplicationStatus
+
+    db = FakeSession()
+    db.rows["jobs"] = [_job(status=JobStatus.RIPPING)]
+    db.rows["drives"] = [_drive()]
+    _seed_parked_session(db, track_status=TrackStatus.DONE, application_session_id="ses_gone")
+    r = _rip_complete(db, _Hub(), monkeypatch)
+    assert r.status_code == 200
+    assert r.json()["status"] == "ripped"
+    assert db.rows["session_applications"][0].status == SessionApplicationStatus.WAITING_IDENTIFY
+    assert db.rows["transcode_tasks"] == []
 
 
 # --- helpers -----------------------------------------------------------------

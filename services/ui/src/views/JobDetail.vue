@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { api, ApiError } from '../api/client'
 import AbandonJobDialog from '../components/AbandonJobDialog.vue'
 import ApplySessionDialog from '../components/ApplySessionDialog.vue'
@@ -43,14 +43,15 @@ const transcodes = useTranscodesStore()
 const POLL_MS = Number(import.meta.env.VITE_JOB_DETAIL_POLL_MS ?? 5000)
 let pollTimer: number | null = null
 
-const APPLY_OK: JobStatus[] = [
-  'identified',
-  'awaiting_review',
-  'ripped',
-  'ripped_partial',
-  'awaiting_user_id',
-]
+// `awaiting_user_id` and `awaiting_review` are accepted but PARK: the backend
+// records the application as `waiting_identify` with no tasks, and fans it out
+// at rip-complete, so review exclusions are honoured instead of frozen in at
+// click time. `identified` is deliberately absent — the backend refuses it
+// (the rip hasn't produced files to transcode yet); `applyAfterRip` points the
+// operator at "+ Manual rip", which attaches a session to the rip itself.
+const APPLY_OK: JobStatus[] = ['awaiting_review', 'ripped', 'ripped_partial', 'awaiting_user_id']
 const canApply = computed(() => detail.value !== null && APPLY_OK.includes(detail.value.job.status))
+const applyAfterRip = computed(() => detail.value?.job.status === 'identified')
 // The first two statuses are the "auto-identify failed, please fill in" case — a job
 // blocked on identity. The last three are the "auto-identify landed wrong metadata,
 // correct it" case (MakeMKV volume-label fallback, stale TMDB entry, etc.) — same
@@ -172,6 +173,10 @@ onUnmounted(() => {
   transcodes.stopWS()
 })
 
+const appliedParked = computed(
+  () => lastApplied.value?.session_application.status === 'waiting_identify',
+)
+
 function onApplied(resp: ApplySessionResponse): void {
   lastApplied.value = resp
   showApply.value = false
@@ -275,7 +280,12 @@ async function savePoster(): Promise<void> {
       >
         {{ identifyButtonLabel }}
       </button>
-      <button v-if="canApply && !showApply" @click="showApply = true">Apply session</button>
+      <button v-if="canApply && !showApply" data-testid="apply-session" @click="showApply = true">
+        Apply session
+      </button>
+      <RouterLink v-if="applyAfterRip" to="/jobs/manual" class="muted" data-testid="apply-after-rip">
+        Sessions apply once the rip has produced files — pick one with "+ Manual rip".
+      </RouterLink>
       <button
         v-if="canAbandon && !showAbandon"
         class="secondary"
@@ -391,7 +401,7 @@ async function savePoster(): Promise<void> {
 
   <div v-if="lastApplied" class="card">
     <h3 style="margin-top: 0">
-      Session queued
+      {{ appliedParked ? 'Session parked' : 'Session queued' }}
       <span v-if="lastApplied.idempotent" class="muted"
         >(already applied — same response returned)</span
       >
@@ -400,6 +410,10 @@ async function savePoster(): Promise<void> {
       Application <code>{{ lastApplied.session_application.id }}</code> in status
       <strong>{{ lastApplied.session_application.status }}</strong>
       with {{ lastApplied.tasks.length }} task(s) queued.
+    </p>
+    <p v-if="appliedParked" class="muted" data-testid="apply-parked-note">
+      Transcodes are created once this disc clears its gate, so any titles you drop during review
+      are left out.
     </p>
     <ul>
       <li v-for="t in lastApplied.tasks" :key="t.id">

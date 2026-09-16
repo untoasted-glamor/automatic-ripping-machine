@@ -421,6 +421,47 @@ def test_apply_to_unidentified_job_creates_waiting_identify(signing_key: bytes, 
     assert body["tasks"] == []
 
 
+def test_apply_to_held_review_job_parks_instead_of_409(signing_key: bytes, tmp_path: Path) -> None:
+    """A disc held in the review gate accepts Apply (the UI offers the button),
+    but parks: its Track rows carry the gate's DEFAULT keep/drop set, and fanning
+    out now would freeze those defaults into tasks before the operator has
+    reviewed. Release of the gate does the fan-out."""
+    db = FakeSession()
+    _seed(db, job_status=JobStatus.AWAITING_REVIEW)
+    app, token = _make_app(signing_key, db, tmp_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/transcode",
+            json={"session_id": "ses_x"},
+            headers=_auth(token),
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["session_application"]["status"] == "waiting_identify"
+    assert body["tasks"] == []
+    assert db.rows["transcode_tasks"] == []
+
+
+def test_apply_rejects_pre_rip_identified_job(signing_key: bytes, tmp_path: Path) -> None:
+    """IDENTIFIED is pre-rip: its tracks have no output_path, so fanned-out tasks
+    would be spawned by the dispatcher and rejected at /register every tick until
+    the rip finished. A session for a not-yet-ripped disc goes through
+    `POST /api/jobs/manual` (pending_session_id) instead."""
+    db = FakeSession()
+    _seed(db, job_status=JobStatus.IDENTIFIED)
+    app, token = _make_app(signing_key, db, tmp_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/transcode",
+            json={"session_id": "ses_x"},
+            headers=_auth(token),
+        )
+    assert r.status_code == 409
+    assert "identified" in r.json()["detail"]
+    assert db.rows["transcode_tasks"] == []
+    assert db.rows.get("session_applications", []) == []
+
+
 def test_apply_rejects_job_in_bad_status(signing_key: bytes, tmp_path: Path) -> None:
     db = FakeSession()
     _seed(db, job_status=JobStatus.RIPPING)
