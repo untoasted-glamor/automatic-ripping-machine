@@ -17,7 +17,16 @@ import { isTerminalJobStatus } from '../utils/jobStatus'
 import { taskOrdinal } from '../utils/transcodeOrdinal'
 
 const REFRESH_MS = Number(import.meta.env.VITE_DASHBOARD_REFRESH_MS ?? 5000)
-const ACTIVE_JOB_STATUSES: JobStatus[] = ['created', 'awaiting_user_id', 'identified', 'ripping']
+// awaiting_review is non-terminal, so without it here a held disc lands in
+// neither this list nor recentTerminalJobs — invisible on the dashboard while
+// mandatory mode waits indefinitely for the operator's confirm click.
+const ACTIVE_JOB_STATUSES: JobStatus[] = [
+  'created',
+  'awaiting_user_id',
+  'identified',
+  'awaiting_review',
+  'ripping',
+]
 const ACTIVE_TASK_STATUSES: TranscodeTaskStatus[] = ['queued', 'in_progress']
 
 const drives = ref<DriveView[]>([])

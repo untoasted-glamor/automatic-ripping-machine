@@ -25,10 +25,18 @@ Four long-lived entities drive the lifecycle, plus one reusable template:
             │ identify OK                          │ user resolves in UI
             ▼                                      ▼
        ┌────────────┐  ◀─────────────────────────  │
-       │ identified │                              │
-       └─────┬──────┘                              │
-             │ first track begins                  │
-             ▼                                     │
+       │ identified │      hold_for_review=false,   │
+       └─────┬──────┘      or no scan_result to review
+             │
+             │ hold_for_review=true (both entry paths land here
+             │ with tracks pre-selected and pending review)
+             ▼
+     ┌───────────────────┐  timed sub-mode: countdown expires (unless paused)
+     │  awaiting_review   │ ───────────────────────────────────────┐
+     └─────────┬──────────┘  mandatory sub-mode: never auto-expires │
+               │ operator clicks "Confirm & start rip"               │
+               │ (POST /api/jobs/{id}/rip-start-review)              │
+               ▼                                                    ▼
        ┌────────────┐   one or more tracks fail, others succeed
        │  ripping   │ ─────────────────────┐
        └─────┬──────┘                      │
@@ -43,6 +51,20 @@ Four long-lived entities drive the lifecycle, plus one reusable template:
                     (disc ejected, ripper idle)
                     (downstream session applications may queue)
 ```
+
+`awaiting_review` is the pre-rip confirmation gate (`config.hold_for_review`), reachable from **two** entry paths:
+
+1. **Genuine auto-identify hit** — the disc scans and identifies cleanly; `identified` is skipped in favor of `awaiting_review` when the config gate is on.
+2. **Resolve-driven promotion** — a disc that missed auto-identify (`awaiting_user_id`) and was manually resolved via the identify dialog lands in `awaiting_review` too, instead of jumping straight to `ripping` — the gate applies uniformly regardless of how identity was determined.
+
+Two sub-modes, both stored on the `Config` singleton, coexist:
+
+- **Timed** (`manual_wait_seconds` set to a number): the ripper auto-starts the rip once the countdown expires, unless the operator pauses it (`POST /api/jobs/{id}/review-pause?paused=true`) or clicks Confirm early.
+- **Mandatory** (`manual_wait_seconds = null`): the countdown never expires — the only way out of `awaiting_review` is an explicit `POST /api/jobs/{id}/rip-start-review`.
+
+Track selection for the review gate is persisted eagerly (at the same point the job enters `awaiting_review`), not deferred to rip-start, so the UI can show the operator exactly what will be ripped before they confirm.
+
+`ripped_awaiting_identify` (a disc that ripped under a deferred-placeholder preset before identity ever resolved) is a separate, currently-inert status resolvable via the same `/resolve` endpoint as `awaiting_user_id` — omitted from the diagram above since no rip pipeline produces it yet.
 
 Terminal states for a `Job`: `ripped`, `ripped_partial`, `abandoned` (user gave up in UI), `failed` (identification failed catastrophically).
 

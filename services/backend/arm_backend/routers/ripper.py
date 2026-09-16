@@ -26,7 +26,6 @@ from arm_backend.ws import WSHub
 from arm_common import (
     Config,
     DiscFingerprint,
-    DiscType,
     Drive,
     DriveStatus,
     Job,

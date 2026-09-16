@@ -64,6 +64,12 @@ export const useJobsStore = defineStore('jobs', {
     async resolve(jobId: string, req: ResolveJobRequest): Promise<ResolveResponse> {
       return await api.post<ResolveResponse>(`/api/jobs/${jobId}/resolve`, req)
     },
+    async ripStartReview(jobId: string): Promise<JobView> {
+      return await api.post<JobView>(`/api/jobs/${jobId}/rip-start-review`)
+    },
+    async reviewPause(jobId: string, paused: boolean): Promise<JobView> {
+      return await api.post<JobView>(`/api/jobs/${jobId}/review-pause?paused=${paused}`)
+    },
     async deleteJob(jobId: string, opts: { deleteRaw?: boolean } = {}): Promise<void> {
       const qs = opts.deleteRaw ? '?delete_raw=true' : ''
       await api.del(`/api/jobs/${jobId}${qs}`)

@@ -29,6 +29,7 @@ export type JobStatus =
   | 'created'
   | 'awaiting_user_id'
   | 'identified'
+  | 'awaiting_review'
   | 'ripping'
   | 'ripped'
   | 'ripped_partial'
@@ -57,6 +58,10 @@ export interface JobView {
   poster_url_manual: string | null
   metadata_json: Record<string, unknown>
   resumed_from_crash: boolean
+  // Timed review gate: when the countdown started (awaiting_review). Null otherwise.
+  wait_start_time?: string | null
+  // Per-job review-gate pause: freezes this disc's countdown.
+  manual_pause?: boolean
   // Populated only by GET /api/jobs for ripping jobs.
   rip_progress?: RipProgressSummary | null
 }
@@ -329,6 +334,26 @@ export interface ResolveJobRequest {
   title: string
   year?: number | null
   metadata?: Record<string, unknown>
+}
+
+export type MetadataSearchType = 'movie' | 'tv'
+
+export interface MetadataCandidate {
+  title: string
+  year: number | null
+  kind: string
+  poster_url: string | null
+  provider_id: string | null
+  release_type: string | null
+  format: string | null
+  country: string | null
+  status: string | null
+  track_count: number | null
+}
+
+export interface MetadataSearchResponse {
+  candidates: MetadataCandidate[]
+  detail: string | null
 }
 
 export interface ResolveFanOutOutcomeView {

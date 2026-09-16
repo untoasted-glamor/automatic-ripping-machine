@@ -16,6 +16,8 @@ const EXPECTED_EDITABLE = [
   'block_on_miss',
   'ripping_paused',
   'notifications_enabled',
+  'hold_for_review',
+  'manual_wait_seconds',
 ]
 const FORBIDDEN = ['default_retention_policy', 'notification_apprise_urls']
 

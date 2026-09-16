@@ -1,5 +1,9 @@
 # Memory
 
+**⚠️ SCOPE SPLIT — READ FIRST:** every entry below is shared upstream project memory (inherited from `shitwolfymakes/automatic-ripping-machine`; applies to any contributor). It is NOT about this fork or this machine. For **untoasted-glamor's own personal fork/dev-environment state** (WSL+Windows checkout paths, personal fork git remotes/workflow, this person's own bug-triage notes from their own local stack) — see the standalone entry immediately below, and put any *new* personal-fork/machine-state notes there too, never blended into the shared entries that follow it.
+
+- [**PERSONAL FORK STATE (untoasted-glamor) — separate from everything else in this file**](/untoasted-glamor/personal_fork_State.md) — WSL/Windows checkout paths, personal fork remotes & branch workflow, cross-environment Claude Code tooling gotchas, and this person's own running bug-triage notes on their own local stack. Verbatim copy of a Windows-side memory file, kept in sync manually.
+    - [Two-sub-mode review-confirm gate](untoasted-glamor/project_review_confirm_gate.md) — `awaiting_review` status + timed/mandatory `hold_for_review`/`manual_wait_seconds` sub-modes (both kept, never replace one with the other); closed the AWAITING_USER_ID resolve()-bypass gap.
 - [Memory for this repo lives in source control](feedback_memory_in_source_control.md) — memory is committed under `.claude/memory/`; CLAUDE.md instructs Claude to read MEMORY.md at session start. Don't write to the per-user `~/.claude/projects/<slug>/memory/` path.
 - [DB enums stored as VARCHAR](feedback_db_enums_as_varchar.md) — never use Postgres CREATE TYPE enums; validate enums in the app layer at write time.
 - [Ripper: one makemkvcon per disc, never per title](feedback_ripper_no_per_title.md) — `rip_disc` shells `makemkvcon mkv ... all` once; per-title invocations cause USB-BD drive autosuspend / SCSI NOT_READY failures between titles.

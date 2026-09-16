@@ -30,7 +30,7 @@ export function trackToRow(t: TrackView): ReviewRow {
 export function scanTitleToRow(s: ScanTitle): ReviewRow {
 	return {
 		index: s.index,
-		durationSeconds: s.duration_seconds,
+		durationSeconds: s.duration_seconds ?? null,
 		sourceLabel: s.source_file ?? null,
 		trackId: null,
 		title: null,

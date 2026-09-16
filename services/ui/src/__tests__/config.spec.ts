@@ -13,6 +13,8 @@ const baseConfig = {
   auto_rip_on_insert: true,
   block_on_miss: true,
   ripping_paused: false,
+  hold_for_review: false,
+  manual_wait_seconds: 60,
   default_retention_policy: 'prune_after_session',
   notification_apprise_urls: [],
   notifications_enabled: false,
@@ -157,6 +159,64 @@ describe('Config.vue notifications', () => {
     expect((select.element as HTMLSelectElement).value).toBe('omdb')
     const paused = wrapper.find('[data-testid="ripping-paused"]')
     expect((paused.element as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('sends the edited countdown as a number', async () => {
+    const held = { ...baseConfig, hold_for_review: true, manual_wait_seconds: 60 }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(held))
+      .mockResolvedValueOnce(jsonResponse({ ...held, manual_wait_seconds: 120 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const wrapper = mount(Config)
+    await flushPromises()
+
+    const field = wrapper.find('[data-testid="manual-wait-seconds"]')
+    // Clear first, the way a person retyping the value does.
+    await field.setValue('')
+    await field.setValue('120')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    const patchCall = fetchMock.mock.calls.find((c) => c[1]?.method === 'PATCH')
+    expect(patchCall).toBeDefined()
+    const body = JSON.parse(patchCall![1].body as string)
+    expect(body.manual_wait_seconds).toBe(120)
+  })
+
+  it('blocks the save while the countdown box is empty instead of PATCHing ""', async () => {
+    const held = { ...baseConfig, hold_for_review: true, manual_wait_seconds: 60 }
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(held))
+    vi.stubGlobal('fetch', fetchMock)
+    const wrapper = mount(Config)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="manual-wait-seconds"]').setValue('')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(fetchMock.mock.calls.find((c) => c[1]?.method === 'PATCH')).toBeUndefined()
+    expect(wrapper.find('[data-testid="manual-wait-seconds-error"]').exists()).toBe(true)
+    expect((wrapper.find('button[type="submit"]').element as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('keeps mandatory mode saving null with the countdown hidden', async () => {
+    const held = { ...baseConfig, hold_for_review: true, manual_wait_seconds: null }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(held))
+      .mockResolvedValueOnce(jsonResponse(held))
+    vi.stubGlobal('fetch', fetchMock)
+    const wrapper = mount(Config)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="manual-wait-seconds"]').exists()).toBe(false)
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    const patchCall = fetchMock.mock.calls.find((c) => c[1]?.method === 'PATCH')
+    const body = JSON.parse(patchCall![1].body as string)
+    expect(body.manual_wait_seconds).toBeNull()
   })
 
   it('does not render the retention or legacy-apprise controls', async () => {

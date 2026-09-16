@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { api, ApiError } from '../api/client'
 import type { ConfigUpdateRequest, ConfigView } from '../api/types'
 import { CONFIG_FORM_KEYS } from './configFormFields'
@@ -10,6 +10,28 @@ const saved = ref(false)
 const submitting = ref(false)
 
 const form = ref<ConfigUpdateRequest>({})
+// Derived UI-only toggle: "require manual confirm" means manual_wait_seconds
+// is explicitly null (mandatory review-confirm mode). Kept separate from
+// `form` since it's not itself a wire field — it just drives whether
+// manual_wait_seconds is null or a number.
+const mandatoryConfirm = ref(false)
+// The countdown is edited through a DRAFT rather than bound straight onto
+// `form`: Vue casts an `<input type="number">` with looseToNumber, which hands
+// back the original '' for an empty box, so clearing the field to retype it
+// ("60" -> "" -> "120") used to PATCH manual_wait_seconds: "" and fail
+// validation with a generic "Save failed". The draft therefore holds either the
+// number or that '' — an empty or non-positive box is caught locally and blocks
+// Save until it's a whole number of seconds.
+const waitSecondsDraft = ref<string | number>('')
+const waitSecondsError = computed<string | null>(() => {
+  if (!form.value.hold_for_review || mandatoryConfirm.value) return null
+  const raw = String(waitSecondsDraft.value).trim()
+  if (raw === '') return 'Enter a countdown in seconds (or tick "Require manual confirm").'
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n < 1)
+    return 'Countdown must be a whole number of seconds, at least 1.'
+  return null
+})
 
 async function reload() {
   cfg.value = await api.get<ConfigView>('/api/config')
@@ -19,7 +41,18 @@ async function reload() {
     ;(next as Record<string, unknown>)[k] = (cfg.value as Record<string, unknown>)[k]
   }
   form.value = next
+  mandatoryConfirm.value = form.value.manual_wait_seconds == null
+  waitSecondsDraft.value = String(form.value.manual_wait_seconds ?? 60)
 }
+
+watch(mandatoryConfirm, (mandatory) => {
+  if (mandatory) {
+    form.value.manual_wait_seconds = null
+  } else if (form.value.manual_wait_seconds == null) {
+    form.value.manual_wait_seconds = 60
+    waitSecondsDraft.value = '60'
+  }
+})
 
 onMounted(async () => {
   try {
@@ -32,6 +65,13 @@ onMounted(async () => {
 async function save() {
   saved.value = false
   error.value = null
+  if (waitSecondsError.value !== null) {
+    error.value = waitSecondsError.value
+    return
+  }
+  if (!mandatoryConfirm.value) {
+    form.value.manual_wait_seconds = Number(String(waitSecondsDraft.value).trim())
+  }
   submitting.value = true
   try {
     cfg.value = await api.patch<ConfigView>('/api/config', form.value)
@@ -118,8 +158,31 @@ async function save() {
         Enable notifications (Apprise)
       </label>
     </div>
+    <div class="row" style="margin-bottom: 12px">
+      <label class="row" style="gap: 6px">
+        <input type="checkbox" v-model="form.hold_for_review" data-testid="hold-for-review" />
+        Hold identified discs for review before ripping
+      </label>
+    </div>
+    <template v-if="form.hold_for_review">
+      <div class="row" style="margin-bottom: 12px; margin-left: 20px">
+        <label class="row" style="gap: 6px">
+          <input type="checkbox" v-model="mandatoryConfirm" data-testid="mandatory-confirm" />
+          Require manual confirm (no auto-start)
+        </label>
+      </div>
+      <div class="field" v-if="!mandatoryConfirm" style="margin-left: 20px">
+        <label>Auto-start countdown (seconds)</label>
+        <input type="number" min="1" v-model="waitSecondsDraft" data-testid="manual-wait-seconds" />
+        <p v-if="waitSecondsError" class="error" data-testid="manual-wait-seconds-error">
+          {{ waitSecondsError }}
+        </p>
+      </div>
+    </template>
     <div class="row">
-      <button :disabled="submitting" type="submit">{{ submitting ? 'Saving…' : 'Save' }}</button>
+      <button :disabled="submitting || waitSecondsError !== null" type="submit">
+        {{ submitting ? 'Saving…' : 'Save' }}
+      </button>
       <span v-if="saved" class="muted">Saved.</span>
     </div>
   </form>

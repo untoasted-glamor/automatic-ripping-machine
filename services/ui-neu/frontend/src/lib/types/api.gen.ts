@@ -437,7 +437,7 @@ export type ConfigView = {
     /**
      * Manual Wait Seconds
      */
-    manual_wait_seconds: number;
+    manual_wait_seconds: number | null;
     default_retention_policy: RetentionPolicy;
     /**
      * Notification Apprise Urls
@@ -2505,7 +2505,7 @@ export type RipperConfigView = {
     /**
      * Manual Wait Seconds
      */
-    manual_wait_seconds?: number;
+    manual_wait_seconds?: number | null;
 };
 
 /**
@@ -2567,7 +2567,7 @@ export type ScanTitle = {
     /**
      * Duration Seconds
      */
-    duration_seconds: number;
+    duration_seconds?: number | null;
     /**
      * Chapter Count
      */

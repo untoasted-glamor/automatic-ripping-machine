@@ -17,4 +17,6 @@ export const CONFIG_FORM_KEYS = [
   'block_on_miss',
   'ripping_paused',
   'notifications_enabled',
+  'hold_for_review',
+  'manual_wait_seconds',
 ] as const satisfies readonly (keyof ConfigUpdateRequest)[]

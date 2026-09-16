@@ -43,7 +43,13 @@ const transcodes = useTranscodesStore()
 const POLL_MS = Number(import.meta.env.VITE_JOB_DETAIL_POLL_MS ?? 5000)
 let pollTimer: number | null = null
 
-const APPLY_OK: JobStatus[] = ['identified', 'ripped', 'ripped_partial', 'awaiting_user_id']
+const APPLY_OK: JobStatus[] = [
+  'identified',
+  'awaiting_review',
+  'ripped',
+  'ripped_partial',
+  'awaiting_user_id',
+]
 const canApply = computed(() => detail.value !== null && APPLY_OK.includes(detail.value.job.status))
 // The first two statuses are the "auto-identify failed, please fill in" case — a job
 // blocked on identity. The last three are the "auto-identify landed wrong metadata,
@@ -54,6 +60,7 @@ const IDENTIFY_OK: JobStatus[] = [
   'awaiting_user_id',
   'ripped_awaiting_identify',
   'identified',
+  'awaiting_review',
   'ripped',
   'ripped_partial',
 ]
@@ -63,9 +70,9 @@ const canIdentify = computed(
 const identifyButtonLabel = computed(() => {
   if (detail.value === null) return 'Identify disc'
   const s = detail.value.job.status
-  return s === 'awaiting_user_id' || s === 'ripped_awaiting_identify'
-    ? 'Identify disc'
-    : 'Edit identity'
+  if (s === 'awaiting_user_id' || s === 'ripped_awaiting_identify') return 'Identify disc'
+  if (s === 'awaiting_review') return 'Review & confirm'
+  return 'Edit identity'
 })
 const canAbandon = computed(
   () => detail.value !== null && !isTerminalJobStatus(detail.value.job.status),
@@ -184,6 +191,15 @@ function onIdentified(resp: ResolveResponse): void {
   // new TranscodeTask rows in the table below.
   void transcodes.fetchAll()
   lastFanOutSkipped.value = resp.fan_out.filter((o) => o.skipped_reason !== null)
+}
+
+function onRipStarted(updated: JobView): void {
+  if (detail.value) detail.value = { ...detail.value, job: updated }
+  showIdentify.value = false
+}
+
+function onJobUpdated(updated: JobView): void {
+  if (detail.value) detail.value = { ...detail.value, job: updated }
 }
 
 function onDeleted(): void {
@@ -348,6 +364,8 @@ async function savePoster(): Promise<void> {
     :job="detail.job"
     @close="showIdentify = false"
     @identified="onIdentified"
+    @rip-started="onRipStarted"
+    @job-updated="onJobUpdated"
   />
 
   <div
