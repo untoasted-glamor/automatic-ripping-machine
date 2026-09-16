@@ -81,21 +81,21 @@ def test_warns_about_and_includes_title_missing_duration(caplog):
     assert "indices: [1]" in message
 
 
-def test_synthesises_placeholder_for_title_with_no_tinfo_at_all(caplog):
+def test_does_not_invent_a_title_that_emitted_no_tinfo_at_all(caplog):
     # e.g. truncated stdout: TCOUNT says 3 but title 2 never appears in any
-    # TINFO line — it still gets a placeholder ScanTitle (all fields None
-    # except index) instead of being dropped.
+    # TINFO line. A TCOUNT-only index is evidence of a truncated parse, not of
+    # a title: synthesising it produces a duration-less Track the rip
+    # dispatcher counts as eligible, which shifts positional file attribution
+    # onto the wrong Tracks (or, at best, gets PATCHed FAILED and downgrades a
+    # clean rip to ripped_partial). Warn loudly and scan what we can see.
     lines = ["TCOUNT:3", 'TINFO:0,9,0,"1:30:00"', 'TINFO:1,9,0,"0:05:00"']
     with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv"):
         _, titles, _ = parse_makemkvcon_info(lines)
 
-    assert len(titles) == 3
-    assert titles[2].index == 2
-    assert titles[2].duration_seconds is None
-    assert titles[2].chapter_count is None
-    assert titles[2].source_file is None
+    assert [t.index for t in titles] == [0, 1]
     assert len(caplog.records) == 1
-    assert "indices: [2]" in caplog.records[0].getMessage()
+    message = caplog.records[0].getMessage()
+    assert "TCOUNT=3 but only 2 title(s) emitted TINFO output" in message
 
 
 def test_warning_when_tcount_lower_than_observed_titles(caplog):

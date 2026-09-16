@@ -87,13 +87,14 @@ def parse_makemkvcon_info(
     - TINFO:t,8,...  — chapter count
     - TINFO:t,11,... — title size in bytes
     - TINFO:t,27,... — source filename (e.g. title_t00.mkv)
-    - TCOUNT:n       — MakeMKV's own title count. Every index it implies
-                       (0..TCOUNT-1) gets a ScanTitle even when no TINFO
-                       line named it, or its TINFO:t,9 duration was missing
-                       or unparsable — with duration_seconds=None — so a
-                       title MakeMKV counted is never silently dropped from
-                       the scan (that used to let MakeMKV rip an untracked
-                       "straggler" file with no matching Track row).
+    - TCOUNT:n       — MakeMKV's own title count, used only to detect a
+                       truncated parse (logged); it does NOT synthesise
+                       titles on its own. See the `want_indices` comment.
+
+    A title that emitted any TINFO line but whose TINFO:t,9 duration was
+    missing or unparsable still gets a ScanTitle, with duration_seconds=None,
+    so it is never silently dropped from the scan (that used to let MakeMKV
+    rip an untracked "straggler" file with no matching Track row).
 
     Reference: https://github.com/automatic-ripping-machine/automatic-ripping-machine/wiki/MakeMKV-Codes
     """
@@ -150,15 +151,24 @@ def parse_makemkvcon_info(
             elif code == 27:
                 entry["source_file"] = value
 
-    # Union, not just `titles.keys()`: a title MakeMKV counted in TCOUNT but
-    # never emitted a single TINFO line for (e.g. truncated stdout) still
-    # gets a placeholder entry below, rather than vanishing from the scan.
-    want_indices = (set(range(tcount)) if tcount is not None else set()) | set(titles)
+    # Every index that MakeMKV actually described (any TINFO line) gets a
+    # ScanTitle, even with no usable duration — that's a real title, and
+    # dropping it lets MakeMKV rip an unattributed "straggler" file.
+    #
+    # Indices implied ONLY by TCOUNT are deliberately NOT synthesised. Such an
+    # index means the parse was truncated, not that a title is there, and a
+    # phantom Track is worse than a missing one: it is duration-less, so the rip
+    # dispatcher treats it as eligible, and since files are attributed to the
+    # eligible list positionally, a title MakeMKV never produces shifts every
+    # later file onto the wrong Track (wrong output_path/size, wrong transcode
+    # input and filename). At best it can never get a file, is PATCHed FAILED,
+    # and downgrades an otherwise clean rip to ripped_partial.
+    want_indices = set(titles)
 
     parsed: list[ScanTitle] = []
     missing_duration: list[int] = []
     for idx in sorted(want_indices):
-        entry = titles.get(idx, {})
+        entry = titles[idx]
         duration_obj = entry.get("duration_seconds")
         duration = duration_obj if isinstance(duration_obj, int) else None
         if duration is None:
@@ -183,6 +193,18 @@ def parse_makemkvcon_info(
             "unattributed 'straggler' output file; indices: %s",
             len(missing_duration),
             missing_duration,
+        )
+
+    if tcount is not None and len(parsed) < tcount:
+        # Truncated/garbled stdout: MakeMKV counted more titles than it described.
+        # We rip what we can see rather than inventing Track rows for the rest —
+        # loud, because the missing titles won't be ripped at all.
+        logger.warning(
+            "makemkvcon TCOUNT=%d but only %d title(s) emitted TINFO output — the remaining "
+            "title(s) are missing from this scan and will not be ripped; observed indices: %s",
+            tcount,
+            len(parsed),
+            [t.index for t in parsed],
         )
 
     if tcount is not None and len(parsed) > tcount:
