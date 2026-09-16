@@ -21,7 +21,7 @@ from arm_backend.metadata import MetadataDispatcher
 from arm_backend.metadata.base import extract_poster_url
 from arm_backend.metadata.dispatcher import DISPATCH_TIMEOUT_SECONDS
 from arm_backend.seeders import CONFIG_SINGLETON_ID
-from arm_backend.track_selection import select_tracks, select_tracks_for_review
+from arm_backend.track_selection import DEFAULT_RIP_PRESET_BY_DISC_TYPE, persist_review_tracks, select_tracks
 from arm_backend.ws import WSHub
 from arm_common import (
     Config,
@@ -60,13 +60,6 @@ logger = logging.getLogger("arm_backend.routers.ripper")
 
 router = APIRouter(prefix="/api/ripper", tags=["ripper"])
 
-_DEFAULT_RIP_PRESET_BY_DISC_TYPE: dict[DiscType, str] = {
-    DiscType.DVD: "rpr_builtin_movie_archive",
-    DiscType.BLURAY: "rpr_builtin_movie_archive",
-    DiscType.CD: "rpr_builtin_music_standard",
-    DiscType.DATA: "rpr_builtin_data_copy",
-}
-
 
 async def _resolve_min_length_override(db: AsyncSession, job: Job) -> int | None:
     """Look up `Session.overrides_json["min_length_seconds"]` for a job
@@ -92,32 +85,6 @@ async def _resolve_min_length_override(db: AsyncSession, job: Job) -> int | None
     if isinstance(raw, int) and raw >= 0:
         return raw
     return None
-
-
-async def _persist_review_tracks(db: AsyncSession, job: Job, scan: ScanResult) -> None:
-    """Persist the scan's titles as Track rows for the timed review gate (§4.3).
-
-    Uses the default rip preset for the disc type to compute keep/drop defaults
-    (`excluded`); the operator overrides per title in review. Idempotent on
-    `(job_id, source_ref)` so a ripper re-POST of identify on the same held disc
-    doesn't double-insert (audit M1) — Track rows have no unique constraint.
-    """
-    preset_id = _DEFAULT_RIP_PRESET_BY_DISC_TYPE.get(job.disc_type)
-    if preset_id is None:  # pragma: no cover - every DiscType has a default preset
-        logger.warning("no default rip preset for disc_type=%s; skipping review tracks", job.disc_type.value)
-        return
-    preset = (await db.execute(select(RipPreset).where(col(RipPreset.id) == preset_id))).scalar_one_or_none()
-    if preset is None:
-        logger.warning("built-in rip preset %s not seeded; skipping review tracks", preset_id)
-        return
-    existing_refs = {
-        t.source_ref for t in (await db.execute(select(Track).where(col(Track.job_id) == job.id))).scalars().all()
-    }
-    for track in select_tracks_for_review(job.id, scan, preset):
-        if track.source_ref in existing_refs:
-            continue
-        db.add(track)
-    await db.flush()
 
 
 def _get_dispatcher(request: Request) -> MetadataDispatcher:
@@ -146,7 +113,8 @@ async def get_ripper_config(session: AsyncSession = Depends(get_session)) -> Rip
         community_keydb_enabled=bool(cfg.community_keydb_enabled),
         makemkv_sdf_enabled=bool(cfg.makemkv_sdf_enabled),
         ripping_paused=bool(cfg.ripping_paused),
-        manual_wait_seconds=int(cfg.manual_wait_seconds) if cfg.manual_wait_seconds is not None else 60,
+        # None = mandatory review mode; don't coerce it to the 60s default.
+        manual_wait_seconds=cfg.manual_wait_seconds,
     )
 
 
@@ -406,7 +374,7 @@ async def identify(
             if cfg.hold_for_review:
                 job.status = JobStatus.AWAITING_REVIEW
                 job.wait_start_time = datetime.now(timezone.utc)
-                await _persist_review_tracks(session, job, scan)
+                await persist_review_tracks(session, job, scan)
             else:
                 job.status = JobStatus.IDENTIFIED
         else:
@@ -476,7 +444,7 @@ async def rip_start(
     session: AsyncSession = Depends(get_session),
     hub: WSHub = Depends(_get_hub),
 ) -> RipStartResponse:
-    preset_id = _DEFAULT_RIP_PRESET_BY_DISC_TYPE.get(job.disc_type)
+    preset_id = DEFAULT_RIP_PRESET_BY_DISC_TYPE.get(job.disc_type)
     if preset_id is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -510,7 +478,7 @@ async def rip_start(
 
     # IDENTIFIED is the normal pre-rip state; AWAITING_REVIEW reaches here only
     # when the timed review gate auto-started (countdown elapsed) a held disc
-    # whose scan yielded NO persistable titles — _persist_review_tracks then
+    # whose scan yielded NO persistable titles — persist_review_tracks then
     # added nothing, so `existing` above was empty. Fall through and select
     # tracks now, exactly as for a never-parked disc; without this the disc
     # 409s and the ripper (4xx = non-retryable) abandons it permanently.
@@ -598,7 +566,7 @@ async def resume(
             detail=f"job not in ripping state: status={job.status.value}",
         )
 
-    preset_id = _DEFAULT_RIP_PRESET_BY_DISC_TYPE.get(job.disc_type)
+    preset_id = DEFAULT_RIP_PRESET_BY_DISC_TYPE.get(job.disc_type)
     if preset_id is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

@@ -1,8 +1,24 @@
-from arm_common import DiscType, RipPreset, Track, TrackKind, TrackSelection
+import logging
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col, select
+
+from arm_common import DiscType, Job, RipPreset, Track, TrackKind, TrackSelection
 from arm_common.schemas import ScanResult, ScanTitle, TrackFilters
+
+logger = logging.getLogger("arm_backend.track_selection")
 
 MAIN_FEATURE_MIN_SECONDS = 45 * 60
 ALL_TRACKS_MIN_SECONDS = 60
+
+# Default rip preset per disc type, used both to compute rip-time track
+# selection and to seed keep/drop defaults for the review gate's Track rows.
+DEFAULT_RIP_PRESET_BY_DISC_TYPE: dict[DiscType, str] = {
+    DiscType.DVD: "rpr_builtin_movie_archive",
+    DiscType.BLURAY: "rpr_builtin_movie_archive",
+    DiscType.CD: "rpr_builtin_music_standard",
+    DiscType.DATA: "rpr_builtin_data_copy",
+}
 
 
 class TrackSelectionError(ValueError):
@@ -151,3 +167,32 @@ def select_tracks_for_review(job_id: str, scan: ScanResult, rip_preset: RipPrese
         track.excluded = str(title.index) not in kept_refs
         rows.append(track)
     return rows
+
+
+async def persist_review_tracks(db: AsyncSession, job: Job, scan: ScanResult) -> None:
+    """Persist the scan's titles as Track rows for the review gate.
+
+    Uses the default rip preset for the disc type to compute keep/drop defaults
+    (`excluded`); the operator overrides per title in review. Idempotent on
+    `(job_id, source_ref)` so re-persisting on the same held disc doesn't
+    double-insert — Track rows have no unique constraint. Shared by the
+    genuine auto-identify hit path (`routers/ripper.py`) and the
+    resolve-driven promotion out of `awaiting_user_id` (`routers/jobs.py`),
+    since neither path is guaranteed to have created Track rows yet.
+    """
+    preset_id = DEFAULT_RIP_PRESET_BY_DISC_TYPE.get(job.disc_type)
+    if preset_id is None:  # pragma: no cover - every DiscType has a default preset
+        logger.warning("no default rip preset for disc_type=%s; skipping review tracks", job.disc_type.value)
+        return
+    preset = (await db.execute(select(RipPreset).where(col(RipPreset.id) == preset_id))).scalar_one_or_none()
+    if preset is None:
+        logger.warning("built-in rip preset %s not seeded; skipping review tracks", preset_id)
+        return
+    existing_refs = {
+        t.source_ref for t in (await db.execute(select(Track).where(col(Track.job_id) == job.id))).scalars().all()
+    }
+    for track in select_tracks_for_review(job.id, scan, preset):
+        if track.source_ref in existing_refs:
+            continue
+        db.add(track)
+    await db.flush()

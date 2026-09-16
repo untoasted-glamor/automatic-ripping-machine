@@ -129,9 +129,11 @@ CONFIG_FIELD_META: list[ConfigFieldMeta] = [
         group="Ripping",
         tier="operator",
         label="Hold discs for review",
-        help="Hold each inserted disc in a timed review state after scan + "
-        "identify, so you can correct it before the rip starts. The rip "
-        "auto-starts when the countdown ends (unless rips are paused).",
+        help="Wait for each inserted disc (and each disc you manually identify "
+        "after a failed auto-identify) before the rip "
+        "starts, so you can correct it first. See the review "
+        "countdown below to set seconds before automatically moving on to ripping the disc, "
+        "or leave it blank to require an explicit confirm click every time.",
         type="bool",
         editable=True,
     ),
@@ -140,7 +142,9 @@ CONFIG_FIELD_META: list[ConfigFieldMeta] = [
         group="Ripping",
         tier="operator",
         label="Review countdown (seconds)",
-        help="How long a held disc waits for review before the rip auto-starts.",
+        help="How long a held disc waits for review before the rip "
+        "auto-starts. Leave blank to never "
+        "auto-start and require confirmation for each disc.",
         type="int",
         editable=True,
     ),

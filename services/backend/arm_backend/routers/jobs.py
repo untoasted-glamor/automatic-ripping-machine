@@ -22,6 +22,7 @@ from arm_backend.path_template import TemplateValidationError
 from arm_backend.routers._params import JobIdParam
 from arm_backend.routers.logs import per_job_log_path
 from arm_backend.seeders import CONFIG_SINGLETON_ID
+from arm_backend.track_selection import persist_review_tracks
 from arm_backend.ws import WSHub
 from arm_common import (
     Config,
@@ -55,6 +56,7 @@ from arm_common.schemas import (
     ResolveRequest,
     ResolveResponse,
     RipProgressSummary,
+    ScanResult,
     SessionApplicationView,
     TrackView,
     TranscodeProgressSummary,
@@ -845,7 +847,12 @@ async def update_job(
 
 # Two reasons a user may resolve identity:
 #   1. Auto-identify failed and the job parked at AWAITING_USER_ID / RIPPED_AWAITING_IDENTIFY.
-#      Resolving promotes it to IDENTIFIED and fan-out kicks any WAITING_IDENTIFY apps.
+#      Resolving promotes it to IDENTIFIED (config.hold_for_review off) — fan-out kicks any
+#      WAITING_IDENTIFY apps — or, for AWAITING_USER_ID only, to AWAITING_REVIEW
+#      (hold_for_review on), so a manually resolved disc passes through the same
+#      confirm-before-rip gate as a genuine auto-identify hit; the operator still has to click
+#      rip-start-review to actually start ripping. RIPPED_AWAITING_IDENTIFY has already been
+#      ripped, so it always goes straight to IDENTIFIED — see the gate_eligible check below.
 #   2. Auto-identify "succeeded" but landed wrong metadata (MakeMKV volume-label fallback,
 #      stale TMDB entry, etc.) and the user wants to correct title/year/metadata after the
 #      fact — possibly post-rip. The status MUST NOT change in this case; fan-out is a no-op
@@ -897,7 +904,29 @@ async def resolve(
     job.disc_total = req.disc_total
     job.metadata_json = new_metadata
     if job.status in _RESOLVABLE_STATUSES_PROMOTE:
-        job.status = JobStatus.IDENTIFIED
+        # Only a PRE-rip job may enter the review gate. RIPPED_AWAITING_IDENTIFY is a
+        # disc whose bits are already on disk (identity landed late), and identify
+        # always attaches a scan_result — so gating on membership in PROMOTE would
+        # park a finished job behind "Confirm & start rip", stamp a fresh countdown,
+        # and let the timed sub-mode re-rip it.
+        gate_eligible = job.status == JobStatus.AWAITING_USER_ID
+        cfg = (
+            (await session.execute(select(Config).where(col(Config.id) == CONFIG_SINGLETON_ID))).scalar_one_or_none()
+            if gate_eligible
+            else None
+        )
+        scan_dict = new_metadata.get("scan_result")
+        if cfg is not None and cfg.hold_for_review and scan_dict:
+            # Route through the same confirm-before-rip gate a genuine auto-identify
+            # hit uses, instead of unblocking the rip immediately. The identify-miss
+            # path never persisted review tracks (they're normally created either
+            # here or at rip-start), so do it now from the scan the ripper attached
+            # to metadata_json at identify time.
+            job.status = JobStatus.AWAITING_REVIEW
+            job.wait_start_time = datetime.now(timezone.utc)
+            await persist_review_tracks(session, job, ScanResult.model_validate(scan_dict))
+        else:
+            job.status = JobStatus.IDENTIFIED
     session.add(job)
 
     fan_out_outcomes = await fan_out_waiting_identify_applications(session, job=job, hub=hub)

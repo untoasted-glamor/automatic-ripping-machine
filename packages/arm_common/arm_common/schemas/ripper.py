@@ -146,9 +146,10 @@ class RipperConfigView(BaseModel):
     # True so older backends omitting it still validate and keep the feature on.
     community_keydb_enabled: bool = True
     makemkv_sdf_enabled: bool = True
-    # Timed review gate: global pause suppresses the auto-start at countdown
-    # expiry; manual_wait_seconds is the countdown duration. The ripper re-reads
-    # these while parked so a mid-wait pause/duration change is honoured.
-    # Defaulted so older backends omitting them still validate (no hold, 60s).
+    # Review gate: global pause suppresses the auto-start at countdown expiry;
+    # manual_wait_seconds is the countdown duration, or None for mandatory mode
+    # (never auto-starts). The ripper re-reads these while parked so a mid-wait
+    # pause/duration change is honoured. Defaulted so older backends omitting
+    # them still validate (no hold, 60s).
     ripping_paused: bool = False
-    manual_wait_seconds: int = 60
+    manual_wait_seconds: int | None = 60

@@ -49,10 +49,20 @@ class _WaitSpec:
     identified) and the review gate (park awaiting_review, succeed on
     identified/ripping).
 
-    `timed` enables the review-gate countdown: while parked, the loop computes a
-    deadline from `wait_start_time + manual_wait_seconds` and, on expiry while NOT
-    paused (global `ripping_paused` OR per-job pause), self-starts the rip. Pause
-    suspends the countdown; the deadline is only honoured while unpaused."""
+    `timed` enables the review-gate countdown check: while parked, the loop
+    computes a deadline from `wait_start_time + manual_wait_seconds` and, on
+    expiry while NOT paused (global `ripping_paused` OR per-job pause),
+    self-starts the rip. Pause suspends the countdown; the deadline is only
+    honoured while unpaused. When `manual_wait_seconds` is None (mandatory
+    review mode), `_review_countdown_expired` always returns False, so `timed`
+    degenerates to "only an explicit Start proceeds" — same shape as the
+    (never-timed) identify gate, just parked on a different status.
+
+    "Only an explicit Start" is about the countdown, not about this loop's
+    lifetime: every wait still gives up after RESOLUTION_WAIT_TIMEOUT_SECONDS
+    and drops the drive lock. That is not a lost disc — the operator's Start
+    flips the job to RIPPING backend-side, and `maybe_reacquire_current_job`
+    picks a RIPPING job back up on the next heartbeat."""
 
     parked: JobStatus
     success: frozenset[JobStatus]
@@ -61,14 +71,22 @@ class _WaitSpec:
 
 
 # Identify gate: disc couldn't auto-ID; wait for the operator to resolve identity.
+# AWAITING_REVIEW is also a success here (not just IDENTIFIED): when
+# hold_for_review is on, resolving out of awaiting_user_id promotes straight to
+# AWAITING_REVIEW instead of IDENTIFIED (see backend routers/jobs.py resolve()),
+# so the manually-resolved disc still passes through the review gate below
+# rather than ripping immediately. Without AWAITING_REVIEW in this success set,
+# _classify_wait would treat that promotion as "left the gate some other way"
+# and abandon the pipeline.
 _IDENTIFY_WAIT = _WaitSpec(
     parked=JobStatus.AWAITING_USER_ID,
-    success=frozenset({JobStatus.IDENTIFIED}),
+    success=frozenset({JobStatus.IDENTIFIED, JobStatus.AWAITING_REVIEW}),
     label="awaiting_user_id",
 )
-# Review gate (timed): disc identified but held for review; wait for Start (which
-# transitions to ripping), the auto-start countdown (ripper self-starts → ripping),
-# or the operator otherwise leaving the gate.
+# Review gate: disc identified but held for review; wait for Start (which
+# transitions to ripping), the auto-start countdown in timed mode (ripper
+# self-starts → ripping; never fires in mandatory mode, see
+# _review_countdown_expired), or the operator otherwise leaving the gate.
 _REVIEW_WAIT = _WaitSpec(
     parked=JobStatus.AWAITING_REVIEW,
     success=frozenset({JobStatus.IDENTIFIED, JobStatus.RIPPING}),
@@ -523,13 +541,15 @@ class JobController:
         """True when a held disc's auto-start countdown has elapsed AND it is not
         paused. Paused — global `ripping_paused` OR this disc's per-job
         `manual_pause` — keeps the countdown suspended, so it returns False and the
-        wait continues. The job view + config are re-read each poll so a mid-wait
-        pause / resume / duration change applies on the next cycle.
+        wait continues. `manual_wait_seconds is None` means mandatory review
+        mode: the countdown never expires, only an explicit rip-start-review
+        click proceeds. The job view + config are re-read each poll so a
+        mid-wait pause / resume / duration change applies on the next cycle.
         """
         if view.manual_pause:
             return False
         cfg = await self._safe_get_ripper_config()
-        if cfg is None or cfg.ripping_paused:
+        if cfg is None or cfg.ripping_paused or cfg.manual_wait_seconds is None:
             return False
         if view.wait_start_time is None:
             return False

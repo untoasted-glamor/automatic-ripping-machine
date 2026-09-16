@@ -8074,7 +8074,14 @@
             "title": "Hold For Review"
           },
           "manual_wait_seconds": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Manual Wait Seconds"
           },
           "default_retention_policy": {
@@ -11909,7 +11916,14 @@
             "default": false
           },
           "manual_wait_seconds": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Manual Wait Seconds",
             "default": 60
           }
@@ -11999,7 +12013,14 @@
             "title": "Index"
           },
           "duration_seconds": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Duration Seconds"
           },
           "chapter_count": {
@@ -12038,8 +12059,7 @@
         },
         "type": "object",
         "required": [
-          "index",
-          "duration_seconds"
+          "index"
         ],
         "title": "ScanTitle"
       },

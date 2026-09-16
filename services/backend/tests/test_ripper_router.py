@@ -401,7 +401,7 @@ def test_identify_with_hold_parks_review(signing_key: bytes) -> None:
 async def test_persist_review_tracks_is_idempotent() -> None:
     """Idempotency (audit M1): a title whose Track row already exists (ripper
     re-POSTed identify on the same held disc) is NOT re-inserted."""
-    from arm_backend.routers.ripper import _persist_review_tracks
+    from arm_backend.track_selection import persist_review_tracks as _persist_review_tracks
     from arm_common import Job as _Job, Track as _Track, TrackKind as _TrackKind
     from arm_common.schemas import ScanResult as _ScanResult, ScanTitle as _ScanTitle
 

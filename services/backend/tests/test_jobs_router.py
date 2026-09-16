@@ -618,6 +618,37 @@ def test_resolve_accepts_ripped_awaiting_identify(signing_key: bytes) -> None:
     assert body["fan_out"] == []
 
 
+def test_resolve_ripped_awaiting_identify_skips_review_gate(signing_key: bytes) -> None:
+    """A disc that has ALREADY ripped must never be parked in the pre-rip review
+    gate, even with hold_for_review on and a scan_result in metadata_json (identify
+    always attaches one). Parking it would show "Confirm & start rip" on a finished
+    job and let the timed sub-mode re-rip it."""
+    from arm_common import Config, RetentionPolicy
+
+    db = FakeSession()
+    app, token = _make_app(signing_key, db)
+    db.rows["config"] = [
+        Config(id=1, hold_for_review=True, default_retention_policy=RetentionPolicy.PRUNE_AFTER_SESSION)
+    ]
+    db.rows["jobs"] = [
+        _job(
+            status=JobStatus.RIPPED_AWAITING_IDENTIFY,
+            meta={"scan_result": {"disc_type": "dvd", "titles": [{"index": 1, "duration_seconds": 8000}]}},
+        )
+    ]
+    db.rows["tracks"] = []
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/resolve",
+            json={"title": "Home Movie", "year": 2020},
+            headers=_auth(token),
+        )
+    assert r.status_code == 200
+    assert r.json()["job"]["status"] == "identified"
+    assert db.rows["jobs"][0].wait_start_time is None
+    assert db.rows["tracks"] == []
+
+
 def test_resolve_success_without_preserved_scan(signing_key: bytes) -> None:
     """job.metadata_json starts empty — merge yields exactly what the caller sent."""
     db = FakeSession()

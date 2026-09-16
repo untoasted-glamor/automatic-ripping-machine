@@ -56,10 +56,13 @@ def _to_view(cfg: Config) -> ConfigView:
         community_keydb_enabled=bool(cfg.community_keydb_enabled),
         makemkv_sdf_enabled=bool(cfg.makemkv_sdf_enabled),
         ripping_paused=bool(cfg.ripping_paused),
-        # bool()/int() coerce the None a bare in-memory Config carries (DB-level
-        # server_default only) for rows/fixtures predating these columns.
+        # bool() coerces the None a bare in-memory Config carries (DB-level
+        # server_default only) for rows/fixtures predating this column.
+        # manual_wait_seconds is genuinely nullable (None = mandatory review
+        # mode) — do NOT coerce it, that would silently turn mandatory mode
+        # back into a 60s timed countdown.
         hold_for_review=bool(cfg.hold_for_review),
-        manual_wait_seconds=int(cfg.manual_wait_seconds) if cfg.manual_wait_seconds is not None else 60,
+        manual_wait_seconds=cfg.manual_wait_seconds,
         default_retention_policy=cfg.default_retention_policy,
         notification_apprise_urls=list(cfg.notification_apprise_urls or []),
         notifications_enabled=cfg.notifications_enabled,

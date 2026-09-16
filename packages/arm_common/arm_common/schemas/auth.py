@@ -52,7 +52,7 @@ class ConfigView(BaseModel):
     makemkv_sdf_enabled: bool
     ripping_paused: bool
     hold_for_review: bool
-    manual_wait_seconds: int
+    manual_wait_seconds: int | None
     default_retention_policy: RetentionPolicy
     notification_apprise_urls: list[str]
     notifications_enabled: bool
