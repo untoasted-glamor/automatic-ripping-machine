@@ -1,7 +1,8 @@
 from pathlib import Path
 
 from arm_common import DiscType
-from arm_ripper.scan.makemkv import parse_makemkvcon_info
+from arm_common.schemas import ScanTitle
+from arm_ripper.scan.makemkv import _classify_from_titles, parse_makemkvcon_info
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -35,18 +36,29 @@ def test_handles_disc_with_no_titles():
     assert disc_type is None
 
 
-def test_skips_titles_without_duration():
+def test_includes_titles_without_duration(caplog):
+    # No TCOUNT here, so the only way title 5 is known at all is its TINFO
+    # lines — it must still surface in the scan (duration_seconds=None)
+    # rather than vanishing, so MakeMKV can't rip an untracked "straggler".
     lines = ['TINFO:5,8,0,"4"', 'TINFO:5,27,0,"title05.mkv"']
-    _, titles, _ = parse_makemkvcon_info(lines)
-    assert titles == []
+    with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv"):
+        _, titles, _ = parse_makemkvcon_info(lines)
+
+    assert len(titles) == 1
+    assert titles[0].index == 5
+    assert titles[0].duration_seconds is None
+    assert titles[0].chapter_count == 4
+    assert titles[0].source_file == "title05.mkv"
+    assert len(caplog.records) == 1
+    assert "indices: [5]" in caplog.records[0].getMessage()
 
 
-def test_warns_when_tcount_exceeds_parsed_titles(caplog):
-    # Title 0 has a duration and survives; title 1 is seen (TCOUNT counts it)
-    # but never gets a usable TINFO:t,9 duration line, so it's dropped. This
-    # is the "stragglers" bug: MakeMKV may still rip title 1, producing an
-    # output file with no corresponding scanned/DB title — the cross-check
-    # must surface that instead of staying silent.
+def test_warns_about_and_includes_title_missing_duration(caplog):
+    # Title 0 has a duration; title 1 is seen (TCOUNT counts it, and it has
+    # TINFO lines) but never gets a usable TINFO:t,9 duration line. This
+    # used to be the "stragglers" bug: MakeMKV may still rip title 1,
+    # producing an output file with no corresponding scanned/DB title.
+    # It must now still appear in the scan, with duration_seconds=None.
     lines = [
         "TCOUNT:2",
         'TINFO:0,9,0,"1:30:00"',
@@ -56,27 +68,37 @@ def test_warns_when_tcount_exceeds_parsed_titles(caplog):
     with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv"):
         _, titles, _ = parse_makemkvcon_info(lines)
 
-    assert len(titles) == 1
+    assert len(titles) == 2
     assert titles[0].index == 0
+    assert titles[0].duration_seconds == 90 * 60
+    assert titles[1].index == 1
+    assert titles[1].duration_seconds is None
+    assert titles[1].chapter_count == 4
+    assert titles[1].source_file == "title01.mkv"
     assert len(caplog.records) == 1
     message = caplog.records[0].getMessage()
-    assert "TCOUNT=2" in message
-    assert "1 parsed" in message
-    assert "not parsed: [1]" in message
+    assert "1 title(s)" in message
+    assert "indices: [1]" in message
 
 
-def test_warning_names_titles_with_no_tinfo_at_all(caplog):
-    # e.g. truncated stdout: TCOUNT says 3 but title 2 never appears.
+def test_synthesises_placeholder_for_title_with_no_tinfo_at_all(caplog):
+    # e.g. truncated stdout: TCOUNT says 3 but title 2 never appears in any
+    # TINFO line — it still gets a placeholder ScanTitle (all fields None
+    # except index) instead of being dropped.
     lines = ["TCOUNT:3", 'TINFO:0,9,0,"1:30:00"', 'TINFO:1,9,0,"0:05:00"']
     with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv"):
         _, titles, _ = parse_makemkvcon_info(lines)
 
-    assert len(titles) == 2
+    assert len(titles) == 3
+    assert titles[2].index == 2
+    assert titles[2].duration_seconds is None
+    assert titles[2].chapter_count is None
+    assert titles[2].source_file is None
     assert len(caplog.records) == 1
-    assert "not parsed: [2]" in caplog.records[0].getMessage()
+    assert "indices: [2]" in caplog.records[0].getMessage()
 
 
-def test_warning_when_tcount_below_parsed_titles(caplog):
+def test_warning_when_tcount_lower_than_observed_titles(caplog):
     lines = ["TCOUNT:1", 'TINFO:0,9,0,"1:30:00"', 'TINFO:1,9,0,"0:05:00"']
     with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv"):
         _, titles, _ = parse_makemkvcon_info(lines)
@@ -84,8 +106,7 @@ def test_warning_when_tcount_below_parsed_titles(caplog):
     assert len(titles) == 2
     assert len(caplog.records) == 1
     message = caplog.records[0].getMessage()
-    assert "TCOUNT=1 does not match 2 parsed" in message
-    assert "only" not in message
+    assert "TCOUNT=1 is lower than the 2 title index(es)" in message
 
 
 def test_no_warning_when_tcount_matches_parsed_titles(caplog):
@@ -132,6 +153,13 @@ def test_classifies_dvd_disc_suffix_from_cinfo():
     volume_label, _, disc_type = parse_makemkvcon_info(lines)
     assert volume_label == "BLOOD DIAMOND"
     assert disc_type == DiscType.DVD
+
+
+def test_classify_from_titles_falls_back_to_dvd_when_all_durations_unknown():
+    # Degenerate scan: CINFO:1 missing AND no title has a usable duration.
+    # Must not crash trying to max() an empty/None-only sequence.
+    titles = [ScanTitle(index=0, duration_seconds=None), ScanTitle(index=1, duration_seconds=None)]
+    assert _classify_from_titles(titles) == DiscType.DVD
 
 
 def test_hd_dvd_does_not_match_dvd_branch():

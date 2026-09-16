@@ -51,6 +51,26 @@ def test_custom_max_duration_filters_long_tracks() -> None:
     assert sorted(t.index for t in result) == [1, 2]
 
 
+def test_custom_min_duration_excludes_unknown_duration() -> None:
+    scan = ScanResult(
+        disc_type=DiscType.DVD,
+        titles=[ScanTitle(index=1, duration_seconds=3600), ScanTitle(index=2, duration_seconds=None)],
+    )
+    preset = _custom_preset({"min_duration_seconds": 100})
+    result = select_tracks("job_01JZXR7K3M5Q8N4VWA00000001", scan, preset)
+    assert sorted(t.index for t in result) == [1]
+
+
+def test_custom_max_duration_excludes_unknown_duration() -> None:
+    scan = ScanResult(
+        disc_type=DiscType.DVD,
+        titles=[ScanTitle(index=1, duration_seconds=120), ScanTitle(index=2, duration_seconds=None)],
+    )
+    preset = _custom_preset({"max_duration_seconds": 200})
+    result = select_tracks("job_01JZXR7K3M5Q8N4VWA00000001", scan, preset)
+    assert sorted(t.index for t in result) == [1]
+
+
 def test_custom_indices_allowlist() -> None:
     scan = _scan(60, 60, 60, 60)
     preset = _custom_preset({"title_indices": [1, 3]})

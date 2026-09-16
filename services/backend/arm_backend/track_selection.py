@@ -46,7 +46,15 @@ def _parse_filters(rip_preset: RipPreset) -> TrackFilters:
 
 
 def _apply_custom_filters(titles: list[ScanTitle], filters: TrackFilters) -> list[ScanTitle]:
-    """AND-of-conditions filter. `title_indices` (allowlist) restricts first; min/max + exclude apply after."""
+    """AND-of-conditions filter. `title_indices` (allowlist) restricts first; min/max + exclude apply after.
+
+    A title with `duration_seconds is None` (scan couldn't determine it — see
+    `ScanTitle`) fails both a min and a max threshold: we can't verify it
+    meets either bound, and the conservative choice is to leave it out of an
+    automatic selection rather than guess. It still gets a Track row via
+    `select_tracks_for_review` (excluded by default), so the operator can
+    include it manually.
+    """
     candidates = titles
     if filters.title_indices is not None:
         allow = set(filters.title_indices)
@@ -56,10 +64,10 @@ def _apply_custom_filters(titles: list[ScanTitle], filters: TrackFilters) -> lis
         candidates = [t for t in candidates if t.index not in deny]
     if filters.min_duration_seconds is not None:
         threshold = filters.min_duration_seconds
-        candidates = [t for t in candidates if t.duration_seconds >= threshold]
+        candidates = [t for t in candidates if t.duration_seconds is not None and t.duration_seconds >= threshold]
     if filters.max_duration_seconds is not None:
         ceiling = filters.max_duration_seconds
-        candidates = [t for t in candidates if t.duration_seconds <= ceiling]
+        candidates = [t for t in candidates if t.duration_seconds is not None and t.duration_seconds <= ceiling]
     return candidates
 
 
@@ -69,11 +77,22 @@ def _select_video(scan: ScanResult, rip_preset: RipPreset, job_id: str) -> list[
         return []
     rule = rip_preset.track_selection
     if rule == TrackSelection.MAIN_FEATURE:
-        eligible = [t for t in titles if t.duration_seconds >= MAIN_FEATURE_MIN_SECONDS]
-        chosen = max(eligible or titles, key=lambda t: t.duration_seconds)
+        eligible = [
+            t for t in titles if t.duration_seconds is not None and t.duration_seconds >= MAIN_FEATURE_MIN_SECONDS
+        ]
+        # `or 0` ranks an unknown-duration title below any known duration
+        # (including a real one that happens to be 0s) without excluding it
+        # outright — it only wins the pick when every title's duration is
+        # unknown (degenerate scan), in which case picking the first one is
+        # as good a guess as any.
+        chosen = max(eligible or titles, key=lambda t: t.duration_seconds or 0)
         return [_video_track(job_id, chosen)]
     if rule == TrackSelection.ALL_TRACKS:
-        return [_video_track(job_id, t) for t in titles if t.duration_seconds >= ALL_TRACKS_MIN_SECONDS]
+        return [
+            _video_track(job_id, t)
+            for t in titles
+            if t.duration_seconds is not None and t.duration_seconds >= ALL_TRACKS_MIN_SECONDS
+        ]
     if rule == TrackSelection.ARCHIVE:
         return [_video_track(job_id, t) for t in titles]
     if rule == TrackSelection.CUSTOM:

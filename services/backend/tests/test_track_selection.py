@@ -82,6 +82,60 @@ def test_empty_scan_returns_empty():
     assert tracks == []
 
 
+def test_all_tracks_excludes_unknown_duration():
+    scan = ScanResult(
+        disc_type=DiscType.DVD,
+        titles=[
+            ScanTitle(index=0, duration_seconds=3600),
+            ScanTitle(index=1, duration_seconds=None),
+        ],
+    )
+    tracks = select_tracks("job_01JZXR7K3M5Q8N4VWA00000001", scan, _preset(TrackSelection.ALL_TRACKS))
+    assert [t.index for t in tracks] == [0]
+
+
+def test_main_feature_prefers_known_duration_over_unknown():
+    scan = ScanResult(
+        disc_type=DiscType.DVD,
+        titles=[
+            ScanTitle(index=0, duration_seconds=None),
+            ScanTitle(index=1, duration_seconds=90 * 60),
+        ],
+    )
+    tracks = select_tracks("job_01JZXR7K3M5Q8N4VWA00000001", scan, _preset(TrackSelection.MAIN_FEATURE))
+    assert len(tracks) == 1
+    assert tracks[0].index == 1
+
+
+def test_main_feature_falls_back_to_first_title_when_all_durations_unknown():
+    scan = ScanResult(
+        disc_type=DiscType.DVD,
+        titles=[ScanTitle(index=0, duration_seconds=None), ScanTitle(index=1, duration_seconds=None)],
+    )
+    tracks = select_tracks("job_01JZXR7K3M5Q8N4VWA00000001", scan, _preset(TrackSelection.MAIN_FEATURE))
+    assert len(tracks) == 1
+    assert tracks[0].index == 0
+
+
+def test_review_persists_title_with_unknown_duration_excluded():
+    """A title the scan couldn't determine a duration for (e.g. missing
+    TINFO:t,9) still gets a Track row via the review path — it's no longer
+    dropped from ScanResult.titles — but stays excluded by default since no
+    rule can confirm it meets a length threshold."""
+    scan = ScanResult(
+        disc_type=DiscType.DVD,
+        titles=[
+            ScanTitle(index=0, duration_seconds=90 * 60),
+            ScanTitle(index=1, duration_seconds=None),
+        ],
+    )
+    tracks = select_tracks_for_review("job_01JZXR7K3M5Q8N4VWA00000001", scan, _preset(TrackSelection.ALL_TRACKS))
+    assert [t.index for t in tracks] == [0, 1]
+    by_index = {t.index: t for t in tracks}
+    assert not by_index[0].excluded
+    assert by_index[1].excluded
+
+
 def test_data_disc_emits_single_dump():
     scan = ScanResult(disc_type=DiscType.DATA, volume_label="DATA_DISC")
     tracks = select_tracks("job_01JZXR7K3M5Q8N4VWA00000001", scan, _preset(TrackSelection.ALL_TRACKS))

@@ -61,7 +61,12 @@ class RipperHeartbeatRequest(BaseModel):
 
 class ScanTitle(BaseModel):
     index: int
-    duration_seconds: int
+    # None when makemkvcon reported the title (TCOUNT, or some other TINFO
+    # code) but never emitted a usable TINFO:t,9 duration line for it. Still
+    # included rather than dropped — see parse_makemkvcon_info — so it gets
+    # a Track row and MakeMKV can't produce an unattributed "straggler"
+    # output file for it.
+    duration_seconds: int | None = None
     chapter_count: int | None = None
     size_bytes: int | None = None
     source_file: str | None = None

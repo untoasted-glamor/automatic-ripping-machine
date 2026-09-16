@@ -87,10 +87,13 @@ def parse_makemkvcon_info(
     - TINFO:t,8,...  — chapter count
     - TINFO:t,11,... — title size in bytes
     - TINFO:t,27,... — source filename (e.g. title_t00.mkv)
-    - TCOUNT:n       — MakeMKV's own title count. Cross-checked below against
-                       what we actually parsed so a title MakeMKV saw but we
-                       dropped (e.g. no usable duration) is logged instead of
-                       silently vanishing.
+    - TCOUNT:n       — MakeMKV's own title count. Every index it implies
+                       (0..TCOUNT-1) gets a ScanTitle even when no TINFO
+                       line named it, or its TINFO:t,9 duration was missing
+                       or unparsable — with duration_seconds=None — so a
+                       title MakeMKV counted is never silently dropped from
+                       the scan (that used to let MakeMKV rip an untracked
+                       "straggler" file with no matching Track row).
 
     Reference: https://github.com/automatic-ripping-machine/automatic-ripping-machine/wiki/MakeMKV-Codes
     """
@@ -147,37 +150,46 @@ def parse_makemkvcon_info(
             elif code == 27:
                 entry["source_file"] = value
 
+    # Union, not just `titles.keys()`: a title MakeMKV counted in TCOUNT but
+    # never emitted a single TINFO line for (e.g. truncated stdout) still
+    # gets a placeholder entry below, rather than vanishing from the scan.
+    want_indices = (set(range(tcount)) if tcount is not None else set()) | set(titles)
+
     parsed: list[ScanTitle] = []
-    for idx in sorted(titles):
-        entry = titles[idx]
+    missing_duration: list[int] = []
+    for idx in sorted(want_indices):
+        entry = titles.get(idx, {})
         duration_obj = entry.get("duration_seconds")
-        if not isinstance(duration_obj, int):
-            continue
+        duration = duration_obj if isinstance(duration_obj, int) else None
+        if duration is None:
+            missing_duration.append(idx)
         chapter_obj = entry.get("chapter_count")
         size_obj = entry.get("size_bytes")
         source_obj = entry.get("source_file")
         parsed.append(
             ScanTitle(
                 index=idx,
-                duration_seconds=duration_obj,
+                duration_seconds=duration,
                 chapter_count=chapter_obj if isinstance(chapter_obj, int) else None,
                 size_bytes=size_obj if isinstance(size_obj, int) else None,
                 source_file=source_obj if isinstance(source_obj, str) else None,
             )
         )
 
-    if tcount is not None and len(parsed) != tcount:
-        parsed_indices = {t.index for t in parsed}
-        # Titles MakeMKV counted but never emitted any TINFO for are included too.
-        unparsed = sorted((set(range(tcount)) | set(titles)) - parsed_indices)
+    if missing_duration:
         logger.warning(
-            "makemkvcon TCOUNT=%d does not match %d parsed usable title(s) (%d title(s) with TINFO; "
-            "indices not parsed: %s) — any MakeMKV output for unparsed titles will have no "
-            "matching scanned title",
+            "makemkvcon reported no usable duration (TINFO:t,9) for %d title(s) — included in the "
+            "scan with duration_seconds=None so they still get a Track row instead of becoming an "
+            "unattributed 'straggler' output file; indices: %s",
+            len(missing_duration),
+            missing_duration,
+        )
+
+    if tcount is not None and len(parsed) > tcount:
+        logger.warning(
+            "makemkvcon TCOUNT=%d is lower than the %d title index(es) actually observed in TINFO output",
             tcount,
             len(parsed),
-            len(titles),
-            unparsed,
         )
 
     return volume_label, parsed, mkv_disc_type
@@ -190,7 +202,10 @@ def _classify_from_titles(titles: list[ScanTitle]) -> DiscType:
     """
     if not titles:
         return DiscType.UNKNOWN
-    longest = max(t.duration_seconds for t in titles)
+    durations = [t.duration_seconds for t in titles if t.duration_seconds is not None]
+    # No title with a known duration at all (degenerate/truncated scan) —
+    # fall through to the size-only check below rather than crashing.
+    longest = max(durations) if durations else 0
     return (
         DiscType.BLURAY
         if longest >= 60 * 60 * 1.5 and any(t.size_bytes is not None and t.size_bytes > 4_700_000_000 for t in titles)
