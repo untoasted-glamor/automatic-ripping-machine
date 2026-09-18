@@ -1130,6 +1130,10 @@ export type Job = {
      */
     disc_total: number | null;
     /**
+     * Season Number
+     */
+    season_number: number | null;
+    /**
      * Poster Url
      */
     poster_url: string | null;
@@ -1252,7 +1256,7 @@ export type JobStatus = 'created' | 'awaiting_user_id' | 'identified' | 'ripping
 /**
  * JobUpdateRequest
  *
- * PATCH /api/jobs/{id} body. `poster_url_manual` + disc fields edit the job;
+ * PATCH /api/jobs/{id} body. `poster_url_manual` + season/disc fields edit the job;
  * `tracks` applies per-track operator edits in the same atomic save. The JOB's
  * title/year still live behind identify/resolve.
  */
@@ -1269,6 +1273,10 @@ export type JobUpdateRequest = {
      * Disc Total
      */
     disc_total?: number | null;
+    /**
+     * Season Number
+     */
+    season_number?: number | null;
     /**
      * Tracks
      */
@@ -1309,6 +1317,10 @@ export type JobView = {
      * Disc Total
      */
     disc_total?: number | null;
+    /**
+     * Season Number
+     */
+    season_number?: number | null;
     /**
      * Poster Url
      */
@@ -2308,6 +2320,10 @@ export type ResolveRequest = {
      * Disc Total
      */
     disc_total?: number | null;
+    /**
+     * Season Number
+     */
+    season_number?: number | null;
     /**
      * Metadata
      */

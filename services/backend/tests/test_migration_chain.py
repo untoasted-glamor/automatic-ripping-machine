@@ -17,7 +17,7 @@ from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 from alembic.script import ScriptDirectory  # noqa: E402
 
-from arm_common import User  # noqa: E402
+from arm_common import Job, User  # noqa: E402
 
 _BACKEND_DIR = Path(__file__).parent.parent
 
@@ -111,3 +111,25 @@ def test_0028_matches_the_user_model() -> None:
         assert f"ADD COLUMN {name} " in sql, f"0028 does not add users.{name}"
         assert not column.nullable, f"User.{name} is nullable but 0028 declares NOT NULL"
         assert column.server_default is not None, f"User.{name} has no server_default to match 0028's"
+
+
+_SEASON_PARENT_REV = "0029_config_wait_nullable"
+_SEASON_REV = "0030_job_season_number"
+
+
+def test_0030_upgrade_adds_the_job_season_column() -> None:
+    sql = _render_sql(_SEASON_PARENT_REV, _SEASON_REV)
+    assert "ALTER TABLE jobs ADD COLUMN season_number INTEGER" in sql
+
+
+def test_0030_downgrade_drops_the_job_season_column() -> None:
+    sql = _render_sql(_SEASON_REV, _SEASON_PARENT_REV, downgrade=True)
+    assert "ALTER TABLE jobs DROP COLUMN season_number" in sql
+
+
+def test_0030_matches_the_job_model() -> None:
+    """`{season}` resolves straight off this column, so a model/migration
+    mismatch here is an apply-time 500 rather than a test failure."""
+    column = Job.__table__.columns["season_number"]
+    assert column.nullable, "Job.season_number must stay nullable — season is optional operator input"
+    assert "NOT NULL" not in _render_sql(_SEASON_PARENT_REV, _SEASON_REV)

@@ -9440,6 +9440,17 @@
             ],
             "title": "Disc Total"
           },
+          "season_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Season Number"
+          },
           "poster_url": {
             "anyOf": [
               {
@@ -9547,6 +9558,7 @@
           "year",
           "disc_number",
           "disc_total",
+          "season_number",
           "poster_url",
           "poster_url_manual",
           "status",
@@ -9699,6 +9711,17 @@
             ],
             "title": "Disc Total"
           },
+          "season_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Season Number"
+          },
           "tracks": {
             "anyOf": [
               {
@@ -9717,7 +9740,7 @@
         "additionalProperties": false,
         "type": "object",
         "title": "JobUpdateRequest",
-        "description": "PATCH /api/jobs/{id} body. `poster_url_manual` + disc fields edit the job;\n`tracks` applies per-track operator edits in the same atomic save. The JOB's\ntitle/year still live behind identify/resolve."
+        "description": "PATCH /api/jobs/{id} body. `poster_url_manual` + season/disc fields edit the job;\n`tracks` applies per-track operator edits in the same atomic save. The JOB's\ntitle/year still live behind identify/resolve."
       },
       "JobView": {
         "properties": {
@@ -9796,6 +9819,17 @@
               }
             ],
             "title": "Disc Total"
+          },
+          "season_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Season Number"
           },
           "poster_url": {
             "anyOf": [
@@ -11563,6 +11597,17 @@
               }
             ],
             "title": "Disc Total"
+          },
+          "season_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Season Number"
           },
           "metadata": {
             "additionalProperties": true,

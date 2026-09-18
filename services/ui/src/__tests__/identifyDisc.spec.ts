@@ -59,11 +59,50 @@ describe('IdentifyDiscDialog.vue', () => {
     const call = fetchMock.mock.calls[0]
     expect(call[0]).toMatch(/\/api\/jobs\/job_x\/resolve$/)
     const body = JSON.parse((call[1] as RequestInit).body as string)
-    expect(body).toEqual({ title: 'Iron Man', year: 2008 })
+    // season/disc ride along as explicit nulls: resolve assigns them
+    // unconditionally, so omitting them would clear whatever was set before.
+    expect(body).toEqual({
+      title: 'Iron Man',
+      year: 2008,
+      season_number: null,
+      disc_number: null,
+      disc_total: null,
+    })
 
     const emitted = wrapper.emitted('identified')
     expect(emitted).toBeTruthy()
     expect(emitted![0][0]).toEqual(resp)
+  })
+
+  it('sends the season/disc box-set fields typed into the form', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(resolveSuccessResponse()))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(IdentifyDiscDialog, { props: { job: makeJob() } })
+    await wrapper.find('[data-testid="identify-title"]').setValue('ACCA')
+    await wrapper.find('[data-testid="identify-season-number"]').setValue('1')
+    await wrapper.find('[data-testid="identify-disc-number"]').setValue('2')
+    await wrapper.find('[data-testid="identify-disc-total"]').setValue('3')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.season_number).toBe(1)
+    expect(body.disc_number).toBe(2)
+    expect(body.disc_total).toBe(3)
+  })
+
+  it('seeds season/disc from the job so an edit does not clear them', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(resolveSuccessResponse()))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const job = makeJob({ title: 'ACCA', season_number: 1, disc_number: 2, disc_total: 3 })
+    const wrapper = mount(IdentifyDiscDialog, { props: { job } })
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body).toMatchObject({ season_number: 1, disc_number: 2, disc_total: 3 })
   })
 
   it('submit is disabled while title is blank or whitespace, enabled once set', async () => {
@@ -191,6 +230,8 @@ describe('IdentifyDiscDialog.vue', () => {
       expect(body).toEqual({
         title: 'Animals',
         year: 1977,
+        disc_number: null,
+        disc_total: null,
         metadata: {
           artist: 'Pink Floyd',
           album: 'Animals',

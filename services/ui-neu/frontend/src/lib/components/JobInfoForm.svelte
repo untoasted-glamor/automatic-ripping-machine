@@ -26,7 +26,14 @@
 	let year = $state('');
 	let discNumber = $state('');
 	let discTotal = $state('');
-	let touched = $state<{ title?: boolean; year?: boolean; discNumber?: boolean; discTotal?: boolean }>({});
+	let seasonNumber = $state('');
+	let touched = $state<{
+		title?: boolean;
+		year?: boolean;
+		discNumber?: boolean;
+		discTotal?: boolean;
+		seasonNumber?: boolean;
+	}>({});
 	let saving = $state(false);
 	let feedback = $state<{ type: 'success' | 'error'; message: string } | null>(null);
 
@@ -39,6 +46,8 @@
 		if (!touched.year) year = job.year != null ? String(job.year) : '';
 		if (!touched.discNumber) discNumber = job.disc_number != null ? String(job.disc_number) : '';
 		if (!touched.discTotal) discTotal = job.disc_total != null ? String(job.disc_total) : '';
+		if (!touched.seasonNumber)
+			seasonNumber = job.season_number != null ? String(job.season_number) : '';
 	});
 
 	function num(v: string): number | null {
@@ -56,6 +65,7 @@
 				year: num(year),
 				disc_number: num(discNumber),
 				disc_total: num(discTotal),
+				season_number: num(seasonNumber),
 				metadata: {}
 			});
 			touched = {};
@@ -110,9 +120,22 @@
 		</div>
 	</div>
 
-	<!-- Disc section -->
-	<p class="mb-2 mt-4 text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Disc</p>
+	<!-- Season / disc section -->
+	<p class="mb-2 mt-4 text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Season &amp; disc</p>
 	<div class="flex gap-3">
+		<div class="w-28">
+			<label for="info-season-{job.id}" class="block text-xs font-medium text-gray-600 dark:text-gray-300">Season</label>
+			<input
+				id="info-season-{job.id}"
+				aria-label="Season"
+				type="number"
+				bind:value={seasonNumber}
+				oninput={() => (touched = { ...touched, seasonNumber: true })}
+				disabled={!resolvable}
+				placeholder="—"
+				class="mt-1 w-full rounded-md border border-primary/25 bg-primary/5 px-2 py-1.5 text-sm text-gray-900 focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary disabled:opacity-50 dark:border-primary/30 dark:bg-primary/10 dark:text-white"
+			/>
+		</div>
 		<div class="w-28">
 			<label for="info-discno-{job.id}" class="block text-xs font-medium text-gray-600 dark:text-gray-300">Disc number</label>
 			<input
@@ -141,7 +164,8 @@
 		</div>
 	</div>
 	<p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-		For multi-disc sets (box sets, TV seasons) set this disc's position. Leave blank for a single disc.
+		Operator input — nothing on the disc records either. Sessions whose template uses <code>{'{season}'}</code>
+		or <code>{'{disc}'}</code> can't be applied until these are set. Leave blank for a single-disc film.
 	</p>
 
 	<!-- Save bar (metadata): appears when there are unsaved edits -->

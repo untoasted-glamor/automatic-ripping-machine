@@ -32,6 +32,6 @@ describe('resolveJob with disc fields', () => {
 		mockFetch.mockResolvedValue(jsonResponse({ job: {}, fan_out: [] }));
 		await resolveJob('job_1', { title: 'Abbey Road', year: 1969, disc_number: 1, disc_total: 2, metadata: { artist: 'X' } });
 		const body = JSON.parse((mockFetch.mock.calls[0][1] as RequestInit).body as string);
-		expect(body).toEqual({ title: 'Abbey Road', year: 1969, disc_number: 1, disc_total: 2, metadata: { artist: 'X' } });
+		expect(body).toEqual({ title: 'Abbey Road', year: 1969, disc_number: 1, disc_total: 2, season_number: null, metadata: { artist: 'X' } });
 	});
 });

@@ -132,14 +132,18 @@ export function resolveJob(
 		year?: number | null;
 		disc_number?: number | null;
 		disc_total?: number | null;
+		season_number?: number | null;
 		metadata?: Record<string, unknown>;
 	}
 ): Promise<ResolveResponse> {
+	// Every field is sent explicitly because resolve assigns them
+	// unconditionally — an omitted season/disc clears the stored value.
 	return post<ResolveResponse>(`/api/jobs/${jobId}/resolve`, {
 		title: body.title,
 		year: body.year ?? null,
 		disc_number: body.disc_number ?? null,
 		disc_total: body.disc_total ?? null,
+		season_number: body.season_number ?? null,
 		metadata: body.metadata ?? {}
 	});
 }

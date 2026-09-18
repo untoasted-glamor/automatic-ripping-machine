@@ -46,6 +46,17 @@ class ResolvedTask(NamedTuple):
     output_path: str
 
 
+def _zero_pad(value: object) -> str:
+    """Render a season/disc number zero-padded to two digits (arch §02).
+
+    The save-time synthetic context previews both tokens as `01`, so padding
+    here is what keeps the preview honest. Non-numeric values (a metadata_json
+    string like `"Specials"`) pass through untouched.
+    """
+    text = str(value if value is not None else "").strip()
+    return f"{int(text):02d}" if text.isdigit() else text
+
+
 def _format_duration_human(seconds: int | None) -> str:
     if seconds is None or seconds <= 0:
         return ""
@@ -81,6 +92,15 @@ def _build_track_ctx(
     eff_year = track.year if track.year is not None else job.year
     episode = f"{track.episode_number:02d}" if track.episode_number is not None else ""
 
+    # Season/disc are operator input (arch §02 — MakeMKV surfaces no such signal),
+    # so the first-class job columns win. metadata_json is the fallback: the
+    # MusicBrainz identifier writes `disc` there from the matched medium's
+    # position, and it's the only writer of either key. Reading metadata alone
+    # was the bug — a box set with the disc number typed into the identify
+    # dialog still failed apply with "{disc} resolved empty".
+    eff_season = job.season_number if job.season_number is not None else metadata.get("season")
+    eff_disc = job.disc_number if job.disc_number is not None else metadata.get("disc")
+
     # Human-readable metadata fields land inside path segments; sanitise
     # so titles like "Crown / She Said" don't introduce a phantom path
     # level that ffmpeg fails to open. `track`, `transcode_slug`, and
@@ -90,8 +110,8 @@ def _build_track_ctx(
         "title": sanitize_path_component(eff_title),
         "year": str(eff_year) if eff_year is not None else "",
         "show": sanitize_path_component(job.title or ""),
-        "season": sanitize_path_component(str(metadata.get("season") or "")),
-        "disc": sanitize_path_component(str(metadata.get("disc") or "")),
+        "season": sanitize_path_component(_zero_pad(eff_season)),
+        "disc": sanitize_path_component(_zero_pad(eff_disc)),
         "track": track_index_padded,
         "episode": episode,
         "episode_title": sanitize_path_component(track.episode_name or ""),
@@ -118,6 +138,15 @@ def _track_kinds_for_media(media_type: MediaType) -> set[TrackKind]:
     return set()  # pragma: no cover — MediaType is exhaustively handled above
 
 
+# Season and disc are operator input with no automatic source (arch §02), so an
+# empty one is a "fill this in" prompt rather than a defect. Name the field the
+# user has to set instead of leaving them to guess what the token reads.
+_EMPTY_TOKEN_HINTS: dict[str, str] = {
+    "season": " — set the job's season number, or pick a session whose template omits {season}",
+    "disc": " — set the job's disc number, or pick a session whose template omits {disc}",
+}
+
+
 def compute_outputs(
     job: Job,
     tracks: list[Track],
@@ -139,6 +168,7 @@ def compute_outputs(
             if not ctx.get(token):
                 raise TemplateValidationError(
                     f"track index={track.index}: token {{{token}}} resolved empty against the job's metadata"
+                    f"{_EMPTY_TOKEN_HINTS.get(token, '')}"
                 )
         path = expand_template(template, ctx)
         if track.custom_filename:

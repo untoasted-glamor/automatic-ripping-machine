@@ -63,13 +63,15 @@ describe('JobInfoForm', () => {
 			year: 1986,
 			disc_number: null,
 			disc_total: null,
+			season_number: null,
 			metadata: {}
 		});
 		await waitFor(() => expect(onrefresh).toHaveBeenCalled());
 	});
 
-	it('Save sends the seeded title even on a disc-only change', async () => {
+	it('Save sends the seeded title even on a season/disc-only change', async () => {
 		renderComponent(JobInfoForm, { props: { job: job() } });
+		await fireEvent.input(screen.getByLabelText('Season'), { target: { value: '1' } });
 		await fireEvent.input(screen.getByLabelText('Disc number'), { target: { value: '2' } });
 		await fireEvent.input(screen.getByLabelText('Disc total'), { target: { value: '3' } });
 		await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -78,6 +80,7 @@ describe('JobInfoForm', () => {
 			year: 1985,
 			disc_number: 2,
 			disc_total: 3,
+			season_number: 1,
 			metadata: {}
 		}));
 	});

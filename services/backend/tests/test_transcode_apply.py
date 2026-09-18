@@ -166,6 +166,84 @@ def test_compute_outputs_tv_with_metadata_season_disc() -> None:
     assert resolved[0].output_path == ("Battlestar Galactica (2004)/Season 01/S01D02T01 - plex-tv-1080p-h-265.mkv")
 
 
+def _bare_tv_job(**kwargs: object) -> Job:
+    """A TV job with NO season/disc anywhere — the real-world box-set shape."""
+    return Job(
+        id="job_01JZXR7K3M5Q8N4VWA0000000S",
+        drive_id="drv_x",
+        disc_type=DiscType.DVD,
+        title="ACCA",
+        year=2017,
+        status=JobStatus.RIPPED,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def _season_disc_session() -> Session:
+    return Session(
+        id="ses_tv_sd",
+        name="Plex TV 1080p H.265",
+        media_type=MediaType.TV,
+        rip_preset_id="rpr_x",
+        transcode_preset_id="tpr_x",
+        output_path_template="{show} ({year})/Season {season}/S{season}D{disc}T{track} - {transcode_slug}.{ext}",
+    )
+
+
+def _sd_track() -> Track:
+    return Track(
+        id="trk_sd",
+        job_id="job_01JZXR7K3M5Q8N4VWA0000000S",
+        kind=TrackKind.VIDEO_TITLE,
+        index=1,
+        source_ref="1",
+        expected_duration_seconds=2700,
+    )
+
+
+def test_compute_outputs_tv_reads_season_disc_from_job_columns() -> None:
+    """The operator-supplied columns are the source of truth: a box set with
+    nothing in metadata_json still resolves {season}/{disc}, zero-padded."""
+    job = _bare_tv_job(season_number=1, disc_number=2)
+    tp = _tv_preset()
+    resolved = compute_outputs(job, [_sd_track()], _season_disc_session(), tp)
+    assert resolved[0].output_path == "ACCA (2017)/Season 01/S01D02T01 - tv-1080p-h-265.mkv"
+
+
+def test_compute_outputs_job_columns_beat_metadata_json() -> None:
+    """metadata_json is only the fallback (MusicBrainz writes `disc` there);
+    a later operator correction on the column has to win."""
+    job = _bare_tv_job(season_number=3, disc_number=4, metadata_json={"season": "01", "disc": "02"})
+    resolved = compute_outputs(job, [_sd_track()], _season_disc_session(), _tv_preset())
+    assert resolved[0].output_path == "ACCA (2017)/Season 03/S03D04T01 - tv-1080p-h-265.mkv"
+
+
+def test_compute_outputs_pads_numeric_metadata_disc() -> None:
+    """MusicBrainz stores the medium position as a bare int; pad it so the
+    resolved path matches what the save-time preview promised."""
+    job = _bare_tv_job(season_number=1, metadata_json={"disc": 2})
+    resolved = compute_outputs(job, [_sd_track()], _season_disc_session(), _tv_preset())
+    assert resolved[0].output_path == "ACCA (2017)/Season 01/S01D02T01 - tv-1080p-h-265.mkv"
+
+
+def test_compute_outputs_passes_non_numeric_season_through() -> None:
+    job = _bare_tv_job(disc_number=1, metadata_json={"season": "Specials"})
+    resolved = compute_outputs(job, [_sd_track()], _season_disc_session(), _tv_preset())
+    assert resolved[0].output_path == "ACCA (2017)/Season Specials/SSpecialsD01T01 - tv-1080p-h-265.mkv"
+
+
+@pytest.mark.parametrize("token", ["season", "disc"])
+def test_compute_outputs_empty_season_or_disc_names_the_field(token: str) -> None:
+    """An unset season/disc is operator input we never had, so the 422 has to
+    say which field to fill rather than just naming the token."""
+    filled = {"season": {"disc_number": 1}, "disc": {"season_number": 1}}[token]
+    job = _bare_tv_job(**filled)
+    with pytest.raises(TemplateValidationError) as exc:
+        compute_outputs(job, [_sd_track()], _season_disc_session(), _tv_preset())
+    assert f"token {{{token}}} resolved empty" in str(exc.value)
+    assert f"set the job's {token} number" in str(exc.value)
+
+
 # ── helpers for per-track identity / episode / excluded / custom_filename tests ──
 
 

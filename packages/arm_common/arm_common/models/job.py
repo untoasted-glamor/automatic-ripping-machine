@@ -41,6 +41,10 @@ class Job(SQLModel, table=True):
     # corrected later via PATCH. No Postgres enum — plain nullable ints.
     disc_number: int | None = Field(sa_column=Column(Integer, nullable=True))
     disc_total: int | None = Field(sa_column=Column(Integer, nullable=True))
+    # TV box sets: which season this disc belongs to. Same user-supplied class
+    # as disc_number (arch §02) — MakeMKV surfaces no season signal, so this is
+    # operator input, and it's what the `{season}` naming token resolves from.
+    season_number: int | None = Field(sa_column=Column(Integer, nullable=True))
     # Poster shown in the UI. `poster_url` is computed at identify time
     # (TMDB / OMDB / Cover Art Archive). `poster_url_manual` is a user
     # override editable from JobDetail; the UI prefers it when set.

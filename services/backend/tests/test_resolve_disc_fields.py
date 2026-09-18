@@ -1,4 +1,4 @@
-"""Verify that POST /api/jobs/{id}/resolve accepts and persists disc_number/disc_total.
+"""Verify that POST /api/jobs/{id}/resolve accepts and persists season_number/disc_number/disc_total.
 
 Mirrors the harness from test_resolve_fanout.py (FakeSession + TestClient,
 no Postgres, no Docker).
@@ -105,8 +105,9 @@ def _auth(token: str) -> dict[str, str]:
 
 
 def test_resolve_persists_disc_fields(signing_key: bytes, tmp_path: Path) -> None:
-    """A resolvable CD job + a resolve call carrying disc_number/disc_total
-    must persist them onto the job row and return them in the response."""
+    """A resolvable CD job + a resolve call carrying season/disc numbers must
+    persist them onto the job row and return them in the response. These are the
+    only source the `{season}`/`{disc}` naming tokens have at apply time."""
     db = FakeSession()
     _seed_cd_job(db)
     app, token = _make_app(signing_key, db, tmp_path)
@@ -119,6 +120,7 @@ def test_resolve_persists_disc_fields(signing_key: bytes, tmp_path: Path) -> Non
                 "year": 1969,
                 "disc_number": 1,
                 "disc_total": 2,
+                "season_number": 3,
                 "metadata": {"artist": "The Beatles"},
             },
             headers=_auth(token),
@@ -128,9 +130,11 @@ def test_resolve_persists_disc_fields(signing_key: bytes, tmp_path: Path) -> Non
     body = resp.json()["job"]
     assert body["disc_number"] == 1
     assert body["disc_total"] == 2
+    assert body["season_number"] == 3
     assert body["title"] == "Abbey Road"
 
     # Also confirm the DB row was mutated.
     job_row = next(j for j in db.rows["jobs"] if j.id == _JOB_ID)
     assert job_row.disc_number == 1
     assert job_row.disc_total == 2
+    assert job_row.season_number == 3

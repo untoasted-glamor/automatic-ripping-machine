@@ -58,6 +58,11 @@ export interface JobView {
   poster_url_manual: string | null
   metadata_json: Record<string, unknown>
   resumed_from_crash: boolean
+  // Operator-supplied box-set position. Nothing on the disc records these, and
+  // they're the only source the `{season}` / `{disc}` naming tokens have.
+  season_number?: number | null
+  disc_number?: number | null
+  disc_total?: number | null
   // Timed review gate: when the countdown started (awaiting_review). Null otherwise.
   wait_start_time?: string | null
   // Per-job review-gate pause: freezes this disc's countdown.

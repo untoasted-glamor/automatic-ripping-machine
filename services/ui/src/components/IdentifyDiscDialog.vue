@@ -52,6 +52,21 @@ const scanTrackCount = computed<number>(() => {
 const title = ref<string>(props.job.title ?? '')
 const year = ref<number | null>(props.job.year)
 
+// Season / disc are pure operator input — MakeMKV surfaces no season or disc
+// signal and no metadata provider fills them in — and they are the only source
+// the `{season}` / `{disc}` naming tokens have at apply time. Without them a
+// box set applied against the built-in TV session fails with "token {disc}
+// resolved empty". Seeded from the job because resolve overwrites all three
+// unconditionally: submitting without them would clear what was set earlier.
+const seasonNumber = ref<number | null>(props.job.season_number ?? null)
+const discNumber = ref<number | null>(props.job.disc_number ?? null)
+const discTotal = ref<number | null>(props.job.disc_total ?? null)
+
+// `v-model.number` yields '' for a cleared input; the API wants null.
+function numOrNull(v: number | null | string): number | null {
+  return v === '' || v === null || Number.isNaN(Number(v)) ? null : Number(v)
+}
+
 // CD fields.
 const album = ref<string>(props.job.title ?? '')
 const artist = ref<string>('')
@@ -164,6 +179,8 @@ async function submit(): Promise<void> {
       ? {
           title: album.value.trim(),
           year: year.value ?? null,
+          disc_number: numOrNull(discNumber.value),
+          disc_total: numOrNull(discTotal.value),
           metadata: {
             artist: artist.value.trim(),
             album: album.value.trim(),
@@ -173,6 +190,9 @@ async function submit(): Promise<void> {
       : {
           title: title.value.trim(),
           year: year.value ?? null,
+          season_number: numOrNull(seasonNumber.value),
+          disc_number: numOrNull(discNumber.value),
+          disc_total: numOrNull(discTotal.value),
           ...(pickedCandidate.value && pickedCandidate.value.title === title.value.trim()
             ? {
                 metadata: {
@@ -322,6 +342,36 @@ async function submit(): Promise<void> {
             />
           </label>
         </div>
+        <div class="row" style="margin-bottom: 4px; gap: 8px">
+          <label style="flex: 1 1 0">
+            Disc #
+            <input
+              v-model.number="discNumber"
+              type="number"
+              min="1"
+              placeholder="—"
+              data-testid="identify-disc-number"
+              :disabled="submitting"
+              style="width: 100%"
+            />
+          </label>
+          <label style="flex: 1 1 0">
+            Disc total
+            <input
+              v-model.number="discTotal"
+              type="number"
+              min="1"
+              placeholder="—"
+              data-testid="identify-disc-total"
+              :disabled="submitting"
+              style="width: 100%"
+            />
+          </label>
+        </div>
+        <p class="muted" style="margin-bottom: 12px">
+          Multi-disc sets only — the source of the <code>{disc}</code> naming token when the
+          MusicBrainz match doesn't supply one. Leave blank for a single disc.
+        </p>
         <div v-if="scanTrackCount > 0" style="margin-bottom: 12px">
           <div class="muted" style="margin-bottom: 4px">Track titles</div>
           <div
@@ -373,6 +423,49 @@ async function submit(): Promise<void> {
             />
           </label>
         </div>
+        <div class="row" style="margin-bottom: 4px; gap: 8px">
+          <label style="flex: 1 1 0">
+            Season
+            <input
+              v-model.number="seasonNumber"
+              type="number"
+              min="0"
+              placeholder="—"
+              data-testid="identify-season-number"
+              :disabled="submitting"
+              style="width: 100%"
+            />
+          </label>
+          <label style="flex: 1 1 0">
+            Disc #
+            <input
+              v-model.number="discNumber"
+              type="number"
+              min="1"
+              placeholder="—"
+              data-testid="identify-disc-number"
+              :disabled="submitting"
+              style="width: 100%"
+            />
+          </label>
+          <label style="flex: 1 1 0">
+            Disc total
+            <input
+              v-model.number="discTotal"
+              type="number"
+              min="1"
+              placeholder="—"
+              data-testid="identify-disc-total"
+              :disabled="submitting"
+              style="width: 100%"
+            />
+          </label>
+        </div>
+        <p class="muted" style="margin-bottom: 12px">
+          TV box sets only. Nothing on the disc records these, so sessions whose template uses
+          <code>{season}</code> or <code>{disc}</code> can't be applied until you fill them in.
+          Leave blank for a film.
+        </p>
       </template>
       <div class="row" style="gap: 8px">
         <button type="submit" :disabled="!canSubmit" data-testid="identify-submit">

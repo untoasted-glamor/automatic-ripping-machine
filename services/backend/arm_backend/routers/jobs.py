@@ -913,6 +913,7 @@ async def resolve(
     job.year = req.year
     job.disc_number = req.disc_number
     job.disc_total = req.disc_total
+    job.season_number = req.season_number
     job.metadata_json = new_metadata
     # Picking a search candidate in the identify dialog sends its artwork as
     # `metadata.poster_url`. Promote it onto the column the UI actually renders
