@@ -22,6 +22,24 @@ if ! declare -p MOUNT_TEST >/dev/null 2>&1; then
     MOUNT_TEST=(mountpoint -q)
 fi
 
+# RO_TEST answers "is $d a deliberately read-only mount?". The Backend spawns
+# the transcoder with /raw mounted `:ro` (it only reads rips), so gating that
+# mount on writability would fail every transcode container at startup. Reads
+# /proc/self/mounts (last entry for $d wins, matching overmounts) so it needs no
+# extra binary in any image. Same declare-p seam as above for the guard test.
+is_readonly_mount() {
+    local d="$1" _dev mnt _fs opts _rest ro=1
+    while read -r _dev mnt _fs opts _rest; do
+        if [[ "${mnt}" == "${d}" ]]; then
+            if [[ ",${opts}," == *,ro,* ]]; then ro=0; else ro=1; fi
+        fi
+    done </proc/self/mounts
+    return "${ro}"
+}
+if ! declare -p RO_TEST >/dev/null 2>&1; then
+    RO_TEST=(is_readonly_mount)
+fi
+
 # Bounded retry so a TRANSIENT mount-not-ready (NFS server slow, net settling)
 # does not trip the hard exit — which, under `restart: unless-stopped`, would
 # become a crash-loop. A PERSISTENT misconfig still fails fast (~ATTEMPTS*DELAY).
@@ -42,6 +60,10 @@ require_writable() {
     # mountpoint; an incidental image dir is not.
     [[ -d "$d" ]] || return 0                    # absent -> not mounted here -> skip
     "${MOUNT_TEST[@]}" "$d" || return 0          # present but not a mount -> incidental image dir -> skip
+    if "${RO_TEST[@]}" "$d"; then                # mounted :ro on purpose -> nothing to write -> skip
+        echo "${d} is mounted read-only; skipping the writability check"
+        return 0
+    fi
     local attempt=1
     while (( attempt <= WRITE_CHECK_ATTEMPTS )); do
         if "${WRITE_TEST[@]}" "$d"; then

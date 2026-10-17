@@ -19,6 +19,10 @@ WRITE_TEST=(test -w)          # declare -p guard in the entrypoint respects this
 # not-a-mountpoint skip explicitly.
 # shellcheck disable=SC2034  # used by the sourced entrypoint
 MOUNT_TEST=(true)
+# Temp dirs are never read-only mounts; case 6 overrides RO_TEST to exercise
+# the read-only skip explicitly.
+# shellcheck disable=SC2034  # used by the sourced entrypoint
+RO_TEST=(false)
 # shellcheck disable=SC2034  # used by the sourced entrypoint
 WRITE_CHECK_ATTEMPTS=2        # small so retry-then-fail is fast
 # shellcheck disable=SC2034  # used by the sourced entrypoint
@@ -87,6 +91,25 @@ err="$(
 check "non-mountpoint dir returns 0 (skip)" 0 "${rc}"
 [[ -z "${err}" ]] || { echo "FAIL - non-mountpoint dir emitted stderr: ${err}" >&2; fail=1; }
 chmod 755 "${nm}"; rmdir "${nm}"
+
+# 6. Read-only mount -> skip (rc 0), no stderr, even when unwritable.
+#    The transcoder's /raw is mounted :ro by the Backend's dispatcher; gating it
+#    crash-looped every transcode container. Override RO_TEST to report "ro".
+ro="$(mktemp -d)"; chmod 000 "${ro}"
+rc=0
+err="$(
+    # shellcheck disable=SC2034  # consumed by require_writable in the sourced entrypoint
+    RO_TEST=(true)
+    require_writable "${ro}" 2>&1 1>/dev/null
+)" || rc=$?
+check "read-only mount returns 0 (skip)" 0 "${rc}"
+[[ -z "${err}" ]] || { echo "FAIL - read-only mount emitted stderr: ${err}" >&2; fail=1; }
+chmod 755 "${ro}"; rmdir "${ro}"
+
+# 7. The real is_readonly_mount against /proc/self/mounts: /proc is mounted rw
+#    on any Linux host, so it must report "not read-only".
+rc=0; is_readonly_mount /proc || rc=$?
+check "is_readonly_mount reports rw /proc as not read-only" 1 "${rc}"
 
 if [[ "${fail}" -eq 0 ]]; then
     echo "PASS - all require_writable guard cases"
