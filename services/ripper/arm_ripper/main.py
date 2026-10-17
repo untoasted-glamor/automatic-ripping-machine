@@ -16,6 +16,7 @@ from arm_ripper.job_controller import JobController
 from arm_ripper.makemkv_key import refresh_makemkv_key
 from arm_ripper.recovery import boot_probe
 from arm_ripper.scan.makemkv import probe_makemkv_key
+from arm_ripper.sg_passthrough import log_sg_passthrough
 from arm_ripper.source import is_iso_source
 from arm_ripper.ws_client import WSClient
 
@@ -292,6 +293,10 @@ async def amain() -> None:
     iso_path = settings.ARM_MANUAL_TRIGGER_ISO
     iso_mode = iso_path is not None
     device_path: str = iso_path if iso_path is not None else settings.ARM_DRIVE_DEV
+    if not iso_mode:
+        # Catch a stale /dev/sgN mapping at boot, before the first disc
+        # silently scans to 0 titles.
+        log_sg_passthrough(device_path)
     try:
         drive_id = await register_with_retry(client, device_path)
         async with WSClient(

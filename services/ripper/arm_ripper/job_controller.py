@@ -18,6 +18,7 @@ from arm_ripper.rip import RipResult, rip_all
 from arm_ripper.rip.dispatcher import DEFAULT_MIN_LENGTH_SECONDS
 from arm_ripper.drive_poll import DriveState, read_drive_status
 from arm_ripper.scan import ScanError, scan as scan_disc
+from arm_ripper.sg_passthrough import check_sg_passthrough
 from arm_ripper.source import is_iso_source
 from arm_ripper.ws_client import WSClient
 
@@ -415,12 +416,22 @@ class JobController:
                     assert last is not None
                     return result
 
+        # A missing/stale /dev/sgN mapping is the one cause we can confirm from
+        # here, and it looks identical to a bad disc otherwise — name it.
+        sg = check_sg_passthrough(device_path)
+        if sg.problems:
+            cause = "likely cause: " + " | ".join(sg.problems)
+        else:
+            cause = (
+                "check disc/drive readiness (dirty/damaged disc, drive spin-up, or container device "
+                "passthrough); see the preceding makemkvcon 0-title warnings for what MakeMKV reported"
+            )
         logger.error(
             "DISC_UNREADABLE_AFTER_RETRIES device=%s drive_state=DISC_OK attempts=%d — "
-            "disc present per ioctl but no readable titles after retries; check disc/drive "
-            "readiness (dirty/damaged disc, drive spin-up, or container device passthrough)",
+            "disc present per ioctl but no readable titles after retries; %s",
             device_path,
             SCAN_NOT_READY_MAX_ATTEMPTS,
+            cause,
         )
         assert last is not None
         return last

@@ -667,7 +667,11 @@ async def test_scan_retry_recovers_transient_not_ready(monkeypatch):
 
 
 async def test_scan_retry_exhausts_and_logs_marker(monkeypatch, caplog):
+    from arm_ripper.sg_passthrough import SgCheck
+
     monkeypatch.setattr(jc_module.asyncio, "sleep", _noop_async)
+    # Don't let the host's real /sys and /dev leak into the message.
+    monkeypatch.setattr(jc_module, "check_sg_passthrough", lambda _p: SgCheck())
     monkeypatch.setattr(jc_module, "scan_disc", lambda _p: _async_return(_empty_scan()))
     monkeypatch.setattr(jc_module, "read_drive_status", lambda _p: DriveState.DISC_OK)
 
@@ -676,6 +680,26 @@ async def test_scan_retry_exhausts_and_logs_marker(monkeypatch, caplog):
         out = await controller._scan_with_ready_retry("/dev/sr0")
     assert not out.titles
     assert "DISC_UNREADABLE_AFTER_RETRIES" in caplog.text
+
+
+async def test_scan_retry_exhausted_names_sg_passthrough_cause(monkeypatch, caplog):
+    """A stale /dev/sgN mapping looks exactly like a bad disc; the give-up
+    error must name it when the check finds it."""
+    from arm_ripper.sg_passthrough import SgCheck
+
+    monkeypatch.setattr(jc_module.asyncio, "sleep", _noop_async)
+    monkeypatch.setattr(jc_module, "scan_disc", lambda _p: _async_return(_empty_scan()))
+    monkeypatch.setattr(jc_module, "read_drive_status", lambda _p: DriveState.DISC_OK)
+    monkeypatch.setattr(
+        jc_module,
+        "check_sg_passthrough",
+        lambda _p: SgCheck(paired=["sg6"], problems=["/dev/sg6 is ... not mapped into this container"], verified=True),
+    )
+
+    controller = JobController(FakeClient(), "drv_test")
+    with caplog.at_level("ERROR"):
+        await controller._scan_with_ready_retry("/dev/sr0")
+    assert "likely cause: /dev/sg6 is ... not mapped into this container" in caplog.text
 
 
 async def test_scan_retry_stops_when_disc_pulled(monkeypatch):
