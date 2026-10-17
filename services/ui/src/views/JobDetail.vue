@@ -18,6 +18,7 @@ import type {
   ResolveFanOutOutcomeView,
   ResolveResponse,
 } from '../api/types'
+import { trackDuration } from '../utils/duration'
 import { isTerminalJobStatus } from '../utils/jobStatus'
 
 const route = useRoute()
@@ -484,6 +485,7 @@ async function savePoster(): Promise<void> {
           <th>#</th>
           <th>Kind</th>
           <th>Source</th>
+          <th class="num">Duration</th>
           <th>Status</th>
           <th>Output</th>
           <th>Size</th>
@@ -494,6 +496,9 @@ async function savePoster(): Promise<void> {
           <td>{{ t.index }}</td>
           <td>{{ t.kind }}</td>
           <td>{{ t.source_ref }}</td>
+          <td class="num" data-testid="track-duration">
+            {{ trackDuration(t.duration_seconds, t.expected_duration_seconds) }}
+          </td>
           <td>
             <span class="badge">{{ t.status }}</span>
           </td>
@@ -531,5 +536,9 @@ async function savePoster(): Promise<void> {
   height: 100%;
   background: var(--accent);
   transition: width 200ms linear;
+}
+.num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 </style>

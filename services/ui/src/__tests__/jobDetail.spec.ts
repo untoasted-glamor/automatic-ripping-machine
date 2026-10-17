@@ -27,10 +27,29 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
-function detailFor(status: JobStatus): unknown {
+function detailFor(status: JobStatus, tracks: unknown[] = []): unknown {
   return {
     job: { ...baseJob, status },
-    tracks: [],
+    tracks,
+  }
+}
+
+function track(index: number, fields: Record<string, unknown> = {}): unknown {
+  return {
+    id: `trk_${index}`,
+    job_id: 'job_x',
+    kind: 'video_title',
+    index,
+    source_ref: String(index),
+    status: 'queued',
+    output_path: null,
+    size_bytes: null,
+    expected_size_bytes: null,
+    duration_seconds: null,
+    expected_duration_seconds: null,
+    attempts: 0,
+    last_error: null,
+    ...fields,
   }
 }
 
@@ -42,7 +61,7 @@ function ndjsonResponse(records: unknown[]): Response {
   })
 }
 
-async function mountWithStatus(status: JobStatus) {
+async function mountWithStatus(status: JobStatus, tracks: unknown[] = []) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -57,7 +76,7 @@ async function mountWithStatus(status: JobStatus) {
   // JobLogsCard fetches /api/logs/:id (ndjson) and subscribes to a WS topic.
   // Stub everything: real WS would blow up under jsdom (no WebSocket).
   const fetchMock = vi.fn().mockImplementation((url: string) => {
-    if (url.includes('/api/jobs/')) return Promise.resolve(jsonResponse(detailFor(status)))
+    if (url.includes('/api/jobs/')) return Promise.resolve(jsonResponse(detailFor(status, tracks)))
     if (url.includes('/api/transcodes')) return Promise.resolve(jsonResponse([]))
     // ApplySessionDialog loads the session list as soon as it mounts.
     if (url.includes('/api/sessions')) return Promise.resolve(jsonResponse([]))
@@ -170,5 +189,27 @@ describe('JobDetail.vue apply-session result card', () => {
     const wrapper = await applyOn('ripped', 'queued')
     expect(wrapper.text()).toContain('Session queued')
     expect(wrapper.find('[data-testid="apply-parked-note"]').exists()).toBe(false)
+  })
+})
+
+describe('JobDetail.vue tracks table', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+    localStorage.setItem('arm_token', 'aaa.bbb.ccc')
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("shows each track's duration: the actual, else the ~estimate, else a dash", async () => {
+    const wrapper = await mountWithStatus('ripped', [
+      track(0, { expected_duration_seconds: 1452 }),
+      track(1, { duration_seconds: 13078, expected_duration_seconds: 13000 }),
+      track(2),
+    ])
+    const cells = wrapper.findAll('[data-testid="track-duration"]').map((c) => c.text())
+    expect(cells).toEqual(['~24:12', '3:37:58', '—'])
   })
 })
