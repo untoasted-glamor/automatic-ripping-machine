@@ -56,6 +56,9 @@ def context_from_message(
         for var in spec.variables:
             if var not in ctx:
                 ctx[var] = _str(payload.get(var))
+        if "tracks_skipped_note" in spec.variables:
+            skipped = payload.get("tracks_skipped")
+            ctx["tracks_skipped_note"] = f", {skipped} skipped" if isinstance(skipped, int) and skipped > 0 else ""
     return ctx
 
 

@@ -94,13 +94,17 @@ _MEDIA_STATUS_DETAIL: dict[DriveMediaStatus, str] = {
 def _summarize_rip_progress(tracks: list[Track]) -> RipProgressSummary:
     """Aggregate `tracks` (one job's worth) into a `RipProgressSummary`.
 
-    `current_track_index` is the 1-based ordinal among tracks sorted by
-    `Track.index` of the row in `IN_PROGRESS`. The dispatcher transitions
+    Only kept tracks count: an excluded track is skipped (at transcode
+    today, at rip time once the ripper honours exclusions), so counting it
+    would leave the totals short of `tracks_total` forever ("9 / 10").
+
+    `current_track_index` is the 1-based ordinal among kept tracks sorted
+    by `Track.index` of the row in `IN_PROGRESS`. The dispatcher transitions
     one track at a time, so at most one is `IN_PROGRESS` per job; if more
     than one ever appeared (e.g. mid-rewrite of the dispatcher) we'd pick
     the lowest-index one as a sane default.
     """
-    sorted_tracks = sorted(tracks, key=lambda t: t.index)
+    sorted_tracks = sorted((t for t in tracks if not t.excluded), key=lambda t: t.index)
     done = sum(1 for t in sorted_tracks if t.status == TrackStatus.DONE)
     failed = sum(1 for t in sorted_tracks if t.status == TrackStatus.FAILED)
     current_track_id: str | None = None

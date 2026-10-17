@@ -22,8 +22,15 @@ class EventSpec(NamedTuple):
     variables: tuple[str, ...]
 
 
+# Rip-event counts cover kept tracks; `tracks_skipped` is the excluded ones.
+# `tracks_skipped_note` is derived at render time (", N skipped", or empty
+# when nothing was skipped) because templates are plain `str.format_map` with
+# no conditionals.
+_RIP_VARS = ("status", "tracks_done", "tracks_failed", "tracks_total", "tracks_skipped", "tracks_skipped_note")
+
+
 def _rip(label: str, title: str, body: str) -> EventSpec:
-    return EventSpec(label, title, body, _COMMON + ("status", "tracks_done", "tracks_failed", "tracks_total"))
+    return EventSpec(label, title, body, _COMMON + _RIP_VARS)
 
 
 def _session(label: str, title: str, body: str) -> EventSpec:
@@ -34,7 +41,7 @@ EVENT_VOCAB: dict[str, EventSpec] = {
     "rip.completed": _rip(
         "Rip completed",
         "ARM: rip completed — {job_title}",
-        "{job_title} finished ripping on drive {drive_id} ({tracks_done}/{tracks_total} tracks).",
+        "{job_title} finished ripping on drive {drive_id} ({tracks_done}/{tracks_total} tracks{tracks_skipped_note}).",
     ),
     "rip.partial": _rip(
         "Rip partial",
