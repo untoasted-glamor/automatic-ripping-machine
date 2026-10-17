@@ -7,7 +7,7 @@ from arm_common.schemas import TrackView
 
 from arm_ripper.rip.abcde_rip import rip_cd
 from arm_ripper.rip.data_rip import rip_data
-from arm_ripper.rip.makemkv_rip import RipResult, _output_files_in_rip_order, rip_disc
+from arm_ripper.rip.makemkv_rip import RipResult, _output_files_by_position, rip_disc
 
 logger = logging.getLogger("arm_ripper.rip.dispatcher")
 
@@ -158,8 +158,8 @@ async def _rip_optical(
     # Eligible source indexes — those whose duration meets `--minlength`,
     # sorted ascending. MakeMKV's `mkv all` output files carry an
     # output-position suffix (`_t00`, `_t01`, ...) rather than the
-    # source title index, so we pair this list positionally with the
-    # files post-rip to get attribution back. Tracks with no
+    # source title index; file `_tNN` belongs to the NN-th entry of this
+    # list, which is how attribution gets back to tracks. Tracks with no
     # `duration_seconds` (rare — scan didn't find one) are treated as
     # eligible to avoid dropping them silently; if MakeMKV skips them,
     # they fall through to "produced no .mkv" downstream.
@@ -227,10 +227,13 @@ async def _rip_optical(
         column is needed it can be filled in by a separate post-rip
         pass.
 
-        Files are matched positionally to `eligible_source_indexes`
-        (same convention as the post-rip attribution loop): the file
-        whose `_tNN.mkv` suffix equals this title's position in the
-        eligible list is the one MakeMKV just finalised.
+        Files are matched by name (same convention as rip_disc's
+        post-rip attribution): the file whose `_tNN.mkv` suffix equals
+        this title's position in the eligible list is this title's. If
+        that file doesn't exist — MakeMKV skipped the title, or the
+        stream named a position that isn't on disk — nothing is PATCHed
+        here and the post-rip loop marks the track FAILED, rather than
+        crediting it with another title's file.
         """
         track = track_by_index.get(title_idx)
         if track is None:
@@ -243,17 +246,16 @@ async def _rip_optical(
             # MakeMKV announced a title we didn't list as eligible —
             # nothing to attribute live; the post-rip loop handles it.
             return
-        files = _output_files_in_rip_order(output_dir)
-        if position >= len(files):
-            # File not on disk yet — defer to the post-rip loop. Should
-            # be rare: MakeMKV finalises before emitting the next PRGC.
+        file_path = _output_files_by_position(output_dir).get(position)
+        if file_path is None:
+            # No `_tNN` file for this title — defer to the post-rip
+            # loop, which reports it FAILED if it never appears.
             logger.debug(
-                "on_title_done: file for source_idx=%d position=%d not on disk yet; deferring",
+                "on_title_done: no file for source_idx=%d position=%d; deferring",
                 title_idx,
                 position,
             )
             return
-        file_path = files[position]
         try:
             size = file_path.stat().st_size
         except OSError as exc:

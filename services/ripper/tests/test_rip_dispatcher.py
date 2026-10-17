@@ -15,14 +15,19 @@ Two surfaces:
 
 from __future__ import annotations
 
+import asyncio
 import errno
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 
 import arm_ripper.drive_status as drive_status_module
 import arm_ripper.rip.dispatcher as dispatcher_module
+import arm_ripper.rip.makemkv_rip as makemkv_rip_module
 from arm_common import DiscType, DriveMediaStatus
 from arm_common.enums import TrackKind, TrackStatus
 from arm_common.schemas import TrackView
@@ -804,3 +809,177 @@ async def test_rip_all_live_done_handles_unselected_titles_gracefully(monkeypatc
 
     # Track 0 went start → done. Title 5 was unselected; no events for it.
     assert events == ["start-trk_0", "done-trk_0"]
+
+
+# --- rip_all against a faked makemkvcon process (S14) ------------------------
+#
+# These go through the real rip_disc and fake only the process boundary:
+# `asyncio.create_subprocess_exec` returns a process that streams robot
+# lines and writes `.mkv` files into the outdir it was handed, at the
+# point in the stream where MakeMKV would. Assertions are on what each
+# track was finally reported as (the PATCH the backend would receive).
+
+
+class _ScriptedStdout:
+    """Replays a script of robot lines; `("write", NN)` steps create
+    `<label>_tNN.mkv` in the outdir (size 1000 + NN, so a file's size
+    names its title) at that point in the stream."""
+
+    def __init__(self, script: list[str | tuple[str, int]], output_dir: Path) -> None:
+        self._script = list(script)
+        self._output_dir = output_dir
+
+    async def readline(self) -> bytes:
+        while self._script:
+            step = self._script.pop(0)
+            if isinstance(step, tuple):
+                _, nn = step
+                (self._output_dir / f"ACCA_CS_D2_t{nn:02d}.mkv").write_bytes(b"x" * (1000 + nn))
+                continue
+            await asyncio.sleep(0)
+            return (step + "\n").encode()
+        return b""
+
+    async def read(self) -> bytes:
+        return b""
+
+
+class _ScriptedMakemkvcon:
+    def __init__(self, script: list[str | tuple[str, int]], output_dir: Path) -> None:
+        self.stdout = _ScriptedStdout(script, output_dir)
+        self.stderr = _ScriptedStdout([], output_dir)
+        self.returncode: int | None = None
+
+    async def wait(self) -> int:
+        # Exit only once stdout is drained, like the real process.
+        while self.stdout._script:
+            await asyncio.sleep(0)
+        self.returncode = 0
+        return 0
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+
+def _fake_makemkvcon(monkeypatch, script: list[str | tuple[str, int]]) -> None:
+    async def create_subprocess_exec(*argv: str, **_kwargs: Any) -> _ScriptedMakemkvcon:
+        return _ScriptedMakemkvcon(script, Path(argv[-1]))
+
+    monkeypatch.setattr(makemkv_rip_module.asyncio, "create_subprocess_exec", create_subprocess_exec)
+
+
+def _mkv_all_script(saved: list[int], prgc_positions: list[int]) -> list[str | tuple[str, int]]:
+    """A `mkv all` save phase: one PRGC:5017 per saved title, the title's
+    file written while it saves, then MakeMKV's summary."""
+    script: list[str | tuple[str, int]] = [
+        'MSG:1005,0,1,"MakeMKV v1.18.3 linux(x64-release) started","%1 started","MakeMKV v1.18.3"',
+        'PRGT:5024,0,"Saving all titles to MKV files"',
+    ]
+    for nn, pos in zip(saved, prgc_positions, strict=True):
+        script += [f'PRGC:5017,{pos},"Saving to MKV file"', "PRGV:0,0,65536", ("write", nn), "PRGV:65536,0,65536"]
+    script.append(
+        f'MSG:5037,0,2,"Copy complete. {len(saved)} titles saved, 2 failed.",'
+        f'"Copy complete. %1 titles saved, %2 failed.","{len(saved)}","2"'
+    )
+    return script
+
+
+async def _rip_tracks(tracks: list[TrackView], tmp_path: Path) -> dict[str, list[RipResult]]:
+    """Run rip_all for a BD and return every terminal report per track id."""
+    reports: dict[str, list[RipResult]] = {t.id: [] for t in tracks}
+
+    async def on_start(_track: TrackView) -> None:
+        return None
+
+    async def on_done(track: TrackView, result: RipResult) -> None:
+        reports[track.id].append(result)
+
+    await rip_all(
+        disc_type=DiscType.BLURAY,
+        device_path="/dev/sr0",
+        tracks=tracks,
+        output_dir=tmp_path,
+        on_track_start=on_start,
+        on_track_done=on_done,
+        min_length_seconds=120,
+    )
+    return reports
+
+
+# MakeMKV skipped titles 3 and 4 of 12 (job_01M55M08QRCHJMD2QVV8D3H17G).
+# Whether PRGC:5017 then names the title's own position (…2, 5, 6…) or
+# keeps counting saves (…2, 3, 4…) isn't recorded, so both are covered.
+_INCIDENT_SAVED = [0, 1, 2, 5, 6, 7, 8, 9, 10, 11]
+
+
+@pytest.mark.parametrize(
+    "prgc_positions",
+    [_INCIDENT_SAVED, list(range(len(_INCIDENT_SAVED)))],
+    ids=["prgc-names-title", "prgc-counts-saves"],
+)
+async def test_rip_all_skipped_titles_dont_shift_files_onto_neighbours(monkeypatch, tmp_path, prgc_positions):
+    """12 eligible titles; makemkvcon writes `_t00`–`_t02` and `_t05`–`_t11`
+    only. Tracks 3 and 4 are FAILED; every other track is DONE with the
+    file bearing its own number — including 10 and 11, which order-pairing
+    used to mark FAILED after crediting their files to tracks 8 and 9."""
+    _fake_makemkvcon(monkeypatch, _mkv_all_script(_INCIDENT_SAVED, prgc_positions))
+    tracks = [_track(i) for i in range(12)]
+
+    reports = await _rip_tracks(tracks, tmp_path)
+
+    # The backend accepts one terminal PATCH per track.
+    assert all(len(r) == 1 for r in reports.values()), reports
+    final = {track_id: r[0] for track_id, r in reports.items()}
+    for idx in (3, 4):
+        assert final[f"trk_{idx}"].ok is False
+        assert "no .mkv" in (final[f"trk_{idx}"].error or "")
+    for idx in _INCIDENT_SAVED:
+        result = final[f"trk_{idx}"]
+        assert result.ok is True, (idx, result.error)
+        assert result.output_path == tmp_path / f"ACCA_CS_D2_t{idx:02d}.mkv"
+        assert result.size_bytes == 1000 + idx
+
+
+async def test_rip_all_every_file_written_gives_each_track_its_own(monkeypatch, tmp_path):
+    """No gaps: each track gets its own file, as before S14."""
+    _fake_makemkvcon(monkeypatch, _mkv_all_script(list(range(4)), list(range(4))))
+    tracks = [_track(i) for i in range(4)]
+
+    reports = await _rip_tracks(tracks, tmp_path)
+
+    for idx in range(4):
+        (result,) = reports[f"trk_{idx}"]
+        assert result.ok is True
+        assert result.output_path == tmp_path / f"ACCA_CS_D2_t{idx:02d}.mkv"
+        assert result.size_bytes == 1000 + idx
+
+
+async def test_rip_all_short_title_between_eligible_ones(monkeypatch, tmp_path):
+    """Scan titles 0, 1, 2 with 1 below minlength: makemkvcon (run with
+    that minlength) numbers its output by eligible position, so `_t00` is
+    source 0 and `_t01` is source 2; source 1 is FAILED as below minlength."""
+    _fake_makemkvcon(monkeypatch, _mkv_all_script([0, 1], [0, 1]))
+    tracks = [_track(0), _track(1, duration_seconds=60), _track(2)]
+
+    reports = await _rip_tracks(tracks, tmp_path)
+
+    (t0,) = reports["trk_0"]
+    (t1,) = reports["trk_1"]
+    (t2,) = reports["trk_2"]
+    assert t0.ok is True and t0.output_path == tmp_path / "ACCA_CS_D2_t00.mkv"
+    assert t2.ok is True and t2.output_path == tmp_path / "ACCA_CS_D2_t01.mkv"
+    assert t1.ok is False and "below minlength" in (t1.error or "")
+
+
+async def test_rip_all_logs_makemkv_messages_at_info(monkeypatch, tmp_path, caplog):
+    """MakeMKV's MSG lines are the only record of why a title was skipped,
+    so they reach the job log at INFO, not just the DEBUG raw stream."""
+    script = _mkv_all_script([0], [0])
+    script.insert(2, 'MSG:5010,0,0,"Failed to open disc title 1","Failed to open disc title %1","1"')
+    _fake_makemkvcon(monkeypatch, script)
+    caplog.set_level(logging.INFO)
+
+    await _rip_tracks([_track(0)], tmp_path)
+
+    info_text = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    assert any("Failed to open disc title 1" in m for m in info_text)
