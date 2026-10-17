@@ -818,17 +818,12 @@ async def update_job(
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")
 
-    job_fields = req.model_dump(exclude_unset=True, exclude={"tracks"})
-    for key, value in job_fields.items():
-        setattr(job, key, value)
-    db.add(job)
-
-    edited_track_ids: list[str] = []
+    # Validate every track edit before changing anything, so a rejected request
+    # leaves the job and all its tracks as they were.
+    by_id: dict[str, Track] = {}
     if req.tracks is not None:
         rows = list((await db.execute(select(Track).where(col(Track.job_id) == job_id))).scalars().all())
         by_id = {t.id: t for t in rows}
-        # Duplicate track_ids in req.tracks → last-wins (idempotent setattr); a
-        # repeated track.updated event is benign. Callers needn't deduplicate.
         for edit in req.tracks:
             track = by_id.get(edit.track_id)
             if track is None:
@@ -836,6 +831,34 @@ async def update_job(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"unknown track_id {edit.track_id} for job {job_id}",
                 )
+            # Re-including a track once the rip has started is only safe if it
+            # has a file: a skipped (or failed) title has none, and a transcode
+            # task for it would be rejected at /register on every dispatcher
+            # tick. Excluding stays allowed in every status ("skip at transcode").
+            if (
+                edit.excluded is False
+                and track.excluded
+                and job.status not in PRE_RIP_JOB_STATUSES
+                and not track.output_path
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"track {track.index} was skipped at rip time and has no file; re-rip the disc to include it"
+                    ),
+                )
+
+    job_fields = req.model_dump(exclude_unset=True, exclude={"tracks"})
+    for key, value in job_fields.items():
+        setattr(job, key, value)
+    db.add(job)
+
+    edited_track_ids: list[str] = []
+    if req.tracks is not None:
+        # Duplicate track_ids in req.tracks → last-wins (idempotent setattr); a
+        # repeated track.updated event is benign. Callers needn't deduplicate.
+        for edit in req.tracks:
+            track = by_id[edit.track_id]
             for key, value in edit.model_dump(exclude_unset=True, exclude={"track_id"}).items():
                 setattr(track, key, value)
             db.add(track)

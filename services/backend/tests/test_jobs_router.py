@@ -933,7 +933,15 @@ def _seed_job_with_track(db: FakeSession, *, job_id: str = _JOB_ID_A, track_id: 
         )
     )
     db.rows.setdefault("tracks", []).append(
-        Track(id=track_id, job_id=job_id, kind=TrackKind.VIDEO_TITLE, index=1, source_ref="0")
+        Track(
+            id=track_id,
+            job_id=job_id,
+            kind=TrackKind.VIDEO_TITLE,
+            index=1,
+            source_ref="0",
+            status=TrackStatus.QUEUED,
+            attempts=0,
+        )
     )
 
 
@@ -989,6 +997,59 @@ def test_update_job_track_unknown_track_404(signing_key: bytes) -> None:
         )
     assert r.status_code == 404
     assert db.rows["tracks"][0].title is None
+
+
+def test_update_job_refuses_reincluding_a_track_skipped_at_rip_time(signing_key: bytes) -> None:
+    """Past rip-start, an excluded track with no file can't be re-included: it
+    would queue a transcode with no source. The whole edit is refused."""
+    db = FakeSession()
+    _seed_job_with_track(db)
+    db.rows["tracks"][0].excluded = True
+    app, token = _make_app(signing_key, db)
+    with TestClient(app) as c:
+        r = c.patch(
+            f"/api/jobs/{_JOB_ID_A}",
+            json={"season_number": 2, "tracks": [{"track_id": _TRK_ID_A, "excluded": False, "title": "Pilot"}]},
+            headers=_auth(token),
+        )
+        detail = c.get(f"/api/jobs/{_JOB_ID_A}", headers=_auth(token))
+    assert r.status_code == 409
+    assert "skipped at rip time" in r.json()["detail"]
+    assert detail.json()["job"]["season_number"] is None
+    (track,) = detail.json()["tracks"]
+    assert track["excluded"] is True
+    assert track["title"] is None
+
+
+@pytest.mark.parametrize(
+    ("job_status", "excluded_now", "output_path", "excluded_to"),
+    [
+        (JobStatus.RIPPED, False, None, True),  # skip at transcode: always allowed
+        (JobStatus.RIPPED, True, "/raw/job/Box_t00.mkv", False),  # has a file: re-include ok
+        (JobStatus.AWAITING_REVIEW, True, None, False),  # before rip: either direction
+        (JobStatus.AWAITING_REVIEW, False, None, True),
+    ],
+)
+def test_update_job_allows_exclusion_edits_that_keep_files_consistent(
+    signing_key: bytes, job_status: JobStatus, excluded_now: bool, output_path: str | None, excluded_to: bool
+) -> None:
+    db = FakeSession()
+    _seed_job_with_track(db)
+    db.rows["jobs"][0].status = job_status
+    db.rows["tracks"][0].excluded = excluded_now
+    db.rows["tracks"][0].output_path = output_path
+    if output_path is not None:
+        db.rows["tracks"][0].status = TrackStatus.DONE
+    app, token = _make_app(signing_key, db)
+    with TestClient(app) as c:
+        r = c.patch(
+            f"/api/jobs/{_JOB_ID_A}",
+            json={"tracks": [{"track_id": _TRK_ID_A, "excluded": excluded_to}]},
+            headers=_auth(token),
+        )
+        detail = c.get(f"/api/jobs/{_JOB_ID_A}", headers=_auth(token))
+    assert r.status_code == 200, r.text
+    assert detail.json()["tracks"][0]["excluded"] is excluded_to
 
 
 def test_update_job_track_unknown_field_422(signing_key: bytes) -> None:
