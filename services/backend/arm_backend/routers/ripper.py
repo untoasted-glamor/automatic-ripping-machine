@@ -126,7 +126,11 @@ async def heartbeat(req: RipperHeartbeatRequest, session: AsyncSession = Depends
     empty scan_result.
 
     `last_seen_at` is bumped on every call so the drive's online state
-    is implicitly refreshed too — no separate liveness ping needed."""
+    is implicitly refreshed too — no separate liveness ping needed.
+
+    `scan` (disc scan in progress, if any) is overwritten on every call,
+    so a heartbeat without it — not scanning, or an older ripper — clears
+    the previous report. The drives API surfaces it to the UI."""
     drive = (await session.execute(select(Drive).where(col(Drive.id) == req.drive_id))).scalar_one_or_none()
     if drive is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown drive_id: {req.drive_id}")
@@ -134,6 +138,10 @@ async def heartbeat(req: RipperHeartbeatRequest, session: AsyncSession = Depends
     drive.media_status = req.media_status
     drive.media_status_at = now
     drive.last_seen_at = now
+    scan = req.scan
+    drive.scan_started_at = scan.started_at if scan is not None else None
+    drive.scan_attempt = scan.attempt if scan is not None else None
+    drive.scan_max_attempts = scan.max_attempts if scan is not None else None
     session.add(drive)
     await session.commit()
 

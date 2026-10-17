@@ -13,6 +13,7 @@ from arm_common.schemas import (
     RegisterRequest,
     RipperConfigView,
     RipperHeartbeatRequest,
+    RipperScanActivity,
     RipStartResponse,
     ScanResult,
     SdfStatusReport,
@@ -50,8 +51,14 @@ class BackendClient:
         r.raise_for_status()
         return Drive.model_validate(r.json())
 
-    async def heartbeat(self, *, drive_id: str, media_status: DriveMediaStatus) -> None:
-        req = RipperHeartbeatRequest(drive_id=drive_id, media_status=media_status)
+    async def heartbeat(
+        self,
+        *,
+        drive_id: str,
+        media_status: DriveMediaStatus,
+        scan: RipperScanActivity | None = None,
+    ) -> None:
+        req = RipperHeartbeatRequest(drive_id=drive_id, media_status=media_status, scan=scan)
         r = await self._client.post("/api/ripper/heartbeat", json=req.model_dump(mode="json"))
         r.raise_for_status()
 

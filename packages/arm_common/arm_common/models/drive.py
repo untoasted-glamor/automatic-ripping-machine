@@ -41,6 +41,14 @@ class Drive(SQLModel, table=True):
         sa_column=enum_column(DriveMediaStatus, "drive_media_status", nullable=True)
     )
     media_status_at: datetime | None = Field(sa_column=Column(DateTime(timezone=True), nullable=True))
+    # Disc-scan activity, overwritten by every ripper heartbeat (all three
+    # None = not scanning). The MakeMKV scan runs before identify creates a
+    # job, so without this the drive looks idle for the whole scan, which
+    # can run many minutes across not-ready retries. Ripper-reported; the
+    # drives API hides it once the heartbeat goes stale.
+    scan_started_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+    scan_attempt: int | None = Field(default=None)
+    scan_max_attempts: int | None = Field(default=None)
     rip_params_json: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSON, nullable=False, server_default="{}"),

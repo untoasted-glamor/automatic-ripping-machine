@@ -2,6 +2,7 @@
 	import type { DriveView as Drive, SessionView } from '$lib/types/api.gen';
 	import { updateDrive, deleteDrive } from '$lib/api/drives';
 	import { triggerManual } from '$lib/api/jobs';
+	import { elapsedTime } from '$lib/utils/format';
 	import StatusBadge from './StatusBadge.svelte';
 	import SkeletonCard from './SkeletonCard.svelte';
 	import SlideOver from './SlideOver.svelte';
@@ -126,6 +127,27 @@
 
 	let isStale = $derived(drive?.status === 'offline');
 
+	// The ripper scans the disc (MakeMKV, possibly several retries) before
+	// identify creates a job, so without this the card reads "Idle" through
+	// a scan that can take many minutes. Missing field = not scanning.
+	let isScanning = $derived(drive?.scan_started_at != null);
+	let scanAttempt = $derived(drive?.scan_attempt ?? null);
+	let scanMaxAttempts = $derived(drive?.scan_max_attempts ?? null);
+	// Ticks once a second only while scanning, so the elapsed time is live
+	// between the settings page's drive polls.
+	let scanTick = $state(0);
+	$effect(() => {
+		if (!isScanning) return;
+		const timer = setInterval(() => {
+			scanTick += 1;
+		}, 1000);
+		return () => clearInterval(timer);
+	});
+	let scanElapsed = $derived.by(() => {
+		void scanTick;
+		return drive?.scan_started_at ? elapsedTime(drive.scan_started_at) : '';
+	});
+
 	async function startManualRip() {
 		if (!drive || triggering) return;
 		triggering = true;
@@ -245,6 +267,8 @@
 		</div>
 		{#if drive.current_job}
 			<StatusBadge status={drive.current_job.status} />
+		{:else if isScanning}
+			<span class="flex-shrink-0 text-xs font-medium text-primary-text dark:text-primary-text-dark">Scanning</span>
 		{:else}
 			<span class="flex-shrink-0 text-xs text-gray-400">Idle</span>
 		{/if}
@@ -329,6 +353,22 @@
 			</svg>
 		</label>
 	</div>
+
+	{#if isScanning}
+		<!-- Visible text, not tooltip-only. Only the label is a live region: the
+		     elapsed counter changes every second and would be re-announced. -->
+		<div
+			class="mb-2 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-sm bg-primary/10 px-2 py-1 text-[11px] text-primary-text dark:text-primary-text-dark"
+			data-testid="drive-scanning"
+		>
+			<span class="h-2 w-2 flex-shrink-0 animate-pulse rounded-full bg-primary" aria-hidden="true"></span>
+			<span role="status" class="font-medium">
+				Scanning disc...{#if scanAttempt != null && scanAttempt > 1 && scanMaxAttempts != null}
+					(retry, attempt {scanAttempt}/{scanMaxAttempts}){/if}
+			</span>
+			<span class="tabular-nums opacity-80" data-testid="drive-scanning-elapsed">{scanElapsed} elapsed</span>
+		</div>
+	{/if}
 
 	{#if drive.media_status === 'unavailable'}
 		<!-- Visible, not tooltip-only: a title attribute is unreachable on touch and

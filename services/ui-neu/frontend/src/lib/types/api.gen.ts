@@ -610,6 +610,18 @@ export type Drive = {
      */
     media_status_at: string | null;
     /**
+     * Scan Started At
+     */
+    scan_started_at?: string | null;
+    /**
+     * Scan Attempt
+     */
+    scan_attempt?: number | null;
+    /**
+     * Scan Max Attempts
+     */
+    scan_max_attempts?: number | null;
+    /**
      * Rip Params Json
      */
     rip_params_json?: {
@@ -810,6 +822,18 @@ export type DriveView = {
      * Media Status At
      */
     media_status_at: string | null;
+    /**
+     * Scan Started At
+     */
+    scan_started_at?: string | null;
+    /**
+     * Scan Attempt
+     */
+    scan_attempt?: number | null;
+    /**
+     * Scan Max Attempts
+     */
+    scan_max_attempts?: number | null;
     /**
      * Default Session Id
      */
@@ -2530,7 +2554,8 @@ export type RipperConfigView = {
  * POST /api/ripper/heartbeat body. Each ripper sends one of these
  * every HEARTBEAT_INTERVAL_SECONDS so the backend can refuse manual-
  * trigger requests against drives whose tray is open / empty without
- * waiting for a doomed identify.
+ * waiting for a doomed identify. The ripper also sends one immediately
+ * when a disc scan starts, advances to a retry, or ends.
  *
  * Named distinctly from the transcoder HeartbeatRequest because the
  * two services post completely different payloads to different paths.
@@ -2541,6 +2566,33 @@ export type RipperHeartbeatRequest = {
      */
     drive_id: string;
     media_status: DriveMediaStatus;
+    scan?: RipperScanActivity | null;
+};
+
+/**
+ * RipperScanActivity
+ *
+ * A MakeMKV disc scan in progress on the reporting ripper's drive.
+ *
+ * The scan runs before any job exists (identify needs its result) and can
+ * take many minutes across not-ready retries, so this is the only signal
+ * the UI has that the drive is busy. `started_at` is when the first
+ * attempt began, so elapsed time spans retries; `attempt` is the 1-based
+ * attempt currently running (or being backed off before).
+ */
+export type RipperScanActivity = {
+    /**
+     * Started At
+     */
+    started_at: string;
+    /**
+     * Attempt
+     */
+    attempt: number;
+    /**
+     * Max Attempts
+     */
+    max_attempts: number;
 };
 
 /**

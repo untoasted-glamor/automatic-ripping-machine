@@ -91,6 +91,20 @@ async def maybe_reacquire_current_job(
     await controller.pickup(job, device_path)
 
 
+async def send_heartbeat(
+    client: BackendClient, drive_id: str, device_path: str, controller: JobController
+) -> DriveMediaStatus:
+    """Probe the media status and post one heartbeat carrying it plus the
+    controller's current scan activity (None when not scanning). Returns
+    the probed status. Raises on transport errors — callers decide."""
+    if is_iso_source(device_path):
+        status = DriveMediaStatus.LOADED
+    else:
+        status, _ = probe_drive_media(device_path)
+    await client.heartbeat(drive_id=drive_id, media_status=status, scan=controller.scan_activity)
+    return status
+
+
 async def heartbeat_loop(client: BackendClient, drive_id: str, device_path: str, controller: JobController) -> None:
     """Post the current media status to the backend every
     HEARTBEAT_INTERVAL_SECONDS. Errors are logged + swallowed —
@@ -105,14 +119,13 @@ async def heartbeat_loop(client: BackendClient, drive_id: str, device_path: str,
     whether the idle ripper should re-acquire a rip-ready job from the
     backend (handles the case where the in-memory wait timed out or the
     backend restarted while a disc was seated).
+
+    The controller also triggers `send_heartbeat` directly whenever its
+    scan activity changes, so the UI sees "scanning" without waiting here.
     """
     while True:
         try:
-            if is_iso_source(device_path):
-                status = DriveMediaStatus.LOADED
-            else:
-                status, _ = probe_drive_media(device_path)
-            await client.heartbeat(drive_id=drive_id, media_status=status)
+            status = await send_heartbeat(client, drive_id, device_path, controller)
             await maybe_reacquire_current_job(
                 controller,
                 get_current_job=client.get_current_job,
@@ -305,12 +318,23 @@ async def amain() -> None:
             hostname=settings.HOSTNAME,
             ssl_context=ssl_ctx,
         ) as ws:
+            scan_push_lock = asyncio.Lock()
+
+            async def push_scan_activity() -> None:
+                # Immediate heartbeat on scan start / retry / end so the UI's
+                # "scanning" state doesn't lag a full heartbeat interval.
+                # Serialized so a slow "started" post can't land after the
+                # "ended" one; each post reads the state current at send time.
+                async with scan_push_lock:
+                    await send_heartbeat(client, drive_id, device_path, controller)
+
             controller = JobController(
                 client,
                 drive_id,
                 ws=ws,
                 device_path=device_path,
                 default_min_length_seconds=settings.ARM_MIN_LENGTH_SECONDS,
+                on_scan_activity_change=push_scan_activity,
             )
             await ws.subscribe(f"ripper.commands.{drive_id}", controller.on_ws_command)
             if not iso_mode:

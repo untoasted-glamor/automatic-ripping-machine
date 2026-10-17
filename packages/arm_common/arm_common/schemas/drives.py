@@ -29,6 +29,11 @@ class DriveView(BaseModel):
     last_seen_at: datetime | None
     media_status: DriveMediaStatus | None
     media_status_at: datetime | None
+    # Set while the drive's ripper is scanning a disc (before any job
+    # exists); all None = not scanning. Cleared when the heartbeat is stale.
+    scan_started_at: datetime | None = None
+    scan_attempt: int | None = None
+    scan_max_attempts: int | None = None
     default_session_id: str | None
     rip_speed: int | None
     drive_mode: DriveMode | None

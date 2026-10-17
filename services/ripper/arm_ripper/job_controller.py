@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 import shutil
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +10,15 @@ from pathlib import Path
 import httpx
 
 from arm_common import DiscType, Job, JobStatus, TrackStatus, with_log_context
-from arm_common.schemas import JobView, RipperConfigView, RipStartResponse, ScanResult, TrackView, WSEnvelope
+from arm_common.schemas import (
+    JobView,
+    RipperConfigView,
+    RipperScanActivity,
+    RipStartResponse,
+    ScanResult,
+    TrackView,
+    WSEnvelope,
+)
 from arm_ripper.backend_client import BackendClient
 from arm_ripper.community_keydb import refresh_community_keydb
 from arm_ripper.makemkv_sdf import refresh_makemkv_sdf
@@ -123,8 +132,16 @@ class JobController:
         ws: WSClient | None = None,
         device_path: str | None = None,
         default_min_length_seconds: int = DEFAULT_MIN_LENGTH_SECONDS,
+        on_scan_activity_change: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._client = client
+        # Disc scan in progress (None = not scanning). Read by the heartbeat
+        # so the UI can show "scanning" before identify creates a job.
+        # `on_scan_activity_change` (main.py: an immediate heartbeat) fires on
+        # every change so the UI doesn't lag a full heartbeat interval.
+        self._scan_activity: RipperScanActivity | None = None
+        self._on_scan_activity_change = on_scan_activity_change
+        self._scan_notify_tasks: set[asyncio.Task[None]] = set()
         self._keydb_tasks: set[asyncio.Task[None]] = set()
         self._sdf_tasks: set[asyncio.Task[None]] = set()
         self._drive_id = drive_id
@@ -157,6 +174,31 @@ class JobController:
     @property
     def is_active(self) -> bool:
         return self._active_lock.locked()
+
+    @property
+    def scan_activity(self) -> RipperScanActivity | None:
+        """The disc scan currently running on this drive, or None."""
+        return self._scan_activity
+
+    def _set_scan_activity(self, activity: RipperScanActivity | None) -> None:
+        """Record scan progress and push it out without blocking the scan.
+
+        The notify callback runs as a fire-and-forget task: a slow or
+        unreachable backend must never delay (or fail) the scan itself; the
+        periodic heartbeat re-sends the current state regardless."""
+        self._scan_activity = activity
+        if self._on_scan_activity_change is None:
+            return
+        task = asyncio.create_task(self._notify_scan_activity_change(self._on_scan_activity_change))
+        self._scan_notify_tasks.add(task)
+        task.add_done_callback(self._scan_notify_tasks.discard)
+
+    @staticmethod
+    async def _notify_scan_activity_change(callback: Callable[[], Awaitable[None]]) -> None:
+        try:
+            await callback()
+        except Exception as exc:  # noqa: BLE001 — best-effort, like the heartbeat
+            logger.warning("scan-activity update failed: %s", exc)
 
     def is_idle(self) -> bool:
         """True when no rip pipeline is running (no active task claimed the lock).
@@ -364,6 +406,16 @@ class JobController:
                 self._active_job_id = None
 
     async def _scan_with_ready_retry(self, device_path: str) -> ScanResult:
+        """Scan the disc (see `_scan_until_ready`), reporting it as scan
+        activity for the UI from the first attempt until the scan returns
+        or raises — including cancellation."""
+        started_at = datetime.now(timezone.utc)
+        try:
+            return await self._scan_until_ready(device_path, started_at=started_at)
+        finally:
+            self._set_scan_activity(None)
+
+    async def _scan_until_ready(self, device_path: str, *, started_at: datetime) -> ScanResult:
         """Scan the disc, retrying when a DISC_OK drive yields zero titles.
 
         A `DISC_OK` drive that scans to zero titles is almost certainly not
@@ -379,6 +431,13 @@ class JobController:
         """
         last: ScanResult | None = None
         for attempt in range(1, SCAN_NOT_READY_MAX_ATTEMPTS + 1):
+            self._set_scan_activity(
+                RipperScanActivity(
+                    started_at=started_at,
+                    attempt=attempt,
+                    max_attempts=SCAN_NOT_READY_MAX_ATTEMPTS,
+                )
+            )
             result = await scan_disc(device_path)
             last = result
             if result.titles:

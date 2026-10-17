@@ -40,6 +40,15 @@ def _current_job(jobs_for_drive: list[Job]) -> DriveCurrentJobView | None:
 def _to_view(drive: Drive, jobs_for_drive: list[Job]) -> DriveView:
     view = DriveView.model_validate(drive)
     view.current_job = _current_job(jobs_for_drive)
+    # Scan activity is only as fresh as the heartbeat that carried it. If the
+    # ripper died mid-scan, nothing clears the columns, so stop claiming
+    # "scanning" once the heartbeat goes stale (same window as the diagnostic).
+    if view.scan_started_at is not None:
+        seen = drive.media_status_at
+        if seen is None or datetime.now(timezone.utc) - seen > _STALE_AFTER:
+            view.scan_started_at = None
+            view.scan_attempt = None
+            view.scan_max_attempts = None
     return view
 
 
