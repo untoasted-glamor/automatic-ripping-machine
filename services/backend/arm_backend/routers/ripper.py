@@ -50,6 +50,7 @@ from arm_common.schemas import (
     RipperHeartbeatRequest,
     RipStartResponse,
     ScanResult,
+    ScanTitle,
     SdfStatusReport,
     TrackUpdateRequest,
     TrackView,
@@ -84,6 +85,18 @@ async def _resolve_min_length_override(db: AsyncSession, job: Job) -> int | None
     if isinstance(raw, int) and raw >= 0:
         return raw
     return None
+
+
+def _stored_scan_titles(job: Job) -> list[ScanTitle] | None:
+    """The titles of the job's stored disc scan, for `RipStartResponse.scan_titles`.
+
+    None when the job carries no `scan_result` (e.g. a job created before
+    the scan was stored).
+    """
+    scan_dict = (job.metadata_json or {}).get("scan_result")
+    if not scan_dict:
+        return None
+    return ScanResult.model_validate(scan_dict).titles
 
 
 def _get_dispatcher(request: Request) -> MetadataDispatcher:
@@ -481,6 +494,7 @@ async def rip_start(
             rip_preset_id=preset_id,
             tracks=[TrackView.model_validate(t) for t in existing],
             min_length_seconds=await _resolve_min_length_override(session, job),
+            scan_titles=_stored_scan_titles(job),
         )
 
     # IDENTIFIED is the normal pre-rip state; AWAITING_REVIEW reaches here only
@@ -553,6 +567,7 @@ async def rip_start(
         rip_preset_id=preset_id,
         tracks=[TrackView.model_validate(t) for t in refreshed],
         min_length_seconds=await _resolve_min_length_override(session, job),
+        scan_titles=scan.titles,
     )
 
 
@@ -609,6 +624,7 @@ async def resume(
         rip_preset_id=preset_id,
         tracks=[TrackView.model_validate(t) for t in refreshed],
         min_length_seconds=await _resolve_min_length_override(session, job),
+        scan_titles=_stored_scan_titles(job),
     )
 
 

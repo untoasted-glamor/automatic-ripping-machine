@@ -2511,6 +2511,10 @@ export type RipStartResponse = {
      * Min Length Seconds
      */
     min_length_seconds?: number | null;
+    /**
+     * Scan Titles
+     */
+    scan_titles?: Array<ScanTitle> | null;
 };
 
 /**

@@ -1015,6 +1015,69 @@ def test_rip_start_success_creates_tracks_and_emits() -> None:
     assert any(e["event_type"] == "rip.started" for e in hub.events)
 
 
+# --- rip-start scan_titles ----------------------------------------------------
+
+# Every ScanTitle field set, so the response's `scan_titles` can be compared to
+# the stored scan verbatim.
+_THREE_TITLES: list[dict[str, Any]] = [
+    {"index": 0, "duration_seconds": 1452, "chapter_count": 6, "size_bytes": 5_300_000_000, "source_file": "A_t00.mkv"},
+    {"index": 1, "duration_seconds": 1451, "chapter_count": 6, "size_bytes": 5_200_000_000, "source_file": "A_t01.mkv"},
+    {"index": 2, "duration_seconds": 2903, "chapter_count": 12, "size_bytes": 10_500_000, "source_file": "A_t02.mkv"},
+]
+
+
+def _three_title_scan() -> dict[str, Any]:
+    return {**_scan_dict("bluray"), "titles": _THREE_TITLES}
+
+
+def test_rip_start_existing_tracks_carry_scan_titles_and_excluded_tracks() -> None:
+    """Gate path: the response lists every scanned title (so the ripper can tell
+    whether the kept set covers what `mkv all` would rip) and still returns the
+    excluded track, flagged."""
+    db = FakeSession()
+    db.rows["drives"] = [_drive()]
+    db.rows["jobs"] = [_job(status=JobStatus.AWAITING_REVIEW, meta={"scan_result": _three_title_scan()})]
+    kept = [_track(f"trk_{i}", status=TrackStatus.QUEUED, index=i) for i in (0, 1)]
+    dropped = _track("trk_2", status=TrackStatus.QUEUED, index=2)
+    dropped.excluded = True
+    db.rows["tracks"] = [*kept, dropped]
+    with TestClient(_make_app(db)) as client:
+        r = client.post("/api/ripper/jobs/job_01JZXR7K3M5Q8N4VWA00000001/rip-start", headers=_OWNER_HEADERS)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["scan_titles"] == _THREE_TITLES
+    assert {t["id"]: t["excluded"] for t in body["tracks"]} == {"trk_0": False, "trk_1": False, "trk_2": True}
+
+
+def test_rip_start_new_tracks_carry_scan_titles() -> None:
+    """Ungated path: tracks are selected now, and `scan_titles` still lists every
+    scanned title, selected or not."""
+    db = FakeSession()
+    db.rows["drives"] = [_drive()]
+    db.rows["jobs"] = [_job(status=JobStatus.IDENTIFIED, meta={"scan_result": _three_title_scan()})]
+    db.rows["tracks"] = []
+    db.rows["rip_presets"] = [_movie_preset()]
+    # The preset picked only title 0 (FakeSession applies no column defaults,
+    # so the selection is supplied as finished rows, as the tests above do).
+    new = [_track("trk_0", status=TrackStatus.QUEUED, index=0)]
+    with TestClient(_make_app(db)) as client, _patch_select_tracks(new):
+        r = client.post("/api/ripper/jobs/job_01JZXR7K3M5Q8N4VWA00000001/rip-start", headers=_OWNER_HEADERS)
+    assert r.status_code == 200
+    assert [t["id"] for t in r.json()["tracks"]] == ["trk_0"]
+    assert r.json()["scan_titles"] == _THREE_TITLES
+
+
+def test_rip_start_without_stored_scan_has_null_scan_titles() -> None:
+    db = FakeSession()
+    db.rows["drives"] = [_drive()]
+    db.rows["jobs"] = [_job(status=JobStatus.RIPPING)]
+    db.rows["tracks"] = [_track("trk_1", status=TrackStatus.IN_PROGRESS)]
+    with TestClient(_make_app(db)) as client:
+        r = client.post("/api/ripper/jobs/job_01JZXR7K3M5Q8N4VWA00000001/rip-start", headers=_OWNER_HEADERS)
+    assert r.status_code == 200
+    assert r.json()["scan_titles"] is None
+
+
 # --- /resume (no-default-preset branch; happy path is in test_ripper_resume) --
 
 

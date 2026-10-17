@@ -4,6 +4,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from arm_common.enums import DiscType, JobStatus, SessionApplicationStatus, TrackKind, TrackStatus, TranscodeTaskStatus
+from arm_common.schemas.ripper import ScanTitle
 
 
 class ResolveRequest(BaseModel):
@@ -226,6 +227,12 @@ class RipStartResponse(BaseModel):
     # 600). Surfaced here so the ripper doesn't have to read Session
     # state itself.
     min_length_seconds: int | None = None
+    # Every title the disc scan reported (`job.metadata_json["scan_result"]`),
+    # so the ripper can tell whether the kept tracks cover everything
+    # `makemkvcon mkv all` would rip: on the ungated path, titles the preset
+    # didn't select have no Track row at all, so `tracks` alone can't say.
+    # None when the job has no stored scan.
+    scan_titles: list[ScanTitle] | None = None
 
 
 class ResolveFanOutOutcomeView(BaseModel):
