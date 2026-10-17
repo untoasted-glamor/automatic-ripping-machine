@@ -12,6 +12,7 @@ from sqlmodel import col, select
 
 from arm_backend.auth import require_jwt, require_writer
 from arm_backend.auto_session import (
+    NOTHING_TO_TRANSCODE_DETAIL,
     ResolveFanOutOutcome,
     SessionNotFoundError,
     apply_session_internal,
@@ -1059,6 +1060,8 @@ async def apply_session(
                 "collisions": [c.model_dump() for c in outcome.collisions],
             },
         )
+    if outcome.skipped_reason == "nothing_to_transcode":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=NOTHING_TO_TRANSCODE_DETAIL)
 
     assert outcome.application is not None
     return ApplySessionResponse(

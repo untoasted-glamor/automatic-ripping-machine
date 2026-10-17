@@ -241,7 +241,7 @@ class ResolveFanOutOutcomeView(BaseModel):
     session_id: str
     status: SessionApplicationStatus
     task_count: int
-    skipped_reason: Literal["collisions", "template", "session_missing"] | None = None
+    skipped_reason: Literal["collisions", "template", "session_missing", "nothing_to_transcode"] | None = None
     error_detail: str | None = None
 
 

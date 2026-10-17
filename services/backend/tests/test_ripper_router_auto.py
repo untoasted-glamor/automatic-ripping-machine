@@ -139,6 +139,7 @@ def _seed(
             source_ref="1",
             expected_duration_seconds=8000,
             status=TrackStatus.DONE,
+            output_path="/raw/job_01JZXR7K3M5Q8N4VWA00000001/title_t01.mkv",
         )
     ]
     db.rows["transcode_tasks"] = []
@@ -251,3 +252,24 @@ async def test_collision_logs_skipped_reason_and_no_op(tmp_path: Path, caplog: p
     assert [r for r in db.added if isinstance(r, SessionApplication)] == []
     assert hub.events == []
     assert any("skipped reason=collisions" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_no_ripped_track_logs_nothing_to_transcode_and_no_op(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The only kept track FAILED: auto-apply creates no application rather than
+    an empty one (or a task for a track with no file)."""
+    _set_media_root(tmp_path)
+    db = FakeSession()
+    job = _seed(db, job_status=JobStatus.RIPPED_PARTIAL)
+    db.rows["tracks"][0].status = TrackStatus.FAILED
+    db.rows["tracks"][0].output_path = None
+    hub = CapturingHub()
+
+    with caplog.at_level(logging.WARNING, logger="arm_backend.auto_session"):
+        await maybe_auto_apply_session(db, job, hub)  # type: ignore[arg-type]
+
+    assert [r for r in db.added if isinstance(r, SessionApplication)] == []
+    assert hub.events == []
+    assert any("skipped reason=nothing_to_transcode" in rec.message for rec in caplog.records)

@@ -2317,7 +2317,7 @@ export type ResolveFanOutOutcomeView = {
     /**
      * Skipped Reason
      */
-    skipped_reason?: 'collisions' | 'template' | 'session_missing' | null;
+    skipped_reason?: 'collisions' | 'template' | 'session_missing' | 'nothing_to_transcode' | null;
     /**
      * Error Detail
      */

@@ -104,6 +104,7 @@ def _seed(db: FakeSession, *, job_status: JobStatus = JobStatus.RIPPED) -> None:
             source_ref="1",
             expected_duration_seconds=8000,
             status=TrackStatus.DONE,
+            output_path="/raw/job_01JZXR7K3M5Q8N4VWA00000001/title_t01.mkv",
         )
     ]
     db.rows["transcode_tasks"] = []
@@ -387,6 +388,7 @@ def test_apply_duplicate_in_request_collision_for_multi_track_no_track_token(
             source_ref="2",
             expected_duration_seconds=7000,
             status=TrackStatus.DONE,
+            output_path="/raw/job_01JZXR7K3M5Q8N4VWA00000001/title_t02.mkv",
         )
     )
     app, token = _make_app(signing_key, db, tmp_path)
@@ -521,3 +523,66 @@ def test_apply_emits_session_queued_with_manual_source(signing_key: bytes, tmp_p
     assert payload["source"] == "manual"
     assert payload["job_id"] == "job_01JZXR7K3M5Q8N4VWA00000001"
     assert payload["task_count"] == 1
+
+
+def _partial_rip_tracks(statuses: list[TrackStatus]) -> list[Track]:
+    """One kept VIDEO_TITLE per status; DONE tracks carry their rip file, as
+    the ripper's DONE PATCH leaves them."""
+    return [
+        Track(
+            id=f"trk_{i}",
+            job_id="job_01JZXR7K3M5Q8N4VWA00000001",
+            kind=TrackKind.VIDEO_TITLE,
+            index=i,
+            source_ref=str(i),
+            expected_duration_seconds=1452,
+            status=st,
+            output_path=f"/raw/job_01JZXR7K3M5Q8N4VWA00000001/Disc_t{i:02d}.mkv" if st == TrackStatus.DONE else None,
+            last_error="makemkvcon produced no .mkv for this title" if st == TrackStatus.FAILED else None,
+        )
+        for i, st in enumerate(statuses)
+    ]
+
+
+def _per_track_session(db: FakeSession) -> None:
+    db.rows["sessions"][0].output_path_template = "{title} ({year})/{title} - t{track}.{ext}"
+
+
+def test_apply_to_ripped_partial_job_transcodes_only_tracks_with_a_file(signing_key: bytes, tmp_path: Path) -> None:
+    """A FAILED track has no rip file; a TranscodeTask for it would be spawned
+    and 409'd by transcoder register every dispatcher tick, forever (A6)."""
+    db = FakeSession()
+    _seed(db, job_status=JobStatus.RIPPED_PARTIAL)
+    _per_track_session(db)
+    db.rows["tracks"] = _partial_rip_tracks([TrackStatus.DONE, TrackStatus.FAILED, TrackStatus.DONE])
+    app, token = _make_app(signing_key, db, tmp_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/transcode",
+            json={"session_id": "ses_x"},
+            headers=_auth(token),
+        )
+    assert r.status_code == 200, r.text
+    assert sorted(t["source_track_id"] for t in r.json()["tasks"]) == ["trk_0", "trk_2"]
+    assert sorted(t.source_track_id for t in db.rows["transcode_tasks"]) == ["trk_0", "trk_2"]
+
+
+def test_apply_with_every_track_failed_or_excluded_is_nothing_to_transcode(signing_key: bytes, tmp_path: Path) -> None:
+    """No kept track has a file → 409 "nothing to transcode", and no empty
+    application is left behind."""
+    db = FakeSession()
+    _seed(db, job_status=JobStatus.RIPPED_PARTIAL)
+    _per_track_session(db)
+    db.rows["tracks"] = _partial_rip_tracks([TrackStatus.FAILED, TrackStatus.DONE])
+    db.rows["tracks"][1].excluded = True
+    app, token = _make_app(signing_key, db, tmp_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/transcode",
+            json={"session_id": "ses_x"},
+            headers=_auth(token),
+        )
+    assert r.status_code == 409, r.text
+    assert "nothing to transcode" in r.json()["detail"]
+    assert db.rows["session_applications"] == []
+    assert db.rows["transcode_tasks"] == []

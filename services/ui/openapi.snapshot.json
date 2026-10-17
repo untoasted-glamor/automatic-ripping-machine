@@ -11596,7 +11596,8 @@
                 "enum": [
                   "collisions",
                   "template",
-                  "session_missing"
+                  "session_missing",
+                  "nothing_to_transcode"
                 ]
               },
               {

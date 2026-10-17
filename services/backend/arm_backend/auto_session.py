@@ -41,6 +41,7 @@ from arm_common import (
     SessionApplication,
     SessionApplicationStatus,
     Track,
+    TrackStatus,
     TranscodePreset,
     TranscodeTask,
     TranscodeTaskStatus,
@@ -74,11 +75,15 @@ _PARK_UNTIL_GATE_RELEASE_STATUSES: frozenset[JobStatus] = frozenset(
 )
 
 
+# Shared by the manual route's 409 and the parked-application fan-out.
+NOTHING_TO_TRANSCODE_DETAIL = "nothing to transcode: no kept track on this job has a ripped file"
+
+
 class SessionNotFoundError(Exception):
     """Raised by `apply_session_internal` when `session_id` doesn't resolve."""
 
 
-SkippedReason = Literal["collisions", "template", "session_missing"]
+SkippedReason = Literal["collisions", "template", "session_missing", "nothing_to_transcode"]
 ApplySource = Literal["manual", "auto"]
 
 
@@ -282,8 +287,9 @@ async def _apply_session_internal(
         created_by_user_id=created_by_user_id,
     )
 
-    if outcome.skipped_reason == "collisions":
-        # Nothing was persisted in the helper on this branch; no commit needed.
+    if outcome.skipped_reason is not None:
+        # Collisions / nothing to transcode: the helper persisted nothing on
+        # these branches, so there's nothing to commit.
         return outcome
 
     await db.commit()
@@ -330,10 +336,26 @@ async def _fan_out_tasks_for_application(
         collision-without-overwrite it is left untouched and returned with
         `skipped_reason='collisions'`.
 
+    Only tracks the rip produced a file for are fanned out (DONE with an
+    `output_path`). A FAILED or never-ripped track has nothing to transcode,
+    and a task for it would be spawned and rejected at transcoder /register
+    every dispatcher tick, forever. If that leaves nothing, no application
+    is created (or the reused one is left as it was) and the outcome says
+    `skipped_reason='nothing_to_transcode'`.
+
     Caller is responsible for the commit. The helper only `flush`es so the
     new application's id is populated for downstream task FKs.
     """
-    resolved = compute_outputs(job, tracks, sess, transcode_preset)
+    ripped = [t for t in tracks if t.status == TrackStatus.DONE and t.output_path]
+    resolved = compute_outputs(job, ripped, sess, transcode_preset)
+    if not resolved:
+        return ApplySessionOutcome(
+            application=application,
+            tasks=[],
+            collisions=[],
+            idempotent=False,
+            skipped_reason="nothing_to_transcode",
+        )
 
     paths = [r.output_path for r in resolved]
     media_root = Path(settings.MEDIA_ROOT)
@@ -494,6 +516,16 @@ async def fan_out_waiting_identify_applications(
                     tasks=[],
                     skipped_reason="collisions",
                     error_detail=f"output path collisions: {len(outcome.collisions)} path(s) already claimed",
+                )
+            )
+            continue
+        if outcome.skipped_reason == "nothing_to_transcode":
+            outcomes.append(
+                ResolveFanOutOutcome(
+                    application=app,
+                    tasks=[],
+                    skipped_reason="nothing_to_transcode",
+                    error_detail=NOTHING_TO_TRANSCODE_DETAIL,
                 )
             )
             continue

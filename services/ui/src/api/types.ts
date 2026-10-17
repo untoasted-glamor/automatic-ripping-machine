@@ -366,7 +366,7 @@ export interface ResolveFanOutOutcomeView {
   session_id: string
   status: SessionApplicationStatus
   task_count: number
-  skipped_reason: 'collisions' | 'template' | 'session_missing' | null
+  skipped_reason: 'collisions' | 'template' | 'session_missing' | 'nothing_to_transcode' | null
   error_detail: string | null
 }
 

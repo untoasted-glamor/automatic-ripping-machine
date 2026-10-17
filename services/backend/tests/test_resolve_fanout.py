@@ -161,6 +161,7 @@ def _seed(
             source_ref="1",
             expected_duration_seconds=8000,
             status=TrackStatus.DONE,
+            output_path="/raw/job_01JZXR7K3M5Q8N4VWA00000001/title_t01.mkv",
         )
     ]
     db.rows["transcode_tasks"] = []

@@ -169,6 +169,8 @@ def _track(
         index=index,
         source_ref=str(index),
         status=status,
+        # The ripper's DONE PATCH always carries the rip file.
+        output_path=f"/raw/{job_id}/title_t{index:02d}.mkv" if status == TrackStatus.DONE else None,
         attempts=0,
     )
 
@@ -1230,6 +1232,26 @@ def test_rip_complete_survives_a_broken_parked_session(monkeypatch: pytest.Monke
     r = _rip_complete(db, _Hub(), monkeypatch)
     assert r.status_code == 200
     assert r.json()["status"] == "ripped"
+    assert db.rows["session_applications"][0].status == SessionApplicationStatus.WAITING_IDENTIFY
+    assert db.rows["transcode_tasks"] == []
+
+
+def test_rip_complete_parked_session_with_no_ripped_track_queues_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dropped track ripped but the only kept one FAILED, so there is no file
+    to transcode: the parked application is left waiting_identify with no tasks,
+    rather than queueing a task the transcoder would reject at /register on every
+    dispatcher tick."""
+    from arm_common import SessionApplicationStatus
+
+    db = FakeSession()
+    db.rows["jobs"] = [_job(status=JobStatus.RIPPING)]
+    db.rows["drives"] = [_drive()]
+    _seed_parked_session(db, track_status=TrackStatus.DONE)
+    kept = db.rows["tracks"][0]
+    kept.status, kept.output_path = TrackStatus.FAILED, None
+    r = _rip_complete(db, _Hub(), monkeypatch)
+    assert r.status_code == 200
+    assert r.json()["status"] == "ripped_partial"
     assert db.rows["session_applications"][0].status == SessionApplicationStatus.WAITING_IDENTIFY
     assert db.rows["transcode_tasks"] == []
 
