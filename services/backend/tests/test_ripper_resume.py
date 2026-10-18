@@ -146,9 +146,26 @@ def test_resume_returns_scan_titles_and_excluded_tracks() -> None:
     """A resumed rip gets the same scan detail as rip-start, and the excluded
     track is still in `tracks`, flagged, so the ripper re-runs the same
     strategy and skips it again."""
+    dvd_keys: dict[str, Any] = {"source_playlist": None, "segment_count": 1, "segment_map": "1-7"}
     titles: list[dict[str, Any]] = [
-        {"index": 1, "duration_seconds": 4200, "chapter_count": 24, "size_bytes": 30_000_000_000, "source_file": "t00"},
-        {"index": 2, "duration_seconds": 300, "chapter_count": 1, "size_bytes": 400_000_000, "source_file": "t01"},
+        {
+            "index": 1,
+            "duration_seconds": 4200,
+            "chapter_count": 24,
+            "size_bytes": 30_000_000_000,
+            "source_file": "t00",
+            "original_title_id": 1,
+            **dvd_keys,
+        },
+        {
+            "index": 2,
+            "duration_seconds": 300,
+            "chapter_count": 1,
+            "size_bytes": 400_000_000,
+            "source_file": "t01",
+            "original_title_id": 4,
+            **dvd_keys,
+        },
     ]
     db = FakeSession()
     _seed(db)

@@ -71,6 +71,16 @@ def _classify_from_cinfo(disc_type_text: str) -> DiscType | None:
     return None
 
 
+def _int_field(entry: dict[str, object], key: str) -> int | None:
+    value = entry.get(key)
+    return value if isinstance(value, int) else None
+
+
+def _str_field(entry: dict[str, object], key: str) -> str | None:
+    value = entry.get(key)
+    return value if isinstance(value, str) else None
+
+
 def parse_makemkvcon_info(
     lines: Iterable[str],
 ) -> tuple[str | None, list[ScanTitle], DiscType | None]:
@@ -87,7 +97,17 @@ def parse_makemkvcon_info(
     - TINFO:t,9,...  — title duration (HH:MM:SS)
     - TINFO:t,8,...  — chapter count
     - TINFO:t,11,... — title size in bytes
-    - TINFO:t,27,... — source filename (e.g. title_t00.mkv)
+    - TINFO:t,16,... — source playlist/clip on Blu-ray (e.g. 00800.mpls,
+                       or 00002.m2ts for a bare clip); not emitted on DVD.
+                       The stable key for matching a title across sources.
+    - TINFO:t,24,... — original title number on DVD (e.g. "07"); not
+                       emitted on Blu-ray. DVD's stable key.
+    - TINFO:t,25,... — segment count
+    - TINFO:t,26,... — segment map, kept verbatim: a clip list on Blu-ray
+                       ("14,15,16"), a cell range on DVD ("1-7")
+    - TINFO:t,27,... — planned *output* filename (e.g. title_t00.mkv),
+                       numbered by this invocation's own title ids; despite
+                       the field name it is not a source file
     - TCOUNT:n       — MakeMKV's own title count, used only to detect a
                        truncated parse (logged); it does NOT synthesise
                        titles on its own. See the `want_indices` comment.
@@ -149,6 +169,20 @@ def parse_makemkvcon_info(
                     entry["size_bytes"] = int(value)
                 except ValueError:
                     pass
+            elif code == 16:
+                entry["source_playlist"] = value
+            elif code == 24:
+                try:
+                    entry["original_title_id"] = int(value)
+                except ValueError:
+                    pass
+            elif code == 25:
+                try:
+                    entry["segment_count"] = int(value)
+                except ValueError:
+                    pass
+            elif code == 26:
+                entry["segment_map"] = value
             elif code == 27:
                 entry["source_file"] = value
 
@@ -174,16 +208,17 @@ def parse_makemkvcon_info(
         duration = duration_obj if isinstance(duration_obj, int) else None
         if duration is None:
             missing_duration.append(idx)
-        chapter_obj = entry.get("chapter_count")
-        size_obj = entry.get("size_bytes")
-        source_obj = entry.get("source_file")
         parsed.append(
             ScanTitle(
                 index=idx,
                 duration_seconds=duration,
-                chapter_count=chapter_obj if isinstance(chapter_obj, int) else None,
-                size_bytes=size_obj if isinstance(size_obj, int) else None,
-                source_file=source_obj if isinstance(source_obj, str) else None,
+                chapter_count=_int_field(entry, "chapter_count"),
+                size_bytes=_int_field(entry, "size_bytes"),
+                source_file=_str_field(entry, "source_file"),
+                source_playlist=_str_field(entry, "source_playlist"),
+                original_title_id=_int_field(entry, "original_title_id"),
+                segment_count=_int_field(entry, "segment_count"),
+                segment_map=_str_field(entry, "segment_map"),
             )
         )
 
@@ -251,7 +286,9 @@ def summarize_empty_scan(lines: Iterable[str]) -> str:
     shown = messages[:_EMPTY_SCAN_MAX_MESSAGES]
     if len(messages) > len(shown):
         shown.append(f"... {len(messages) - len(shown)} more")
-    drive_text = "; ".join(drives) if drives else "none — MakeMKV could not open any drive (check the /dev/sgN passthrough)"
+    drive_text = (
+        "; ".join(drives) if drives else "none — MakeMKV could not open any drive (check the /dev/sgN passthrough)"
+    )
     return f"drives seen: {drive_text}; makemkv said: {' | '.join(shown) if shown else '(no MSG output)'}"
 
 

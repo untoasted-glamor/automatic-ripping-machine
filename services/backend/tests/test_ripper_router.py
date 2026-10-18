@@ -1020,9 +1020,22 @@ def test_rip_start_success_creates_tracks_and_emits() -> None:
 # Every ScanTitle field set, so the response's `scan_titles` can be compared to
 # the stored scan verbatim.
 _THREE_TITLES: list[dict[str, Any]] = [
-    {"index": 0, "duration_seconds": 1452, "chapter_count": 6, "size_bytes": 5_300_000_000, "source_file": "A_t00.mkv"},
-    {"index": 1, "duration_seconds": 1451, "chapter_count": 6, "size_bytes": 5_200_000_000, "source_file": "A_t01.mkv"},
-    {"index": 2, "duration_seconds": 2903, "chapter_count": 12, "size_bytes": 10_500_000, "source_file": "A_t02.mkv"},
+    {
+        "index": i,
+        "duration_seconds": dur,
+        "chapter_count": chapters,
+        "size_bytes": size,
+        "source_file": f"A_t{i:02d}.mkv",
+        "source_playlist": playlist,
+        "original_title_id": None,
+        "segment_count": len(segments.split(",")),
+        "segment_map": segments,
+    }
+    for i, dur, chapters, size, playlist, segments in (
+        (0, 1452, 6, 5_300_000_000, "00009.mpls", "14"),
+        (1, 1451, 6, 5_200_000_000, "00010.mpls", "15"),
+        (2, 2903, 12, 10_500_000, "00008.mpls", "14,15"),
+    )
 ]
 
 
