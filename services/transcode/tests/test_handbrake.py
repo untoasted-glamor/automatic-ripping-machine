@@ -168,3 +168,60 @@ async def test_consume_progress_handles_chunk_boundary_mid_line() -> None:
 # Vitest-style asyncio plumbing — pytest-asyncio is already a dev dep.
 def _autouse_asyncio_mode() -> None:
     asyncio.get_event_loop_policy()  # touch to silence unused-import warnings
+
+
+class _RunningProc:
+    """A subprocess that keeps encoding until it is killed."""
+
+    def __init__(self) -> None:
+        self._killed = asyncio.Event()
+        self.killed = False
+        self.stdout = self
+        self.stderr = self
+
+    async def readline(self) -> bytes:
+        await self._killed.wait()
+        return b""
+
+    async def read(self, _n: int = -1) -> bytes:
+        await self._killed.wait()
+        return b""
+
+    async def wait(self) -> int:
+        await self._killed.wait()
+        return -9
+
+    def kill(self) -> None:
+        self.killed = True
+        self._killed.set()
+
+
+async def test_cancelling_the_encode_kills_the_subprocess(monkeypatch, tmp_path) -> None:
+    import arm_transcode.handbrake as handbrake
+
+    proc = _RunningProc()
+
+    async def fake_create(*_a, **_kw):
+        return proc
+
+    monkeypatch.setattr(handbrake.asyncio, "create_subprocess_exec", fake_create)
+
+    async def _noop(*_a) -> None:
+        return None
+
+    encode = asyncio.create_task(
+        handbrake.transcode_handbrake(
+            input_path=tmp_path / "in.mkv",
+            output_path=tmp_path / "out.mkv",
+            preset_ref="Fast 1080p30",
+            extra_args=None,
+            progress_callback=_noop,
+        )
+    )
+    await asyncio.sleep(0.01)
+    encode.cancel()
+    # Unkilled, the encoder never closes its pipes and the cancel never finishes.
+    done, _ = await asyncio.wait([encode], timeout=1.0)
+    assert done, "cancel hung: the encoder subprocess was not killed"
+    assert encode.cancelled()
+    assert proc.killed

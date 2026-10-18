@@ -12,6 +12,8 @@ Run order:
    as `*.arm-inprogress` and only get renamed on success.
 6. PATCH /complete with size + duration metadata.
 7. On exception or cancel: PATCH /fail with the error string.
+8. If a heartbeat shows the Backend revoked our claim, stop the encode and
+   exit without /fail: the task is no longer ours to report on.
 
 Container exits when the run() coroutine returns.
 """
@@ -19,12 +21,15 @@ Container exits when the run() coroutine returns.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import ssl
 import sys
+from collections.abc import Coroutine
 from pathlib import Path
+from typing import Any
 
 from arm_common import configure_service_logging, with_log_context
 from arm_common.schemas import (
@@ -70,6 +75,10 @@ class CancelRequested(Exception):
     pass
 
 
+class ClaimRevoked(Exception):
+    pass
+
+
 def _detect_hw_caps() -> HardwareCaps:
     """Diagnostic-only: reports the GPU vendor the dispatcher assigned us.
 
@@ -95,7 +104,6 @@ async def _run_encoder(
     final_output: Path,
     duration_seconds: int | None,
     state: ProgressState,
-    cancel_event: asyncio.Event,
 ) -> int:
     """Dispatch on `tool`. Returns the size of the file we wrote."""
 
@@ -103,8 +111,6 @@ async def _run_encoder(
         state.pct = pct
         state.eta_seconds = eta
         state.current_pass = current
-        if cancel_event.is_set():
-            raise CancelRequested("task.cancel received")
 
     if tool == TranscodeTool.NONE:
         size = transcode_none(raw_input, final_output)
@@ -142,6 +148,35 @@ async def _run_encoder(
         return size
 
     raise RuntimeError(f"unknown transcode tool={tool.value}")
+
+
+async def _encode_until_stopped(
+    encode: Coroutine[Any, Any, int],
+    *,
+    cancel_event: asyncio.Event,
+    revoked_event: asyncio.Event,
+) -> int:
+    """Run `encode`, cancelling it if the user cancels or our claim is revoked.
+
+    Cancelling the encoder task kills its subprocess (see `handbrake.py` /
+    `ffmpeg_audio.py`) and leaves the `.arm-inprogress` file unrenamed.
+    """
+    encoder = asyncio.ensure_future(encode)
+    waiters = [asyncio.ensure_future(cancel_event.wait()), asyncio.ensure_future(revoked_event.wait())]
+    try:
+        await asyncio.wait([encoder, *waiters], return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for waiter in waiters:
+            waiter.cancel()
+        if not encoder.done():
+            encoder.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await encoder
+    if not encoder.cancelled():
+        return encoder.result()
+    if cancel_event.is_set():
+        raise CancelRequested("task.cancel received")
+    raise ClaimRevoked("Backend refused our heartbeat")
 
 
 async def run() -> int:
@@ -200,19 +235,25 @@ async def run() -> int:
 
                 state = ProgressState()
                 try:
-                    async with HeartbeatPump(api=api, ws=ws, task_id=cfg.task_id, state=state):
-                        size = await _run_encoder(
-                            tool=tool,
-                            preset=preset,
-                            raw_input=raw_input,
-                            final_output=final_output,
-                            duration_seconds=duration,
-                            state=state,
+                    async with HeartbeatPump(api=api, ws=ws, task_id=cfg.task_id, state=state) as pump:
+                        size = await _encode_until_stopped(
+                            _run_encoder(
+                                tool=tool,
+                                preset=preset,
+                                raw_input=raw_input,
+                                final_output=final_output,
+                                duration_seconds=duration,
+                                state=state,
+                            ),
                             cancel_event=cancel_event,
+                            revoked_event=pump.revoked,
                         )
                 except CancelRequested:
                     await api.fail(cfg.task_id, last_error="cancelled by user")
                     logger.info("task cancelled cleanly")
+                    rc = 0
+                except ClaimRevoked:
+                    logger.warning("encode stopped: the Backend revoked this task's claim")
                     rc = 0
                 except Exception as exc:
                     logger.exception("encoder failed: %s", exc)

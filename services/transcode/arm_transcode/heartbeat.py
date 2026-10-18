@@ -5,6 +5,10 @@ sweep reads (`claim_heartbeat_at < now() - 90s` triggers reset). The WS
 publish is fire-and-forget telemetry the UI consumes for live progress
 bars; the hub already throttles `transcode.progress.*` at 1 Hz so a
 publisher tick rate slightly above 1 Hz is harmless.
+
+A heartbeat the Backend refuses with 403/404/409 means our claim is gone
+(the stale sweep re-queued the task, or it was cancelled or deleted). The
+pump then sets `revoked` and stops; `main` stops the encode on it.
 """
 
 from __future__ import annotations
@@ -13,6 +17,8 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
+import httpx
+
 from arm_transcode.api_client import BackendClient
 from arm_transcode.ws_client import WSClient
 
@@ -20,6 +26,9 @@ logger = logging.getLogger("arm_transcode.heartbeat")
 
 REST_HEARTBEAT_INTERVAL_SECONDS = 30.0
 WS_PUBLISH_INTERVAL_SECONDS = 1.0
+
+# Heartbeat refusals that mean this transcoder no longer owns the task.
+_CLAIM_LOST_STATUSES = frozenset({403, 404, 409})
 
 
 @dataclass
@@ -45,6 +54,7 @@ class HeartbeatPump:
         self._task_id = task_id
         self._state = state
         self._stop = asyncio.Event()
+        self.revoked = asyncio.Event()
         self._rest_task: asyncio.Task[None] | None = None
         self._ws_task: asyncio.Task[None] | None = None
 
@@ -77,6 +87,15 @@ class HeartbeatPump:
                     current_pass=self._state.current_pass,
                     eta_seconds=self._state.eta_seconds,
                 )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in _CLAIM_LOST_STATUSES:
+                    logger.warning(
+                        "claim revoked by Backend (HTTP %d); stopping the encode",
+                        exc.response.status_code,
+                    )
+                    self.revoked.set()
+                    return
+                logger.warning("heartbeat REST failed (will retry): %s", exc)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("heartbeat REST failed (will retry): %s", exc)
 

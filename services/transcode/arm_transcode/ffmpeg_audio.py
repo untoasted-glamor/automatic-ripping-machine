@@ -81,6 +81,13 @@ async def transcode_audio(
     try:
         await _consume_progress(proc.stdout, duration_seconds, progress_callback)
         rc = await proc.wait()
+    except BaseException:
+        # Cancelled (user cancel or a revoked claim): don't leave ffmpeg
+        # encoding on its own.
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        await proc.wait()
+        raise
     finally:
         with contextlib.suppress(asyncio.CancelledError):
             await stderr_task
