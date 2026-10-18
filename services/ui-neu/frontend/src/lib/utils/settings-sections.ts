@@ -66,8 +66,8 @@ const SECTIONS: Record<string, SettingsSection[]> = {
 		},
 		{
 			title: 'Review gate',
-			blurb: 'With "Review first", how long ARM waits for you to check the title before it rips anyway.',
-			keys: ['hold_for_review', 'manual_wait_seconds']
+			blurb: 'With "Review first", whether a held disc waits for you to confirm it or rips after a countdown.',
+			keys: ['review_requires_confirm']
 		},
 		{
 			title: 'Decryption data',

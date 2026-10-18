@@ -122,6 +122,19 @@ describe('setup step field selection (setup spec 2026-10-01 §7.2)', () => {
 		expect(keys).toContain('manual_wait_seconds');
 		expect(keys).not.toContain('hold_for_review');
 	});
+
+	it('puts the review_wait widget in the Review gate section, with the countdown inside it', () => {
+		const out = sectionFields('Ripping', [
+			f('auto_rip_on_insert', { widget: 'disc_handling' }),
+			f('hold_for_review', { part_of: 'auto_rip_on_insert' }),
+			f('review_requires_confirm', { widget: 'review_wait' }),
+			f('manual_wait_seconds', { type: 'int', part_of: 'review_requires_confirm' })
+		]);
+		const gate = out.find((s) => s.title === 'Review gate');
+		expect(gate?.fields.map((x) => x.key)).toEqual(['review_requires_confirm']);
+		const keys = out.flatMap((s) => [...s.columns.flat(), ...s.fields, ...s.advanced]).map((x) => x.key);
+		expect(keys).not.toContain('manual_wait_seconds');
+	});
 });
 
 describe('settingsTabFor', () => {

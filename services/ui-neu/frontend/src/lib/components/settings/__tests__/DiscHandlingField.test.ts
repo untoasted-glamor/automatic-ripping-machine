@@ -26,6 +26,17 @@ describe('DiscHandlingField', () => {
 		expect(values.hold_for_review).toBe(true); // Manual leaves the review setting alone
 	});
 
+	it('describes Review first as waiting for a confirm in mandatory-confirm mode', () => {
+		renderComponent(DiscHandlingField, {
+			props: {
+				values: { auto_rip_on_insert: true, hold_for_review: true },
+				context: { manual_wait_seconds: 45, review_requires_confirm: true }
+			}
+		});
+		expect(screen.getByText(/nothing rips until you do/i)).toBeInTheDocument();
+		expect(screen.queryByText(/waits 45 seconds/i)).not.toBeInTheDocument();
+	});
+
 	it('reads the current choice', () => {
 		renderComponent(DiscHandlingField, { props: { values: { auto_rip_on_insert: false, hold_for_review: false } } });
 		expect(screen.getByRole('radio', { name: /manual/i })).toBeChecked();

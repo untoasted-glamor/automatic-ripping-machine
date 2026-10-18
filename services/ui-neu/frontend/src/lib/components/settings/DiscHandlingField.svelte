@@ -11,6 +11,8 @@
 	let { values, context = {} }: { values: Record<string, unknown>; context?: Record<string, unknown> } = $props();
 
 	const waitSeconds = $derived(Number(values.manual_wait_seconds ?? context.manual_wait_seconds ?? 60) || 60);
+	// Mandatory-confirm sub-mode (Settings > Ripping > Review gate): no countdown.
+	const requiresConfirm = $derived((values.review_requires_confirm ?? context.review_requires_confirm) === true);
 	const current = $derived(
 		values.auto_rip_on_insert === false ? 'manual' : values.hold_for_review === true ? 'review' : 'auto'
 	);
@@ -20,7 +22,9 @@
 			value: 'review',
 			title: 'Review first',
 			badge: 'Suggested',
-			description: `ARM identifies the disc, then waits ${waitSeconds} seconds for you to check the title before ripping. No answer and it rips anyway.`
+			description: requiresConfirm
+				? 'ARM identifies the disc, then waits for you to check the title and press Start rip. Nothing rips until you do.'
+				: `ARM identifies the disc, then waits ${waitSeconds} seconds for you to check the title before ripping. No answer and it rips anyway.`
 		},
 		{ value: 'manual', title: 'Manual', description: 'Nothing starts until you press Start.' }
 	]);
