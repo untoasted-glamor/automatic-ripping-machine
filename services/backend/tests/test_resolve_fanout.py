@@ -602,6 +602,23 @@ def test_resolve_on_held_disc_with_review_tracks_keeps_application_parked(signin
     assert not any(e["event_type"] == "session.queued" for e in hub.events)
 
 
+def test_rip_start_review_leaves_the_parked_session_for_rip_complete(signing_key: bytes, tmp_path: Path) -> None:
+    """The operator's Start closes the gate (the keep/drop set is final) but must
+    not fan out: the ripped files don't exist yet. rip-complete releases it."""
+    db = FakeSession()
+    hub = _CapturingHub()
+    _seed(db, job_status=JobStatus.AWAITING_REVIEW, job_title="Iron Man")
+    for track in db.rows["tracks"]:
+        track.status = TrackStatus.QUEUED
+    app, token = _make_app(signing_key, db, tmp_path, hub)
+    with TestClient(app) as client:
+        r = client.post("/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/rip-start-review", headers=_auth(token))
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "ripping"
+    assert db.rows["session_applications"][0].status == SessionApplicationStatus.WAITING_IDENTIFY
+    assert db.rows["transcode_tasks"] == []
+
+
 def test_resolve_commits_identity_before_after_rip_drain_raises(
     signing_key: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

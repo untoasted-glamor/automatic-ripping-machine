@@ -2039,6 +2039,42 @@ def test_rip_complete_parked_application_with_missing_session_does_not_break(
     assert db.rows["transcode_tasks"] == []
 
 
+def test_rip_complete_parked_fan_out_honours_review_exclusions(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A session parked on a held disc fans out at rip-complete against the
+    reviewed track set: a track the operator dropped during review gets no task."""
+    from arm_backend import config as bcfg
+
+    bcfg.settings.MEDIA_ROOT = str(tmp_path)
+    db = FakeSession()
+    db.rows["jobs"] = [_job(status=JobStatus.RIPPING)]
+    db.rows["drives"] = [_drive()]
+    dropped = _track("t2", status=TrackStatus.DONE, index=2)
+    dropped.excluded = True
+    db.rows["tracks"] = [_track("t1", status=TrackStatus.DONE), dropped]
+    _seed_parked_session(db)
+    r = _rip_complete(db, _Hub(), monkeypatch)
+    assert r.status_code == 200, r.text
+    assert db.rows["session_applications"][0].status == SessionApplicationStatus.QUEUED
+    assert [t.source_track_id for t in db.rows["transcode_tasks"]] == ["t1"]
+
+
+def test_rip_start_of_a_held_disc_leaves_the_parked_session_for_rip_complete() -> None:
+    """Rip-start closes the review gate but must not fan out the parked session:
+    no ripped file exists yet, and the dispatcher spawns a transcoder for every
+    queued task on its next tick. rip-complete releases it."""
+    db = FakeSession()
+    db.rows["drives"] = [_drive()]
+    db.rows["jobs"] = [_job(status=JobStatus.AWAITING_REVIEW)]
+    db.rows["tracks"] = [_track("t1", status=TrackStatus.QUEUED)]
+    _seed_parked_session(db)
+    with TestClient(_make_app(db)) as client:
+        r = client.post("/api/ripper/jobs/job_01JZXR7K3M5Q8N4VWA00000001/rip-start", headers=_OWNER_HEADERS)
+    assert r.status_code == 200, r.text
+    assert db.rows["jobs"][0].status == JobStatus.RIPPING
+    assert db.rows["session_applications"][0].status == SessionApplicationStatus.WAITING_IDENTIFY
+    assert db.rows["transcode_tasks"] == []
+
+
 def test_rip_complete_failed_rip_cancels_parked_application(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """D-082: nothing was ripped, so no drain will ever fill the parked
     application; it is cancelled and no tasks are created."""
