@@ -284,7 +284,12 @@ async function savePoster(): Promise<void> {
       <button v-if="canApply && !showApply" data-testid="apply-session" @click="showApply = true">
         Apply session
       </button>
-      <RouterLink v-if="applyAfterRip" to="/jobs/manual" class="muted" data-testid="apply-after-rip">
+      <RouterLink
+        v-if="applyAfterRip"
+        to="/jobs/manual"
+        class="muted"
+        data-testid="apply-after-rip"
+      >
         Sessions apply once the rip has produced files — pick one with "+ Manual rip".
       </RouterLink>
       <button

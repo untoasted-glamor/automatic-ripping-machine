@@ -109,9 +109,7 @@ def test_log_sg_passthrough_logs_error_marker(
     sys_root = _fake_sysfs(tmp_path, paired=["sg6"], sg_types=_TYPES)
     dev_root = _fake_dev(tmp_path, ["sr0", "sg4"])
     real = sgp.check_sg_passthrough
-    monkeypatch.setattr(
-        sgp, "check_sg_passthrough", lambda p: real(p, sys_root=sys_root, dev_root=dev_root)
-    )
+    monkeypatch.setattr(sgp, "check_sg_passthrough", lambda p: real(p, sys_root=sys_root, dev_root=dev_root))
 
     with caplog.at_level(logging.INFO, logger="arm_ripper.sg_passthrough"):
         log_sg_passthrough("/dev/sr0")
