@@ -132,6 +132,7 @@ class JobController:
         ws: WSClient | None = None,
         device_path: str | None = None,
         default_min_length_seconds: int = DEFAULT_MIN_LENGTH_SECONDS,
+        backup_full_selections: bool = False,
         on_scan_activity_change: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._client = client
@@ -157,6 +158,8 @@ class JobController:
         # `main.py` from `ARM_MIN_LENGTH_SECONDS`; tests get the dispatcher
         # default (600).
         self._default_min_length_seconds = default_min_length_seconds
+        # `ARM_BACKUP_FULL_SELECTIONS`: rip full selections by backup-then-remux too.
+        self._backup_full_selections = backup_full_selections
         # job_id → asyncio.Event signalled when an `identify.resolved`
         # arrives over WS. Populated by `_await_resolution`, drained by
         # `on_ws_command`.
@@ -866,6 +869,7 @@ class JobController:
                 if rip_start.min_length_seconds is not None
                 else self._default_min_length_seconds
             ),
+            backup_full_selections=self._backup_full_selections,
         )
 
         completed = await self._rip_complete_with_retry(job_id)

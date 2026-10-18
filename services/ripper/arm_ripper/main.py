@@ -334,6 +334,7 @@ async def amain() -> None:
                 ws=ws,
                 device_path=device_path,
                 default_min_length_seconds=settings.ARM_MIN_LENGTH_SECONDS,
+                backup_full_selections=settings.ARM_BACKUP_FULL_SELECTIONS,
                 on_scan_activity_change=push_scan_activity,
             )
             await ws.subscribe(f"ripper.commands.{drive_id}", controller.on_ws_command)
