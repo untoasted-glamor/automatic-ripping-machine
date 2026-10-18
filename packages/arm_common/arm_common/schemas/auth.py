@@ -31,10 +31,22 @@ class PasswordChangeRequest(BaseModel):
     new_password: str = Field(min_length=8)
 
 
+class RawBackupView(BaseModel):
+    """The job's raw disc backup under `/raw/<job_id>/.backup/`: an encrypted
+    copy of the disc (an ISO image for a DVD, a folder for a Blu-ray) the
+    ripper remuxes kept titles from. Kept only while a title still needs it."""
+
+    size_bytes: int
+    # False while it is still being written, or if the backup was cut short.
+    complete: bool
+
+
 class JobDetailView(BaseModel):
     job: JobView
     tracks: list[TrackView]
     fingerprints: list[DiscFingerprintView] = Field(default_factory=list)
+    # None when the job has no raw backup on disk.
+    raw_backup: RawBackupView | None = None
 
 
 class ConfigView(BaseModel):

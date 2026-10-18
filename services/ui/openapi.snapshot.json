@@ -1757,6 +1757,59 @@
         }
       }
     },
+    "/api/jobs/{job_id}/backup": {
+      "delete": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Delete Job Backup",
+        "description": "Delete the job's raw disc backup (`/raw/{job_id}/.backup/`).\n\nThe ripper keeps it only when a kept title failed to remux, so a retry\nneeds no disc; deleting it frees the space (~25\u201350 GB for a Blu-ray) at\nthe cost of re-reading the disc for that retry. The rip files and the\njob stay. Refused while the job is ripping (the ripper is writing or\nreading the backup); a job with no backup is a no-op.",
+        "operationId": "delete_job_backup_api_jobs__job_id__backup_delete",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/jobs/manual": {
       "post": {
         "tags": [
@@ -9663,6 +9716,16 @@
             },
             "type": "array",
             "title": "Fingerprints"
+          },
+          "raw_backup": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RawBackupView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -11445,6 +11508,25 @@
           "writable"
         ],
         "title": "PathStatus"
+      },
+      "RawBackupView": {
+        "properties": {
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          },
+          "complete": {
+            "type": "boolean",
+            "title": "Complete"
+          }
+        },
+        "type": "object",
+        "required": [
+          "size_bytes",
+          "complete"
+        ],
+        "title": "RawBackupView",
+        "description": "The job's raw disc backup under `/raw/<job_id>/.backup/`: an encrypted\ncopy of the disc (an ISO image for a DVD, a folder for a Blu-ray) the\nripper remuxes kept titles from. Kept only while a title still needs it."
       },
       "RegisterRequest": {
         "properties": {
