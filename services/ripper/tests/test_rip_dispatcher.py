@@ -21,6 +21,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -28,13 +29,16 @@ import pytest
 import arm_ripper.drive_status as drive_status_module
 import arm_ripper.rip.dispatcher as dispatcher_module
 import arm_ripper.rip.makemkv_rip as makemkv_rip_module
+import arm_ripper.scan.makemkv as scan_makemkv_module
 from arm_common import DiscType, DriveMediaStatus
 from arm_common.enums import TrackKind, TrackStatus
-from arm_common.schemas import TrackView
+from arm_common.schemas import ScanResult, TrackView
 
 from arm_ripper.drive_status import probe_drive_media
 from arm_ripper.rip.dispatcher import rip_all
 from arm_ripper.rip.makemkv_rip import RipDiscResult, RipResult
+from arm_ripper.scan.disc_probe import DiscProbe
+from tests._makemkvcon_fake import HANAKO_BD, SINTEL_ISO, file_size, install
 
 
 def _track(idx: int, source_ref: str | None = None, duration_seconds: int | None = 1800) -> TrackView:
@@ -884,8 +888,10 @@ def _mkv_all_script(saved: list[int], prgc_positions: list[int]) -> list[str | t
     return script
 
 
-async def _rip_tracks(tracks: list[TrackView], tmp_path: Path) -> dict[str, list[RipResult]]:
-    """Run rip_all for a BD and return every terminal report per track id."""
+async def _rip_tracks(
+    tracks: list[TrackView], tmp_path: Path, *, disc_type: DiscType = DiscType.BLURAY, device: str = "/dev/sr0"
+) -> dict[str, list[RipResult]]:
+    """Run rip_all and return every terminal report per track id."""
     reports: dict[str, list[RipResult]] = {t.id: [] for t in tracks}
 
     async def on_start(_track: TrackView) -> None:
@@ -895,8 +901,8 @@ async def _rip_tracks(tracks: list[TrackView], tmp_path: Path) -> dict[str, list
         reports[track.id].append(result)
 
     await rip_all(
-        disc_type=DiscType.BLURAY,
-        device_path="/dev/sr0",
+        disc_type=disc_type,
+        device_path=device,
         tracks=tracks,
         output_dir=tmp_path,
         on_track_start=on_start,
@@ -983,3 +989,53 @@ async def test_rip_all_logs_makemkv_messages_at_info(monkeypatch, tmp_path, capl
 
     info_text = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
     assert any("Failed to open disc title 1" in m for m in info_text)
+
+
+# --- rip_all against the recorded-output makemkvcon fake (S6) ----------------
+#
+# `tests._makemkvcon_fake` answers from real recordings: the Hanako-kun BD in
+# /dev/sr0 and the Sintel DVD as an ISO.
+
+
+def _rip_start_tracks(scan: ScanResult) -> list[TrackView]:
+    """Track rows as rip-start hands them over (`select_tracks`): the scan's
+    duration and size are the *expected* values; `duration_seconds` stays
+    unset until the title is ripped."""
+    return [
+        _track(t.index, duration_seconds=None).model_copy(
+            update={"expected_duration_seconds": t.duration_seconds, "expected_size_bytes": t.size_bytes}
+        )
+        for t in scan.titles
+    ]
+
+
+async def _scan(monkeypatch, device: str) -> ScanResult:
+    monkeypatch.setattr(scan_makemkv_module, "probe_disc", AsyncMock(return_value=DiscProbe(crc64=None)))
+    return await scan_makemkv_module.scan_disc(device)
+
+
+@pytest.mark.parametrize("source", ["bd-drive", "dvd-iso"])
+async def test_rip_all_full_selection_gives_every_track_its_own_title(monkeypatch, tmp_path, source):
+    """Characterizes today's `mkv all` path (S6.2): every scanned title kept,
+    rip at the scan's minimum. Each track is DONE with the file MakeMKV
+    planned for it (the scan's TINFO 27 name), sized as its own title, and
+    the drive is read by one invocation for the whole rip."""
+    iso = tmp_path / "sintel.iso"
+    iso.write_bytes(b"")
+    fake = install(monkeypatch, disc=HANAKO_BD, isos={str(iso): SINTEL_ISO})
+    device = "/dev/sr0" if source == "bd-drive" else str(iso)
+    scan = await _scan(monkeypatch, device)
+    fake.invocations.clear()
+    tracks = _rip_start_tracks(scan)
+    out = tmp_path / "job"
+
+    reports = await _rip_tracks(tracks, out, disc_type=scan.disc_type, device=device)
+
+    for title in scan.titles:
+        (result,) = reports[f"trk_{title.index}"]
+        assert result.ok is True, (title.index, result.error)
+        assert result.output_path == out / str(title.source_file)
+        assert result.size_bytes == result.output_path.stat().st_size == file_size(title.size_bytes or 0)
+        assert result.duration_seconds == title.duration_seconds
+    assert len(list(out.iterdir())) == len(scan.titles)
+    assert len(fake.drive_reads) == (1 if source == "bd-drive" else 0)
