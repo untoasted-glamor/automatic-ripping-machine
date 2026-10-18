@@ -327,6 +327,12 @@ class _Process:
         self._invocation.returncode = self.returncode
         return self.returncode
 
+    async def communicate(self, _input: bytes | None = None) -> tuple[bytes, bytes]:
+        stdout = await self.stdout.read()
+        stderr = await self.stderr.read()
+        await self.wait()
+        return stdout, stderr
+
     def kill(self) -> None:
         if self.returncode is None:
             self.returncode = -9

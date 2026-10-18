@@ -30,11 +30,27 @@ Per-title attribution is reconstructed from the robot stream:
 Tracks that were *not* attempted by makemkvcon (below `--minlength`)
 never appear in the result map; the dispatcher decides what to do
 with them (typically: mark FAILED with "skipped: below minlength").
+
+When only some titles are wanted, `mkv` can't be told which (it takes one
+title id or `all`), and one `mkv dev:` per title is banned (the drive idles
+between titles; USB-BD drives then autosuspend). The backup-then-remux path
+reads the drive once and remuxes the wanted titles from disk instead:
+
+  - `backup_disc` copies the whole disc with one `makemkvcon backup
+    disc:<N>`: a folder on Blu-ray (read back as `file:<dir>`), a single ISO
+    image on DVD (read back as `iso:<image>`). No `--decrypt`: MakeMKV
+    segfaults reading a decrypted Blu-ray backup.
+  - `remux_title` writes one title of a backup (or an `.iso` source) with
+    `mkv <source> <id>`. Every such call passes `--noscan`, so the drive is
+    listed but its disc is not read.
 """
 
 import asyncio
+import csv
 import logging
+import os
 import re
+import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +61,9 @@ from arm_ripper.source import makemkv_source_url
 logger = logging.getLogger("arm_ripper.rip.makemkv")
 
 RIP_TIMEOUT_SECONDS = 6 * 60 * 60  # 6 hours: worst-case BD
+# A Blu-ray backup read 46.5 GB in 48 min; same ceiling as a whole-disc rip.
+BACKUP_TIMEOUT_SECONDS = RIP_TIMEOUT_SECONDS
+DRIVE_LOOKUP_TIMEOUT_SECONDS = 120.0
 
 OnTitleStart = Callable[[int], Awaitable[None]]
 OnTitleProgress = Callable[[int, float], Awaitable[None]]
@@ -134,6 +153,12 @@ class _ParserState:
     # this is seen so a 6-hour RIP_TIMEOUT_SECONDS doesn't run out.
     # See docs/ops/makemkv.md § Failure modes.
     binary_expired: bool = False
+    # The PRGT code that opens the phase whose PRGV is real progress:
+    # 5024 "Saving all titles to MKV files" for `mkv`, 5047 "Copying all
+    # files" for `backup`.
+    progress_phase: str = "5024"
+    # Every MSG code seen, e.g. to confirm a backup's MSG:5070 "Backup done".
+    message_codes: set[int] = field(default_factory=set)
 
 
 def parse_progress_line(line: str) -> float | None:
@@ -372,7 +397,7 @@ async def _stream_output(
                 if state.current_title is not None and state.current_title != source_idx:
                     await _emit_title_done(state, state.current_title, on_title_done)
                 await _emit_title_start(state, source_idx, on_title_start)
-            else:
+            elif eligible:
                 logger.warning(
                     "PRGC:5017 output position %d out of range (eligible has %d entries)",
                     out_pos,
@@ -395,7 +420,7 @@ async def _stream_output(
         # which gates the disc-overall PRGV fallback.
         prgt = _PRGT_RE.match(line.strip())
         if prgt:
-            if prgt.group(1) == "5024":
+            if prgt.group(1) == state.progress_phase:
                 state.save_phase_started = True
             logger.info("makemkvcon milestone: %s", prgt.group(3))
             continue
@@ -407,6 +432,7 @@ async def _stream_output(
             parsed = parse_msg_args(line)
             if parsed is not None:
                 code, args = parsed
+                state.message_codes.add(code)
                 if code == _TITLE_FAIL_CODE:
                     fail_idx = _extract_title_index_from_msg5003(args)
                     rendered = next(iter(_QUOTED_ARG_RE.finditer(line)), None)
@@ -482,6 +508,89 @@ def _output_files_by_position(output_dir: Path) -> dict[int, Path]:
     return by_position
 
 
+async def _run_makemkvcon(
+    cmd: list[str],
+    state: _ParserState,
+    *,
+    timeout: float,
+    on_title_start: OnTitleStart | None = None,
+    on_title_progress: OnTitleProgress | None = None,
+    on_disc_progress: OnDiscProgress | None = None,
+    on_title_done: OnTitleDone | None = None,
+    eligible_source_indexes: list[int] | None = None,
+) -> str | None:
+    """Run one `makemkvcon`, streaming its robot output into `state`.
+
+    Returns None when it exited 0, otherwise the error to report (not on
+    PATH, timed out, binary expired, or a non-zero exit with stderr and
+    MakeMKV's own diagnostics).
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as e:
+        return f"makemkvcon not on PATH: {e}"
+
+    streamer = asyncio.create_task(
+        _stream_output(
+            proc,
+            state,
+            on_title_start,
+            on_title_progress,
+            on_disc_progress,
+            on_title_done=on_title_done,
+            eligible_source_indexes=eligible_source_indexes,
+        )
+    )
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        streamer.cancel()
+        return _compose_error(f"makemkvcon timed out after {timeout}s", state.diagnostics)
+    finally:
+        # Cancel-safe cleanup: parent abandon → CancelledError. Kill the
+        # subprocess so /raw can be wiped without orphan fds.
+        if proc.returncode is None:
+            proc.kill()
+            try:
+                await proc.wait()
+            except BaseException:
+                pass
+        streamer.cancel()
+
+    # Drain the streamer so all PRGV / PRGT / MSG lines after EOF are processed
+    # before the caller reads `state`.
+    try:
+        await streamer
+    except asyncio.CancelledError:
+        pass
+
+    # Distinct error for the binary-expired path so operators see "rebuild
+    # against a fresher upstream tarball" instead of a generic exit code.
+    # The streamer already killed the proc, so we hit this branch fast.
+    if state.binary_expired:
+        return _compose_error(
+            "makemkvcon refused: binary is past its hard-coded expiry "
+            "(MSG:5021). MakeMKV beta binaries carry a 60-day kill-switch; "
+            "rebuild the ripper image after upstream ships a fresher tarball. "
+            "See docs/ops/makemkv.md § Failure modes.",
+            state.diagnostics,
+        )
+
+    if proc.returncode != 0:
+        stderr = b""
+        if proc.stderr is not None:
+            stderr = await proc.stderr.read()
+        msg = stderr.decode(errors="replace").strip()[:400] or f"exit={proc.returncode}"
+        return _compose_error(f"makemkvcon failed: {msg}", state.diagnostics)
+    return None
+
+
 @dataclass
 class RipDiscResult:
     """Outcome of one `rip_disc` invocation.
@@ -553,82 +662,19 @@ async def rip_disc(
         minlength_seconds,
     )
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except FileNotFoundError as e:
-        return RipDiscResult(overall_error=f"makemkvcon not on PATH: {e}", titles={})
-
     state = _ParserState()
-    streamer = asyncio.create_task(
-        _stream_output(
-            proc,
-            state,
-            on_title_start,
-            on_title_progress,
-            on_disc_progress,
-            on_title_done=on_title_done,
-            eligible_source_indexes=eligible_source_indexes,
-        )
+    error = await _run_makemkvcon(
+        cmd,
+        state,
+        timeout=RIP_TIMEOUT_SECONDS,
+        on_title_start=on_title_start,
+        on_title_progress=on_title_progress,
+        on_disc_progress=on_disc_progress,
+        on_title_done=on_title_done,
+        eligible_source_indexes=eligible_source_indexes,
     )
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=RIP_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        streamer.cancel()
-        return RipDiscResult(
-            overall_error=_compose_error(
-                f"makemkvcon timed out after {RIP_TIMEOUT_SECONDS}s",
-                state.diagnostics,
-            ),
-            titles={},
-        )
-    finally:
-        # Cancel-safe cleanup: parent abandon → CancelledError. Kill the
-        # subprocess so /raw can be wiped without orphan fds.
-        if proc.returncode is None:
-            proc.kill()
-            try:
-                await proc.wait()
-            except BaseException:
-                pass
-        streamer.cancel()
-
-    # Drain the streamer so all PRGV / PRGT / MSG lines after EOF are processed
-    # before we read state.titles below.
-    try:
-        await streamer
-    except asyncio.CancelledError:
-        pass
-
-    # Distinct error for the binary-expired path so operators see "rebuild
-    # against a fresher upstream tarball" instead of a generic exit code.
-    # The streamer already killed the proc, so we hit this branch fast.
-    if state.binary_expired:
-        return RipDiscResult(
-            overall_error=_compose_error(
-                "makemkvcon refused: binary is past its hard-coded expiry "
-                "(MSG:5021). MakeMKV beta binaries carry a 60-day kill-switch; "
-                "rebuild the ripper image after upstream ships a fresher tarball. "
-                "See docs/ops/makemkv.md § Failure modes.",
-                state.diagnostics,
-            ),
-            titles={},
-        )
-
-    if proc.returncode != 0:
-        stderr = b""
-        if proc.stderr is not None:
-            stderr = await proc.stderr.read()
-        msg = stderr.decode(errors="replace").strip()[:400] or f"exit={proc.returncode}"
-        return RipDiscResult(
-            overall_error=_compose_error(f"makemkvcon failed: {msg}", state.diagnostics),
-            titles={},
-        )
+    if error is not None:
+        return RipDiscResult(overall_error=error, titles={})
 
     # Final title's on_title_done — the streamer fires done at PRGC
     # transitions, but the last title in the rip never gets a follow-up
@@ -688,3 +734,173 @@ async def rip_disc(
         )
 
     return RipDiscResult(overall_error=None, titles=titles_out)
+
+
+# --- backup-then-remux ------------------------------------------------------
+
+# MakeMKV's own "Backup done" messages; a backup that exits 0 without one
+# didn't finish.
+_BACKUP_DONE_CODES = frozenset({5070, 5081})
+
+
+def parse_drive_index(lines: list[str], device_path: str) -> int | None:
+    """The index of the `DRV:` line whose last field is `device_path`.
+
+    `DRV:<index>,<state>,<?>,<flags>,"<model>","<disc label>","<device>"`.
+    `backup` only takes `disc:<index>` (it rejects `dev:`), and the index
+    is MakeMKV's own numbering of the drives it can see.
+    """
+    wanted = {device_path, os.path.realpath(device_path)}
+    for line in lines:
+        if not line.startswith("DRV:"):
+            continue
+        fields = next(csv.reader([line[4:]]))
+        if len(fields) < 7 or not fields[-1]:
+            continue
+        if fields[-1] in wanted or os.path.realpath(fields[-1]) in wanted:
+            try:
+                return int(fields[0])
+            except ValueError:
+                return None
+    return None
+
+
+async def find_drive_index(device_path: str) -> int | None:
+    """Ask MakeMKV which `disc:<N>` is `device_path`.
+
+    Runs `info disc:9999` (no such drive, so no disc is opened as a source)
+    with a normal drive scan, the same lookup `probe_makemkv_key` uses, and
+    reads the `DRV:` lines. None if makemkvcon can't run or doesn't list
+    the device.
+    """
+    cmd = ["makemkvcon", "-r", "--cache=1", "info", "disc:9999"]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return None
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=DRIVE_LOOKUP_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return None
+    return parse_drive_index(stdout.decode(errors="replace").splitlines(), device_path)
+
+
+@dataclass
+class BackupResult:
+    """`source_url` reads the backup back: `file:<dir>` for a Blu-ray
+    folder, `iso:<image>` for a DVD's ISO image."""
+
+    ok: bool
+    source_url: str | None = None
+    error: str | None = None
+
+
+async def backup_disc(
+    device_path: str,
+    target: Path,
+    *,
+    on_progress: OnDiscProgress | None = None,
+) -> BackupResult:
+    """Copy the whole disc in `device_path` to `target` with one read.
+
+    `makemkvcon backup disc:<N> <target>`, no `--decrypt` (a decrypted
+    Blu-ray backup segfaults every later read; the encrypted one carries its
+    keys and remuxes with no drive). MakeMKV writes a folder at `target` for
+    a Blu-ray and a single ISO image file at `target` for a DVD, so
+    `target` should not exist yet. Success is exit 0, MakeMKV's "Backup
+    done" and something at `target`. `on_progress` gets the copy's
+    `[0, 1]` fraction.
+    """
+    index = await find_drive_index(device_path)
+    if index is None:
+        return BackupResult(ok=False, error=f"makemkvcon lists no drive at {device_path}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["makemkvcon", "-r", "--progress=-stdout", "backup", f"disc:{index}", str(target)]
+    logger.info("makemkvcon backup device=%s source=disc:%d target=%s", device_path, index, target)
+
+    state = _ParserState(progress_phase="5047")
+    error = await _run_makemkvcon(cmd, state, timeout=BACKUP_TIMEOUT_SECONDS, on_disc_progress=on_progress)
+    if error is not None:
+        return BackupResult(ok=False, error=error)
+    if not state.message_codes & _BACKUP_DONE_CODES:
+        return BackupResult(
+            ok=False, error=_compose_error("makemkvcon exited 0 but never reported the backup done", state.diagnostics)
+        )
+    if target.is_dir():
+        return BackupResult(ok=True, source_url=f"file:{target}")
+    if target.is_file():
+        return BackupResult(ok=True, source_url=f"iso:{target}")
+    return BackupResult(ok=False, error=f"makemkvcon reported the backup done but wrote nothing at {target}")
+
+
+async def remux_title(
+    source_url: str,
+    title_id: int,
+    *,
+    scratch_dir: Path,
+    output_dir: Path,
+    output_index: int,
+    minlength_seconds: int,
+    on_progress: OnDiscProgress | None = None,
+) -> RipResult:
+    """Write title `title_id` of `source_url` (a backup or an `.iso`) and
+    move it to `output_dir` as `<prefix>_t{output_index:02d}.mkv`.
+
+    `title_id` is in `source_url`'s own numbering at `minlength_seconds`
+    (MakeMKV renumbers titles per minimum), so it must come from an `info`
+    of the same source at the same minimum. `--noscan` keeps MakeMKV from
+    reading the drive's disc at start-up; the title data comes from disk.
+
+    MakeMKV names the file `<prefix>_t<title_id>.mkv` (the prefix differs
+    per title on DVD), so whatever single `.mkv` lands in `scratch_dir` is
+    the title. Exit ≠ 0 or no file is a failure: a missing id exits 12 with
+    no message at all.
+    """
+    shutil.rmtree(scratch_dir, ignore_errors=True)
+    scratch_dir.mkdir(parents=True)
+    cmd = [
+        "makemkvcon",
+        "-r",
+        "--progress=-stdout",
+        "--noscan",
+        f"--minlength={minlength_seconds}",
+        "mkv",
+        source_url,
+        str(title_id),
+        str(scratch_dir),
+    ]
+    logger.info("makemkvcon mkv source=%s title=%d minlength=%ds", source_url, title_id, minlength_seconds)
+
+    state = _ParserState()
+    error = await _run_makemkvcon(cmd, state, timeout=RIP_TIMEOUT_SECONDS, on_disc_progress=on_progress)
+    if error is not None:
+        return RipResult(ok=False, error=error)
+    produced = sorted(scratch_dir.glob("*.mkv"))
+    if len(produced) != 1:
+        what = "no .mkv" if not produced else f"{len(produced)} .mkv files"
+        return RipResult(
+            ok=False,
+            error=_compose_error(f"makemkvcon exited 0 but produced {what} for title {title_id}", state.diagnostics),
+        )
+    # Named by the disc-scan index, like the `mkv all` files: `B1_t03.mkv`
+    # from a backup whose id for that title was 0 becomes `B1_t<index>.mkv`.
+    name = produced[0].name
+    if _OUTPUT_FILE_RE.search(name):
+        renamed = _OUTPUT_FILE_RE.sub(f"_t{output_index:02d}.mkv", name)
+    else:
+        renamed = f"{produced[0].stem}_t{output_index:02d}.mkv"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    final = output_dir / renamed
+    os.replace(produced[0], final)
+    return RipResult(
+        ok=True,
+        output_path=final,
+        size_bytes=final.stat().st_size,
+        sha256=await sha256_file(final),
+    )
