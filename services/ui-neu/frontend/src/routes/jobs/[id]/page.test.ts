@@ -260,6 +260,27 @@ describe('Job detail page (v3)', () => {
 		});
 	});
 
+	it('shows track length as H:MM:SS, a dimmed ~estimate before the rip, or a dash', async () => {
+		mockFetchJob.mockResolvedValue({
+			job: createJob({ id: 'job_42', title: 'Test Movie', status: 'ripped', disc_type: 'bluray' }),
+			tracks: [
+				createTrack({ id: 'trk_1', index: 0, duration_seconds: 13078, expected_duration_seconds: 13000 }),
+				createTrack({ id: 'trk_2', index: 1, duration_seconds: null, expected_duration_seconds: 1452 }),
+				createTrack({ id: 'trk_3', index: 2, duration_seconds: null, expected_duration_seconds: null })
+			],
+			fingerprints: []
+		});
+		renderComponent(Page);
+		await waitFor(() => {
+			expect(screen.getAllByTestId('track-duration')).toHaveLength(3);
+		});
+		const cells = screen.getAllByTestId('track-duration');
+		expect(cells[0].textContent?.trim()).toBe('3:37:58');
+		expect(cells[1].textContent?.trim()).toBe('~24:12');
+		expect(cells[1].querySelector('.job-detail-track-faint')).not.toBeNull();
+		expect(cells[2].textContent?.trim()).toBe('-');
+	});
+
 	it('renders filename and fingerprints; hides the fallback Tracklist when track rows exist', async () => {
 		mockFetchJob.mockResolvedValue({
 			job: createJob({
