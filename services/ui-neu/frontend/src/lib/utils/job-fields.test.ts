@@ -54,6 +54,20 @@ describe('readJobMetadata', () => {
 		).toEqual({ titleCount: 2 });
 	});
 
+	it('counts only titles at or above the scan minimum', () => {
+		expect(
+			readJobMetadata({
+				scan_result: {
+					min_length_seconds: 120,
+					titles: [
+						{ index: 0, duration_seconds: 1447 },
+						{ index: 1, duration_seconds: 10 }
+					]
+				}
+			})
+		).toEqual({ titleCount: 1 });
+	});
+
 	it('omits titleCount when scan_result has no titles array', () => {
 		expect(readJobMetadata({ scan_result: { raw: {} } })).toEqual({});
 	});

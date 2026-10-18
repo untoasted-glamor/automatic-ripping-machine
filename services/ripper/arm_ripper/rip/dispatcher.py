@@ -3,7 +3,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from arm_common import DiscType
-from arm_common.schemas import TrackView
+from arm_common.schemas import ScanTitle, TrackView
 
 from arm_ripper.rip.abcde_rip import rip_cd
 from arm_ripper.rip.data_rip import rip_data
@@ -30,8 +30,13 @@ async def rip_all(
     on_track_done: OnTrackDone,
     on_track_progress: OnTrackProgress | None = None,
     min_length_seconds: int = DEFAULT_MIN_LENGTH_SECONDS,
+    scan_titles: list[ScanTitle] | None = None,
 ) -> None:
     """Rip every track in `tracks` and invoke the lifecycle callbacks.
+
+    `scan_titles` is the job's stored disc scan (`RipStartResponse.scan_titles`),
+    every title MakeMKV listed. DVD/BD use it to tell which output file is
+    which title; None falls back to the tracks' own durations.
 
     Per disc_type:
     - DVD / BD: one `makemkvcon mkv ... all` invocation for the whole
@@ -55,6 +60,7 @@ async def rip_all(
             on_track_done=on_track_done,
             on_track_progress=on_track_progress,
             min_length_seconds=min_length_seconds,
+            scan_titles=scan_titles,
         )
         return
 
@@ -113,6 +119,7 @@ async def _rip_optical(
     on_track_done: OnTrackDone,
     on_track_progress: OnTrackProgress | None,
     min_length_seconds: int,
+    scan_titles: list[ScanTitle] | None,
 ) -> None:
     """Single-invocation DVD/BD rip with per-title attribution.
 
@@ -155,19 +162,33 @@ async def _rip_optical(
     if not track_by_index:
         return
 
-    # Eligible source indexes — those whose duration meets `--minlength`,
-    # sorted ascending. MakeMKV's `mkv all` output files carry an
-    # output-position suffix (`_t00`, `_t01`, ...) rather than the
-    # source title index; file `_tNN` belongs to the NN-th entry of this
-    # list, which is how attribution gets back to tracks. Tracks with no
-    # `duration_seconds` (rare — scan didn't find one) are treated as
-    # eligible to avoid dropping them silently; if MakeMKV skips them,
-    # they fall through to "produced no .mkv" downstream.
+    # Eligible source indexes — every title MakeMKV will rip at this
+    # `--minlength`, sorted ascending. MakeMKV's `mkv all` output files
+    # carry an output-position suffix (`_t00`, `_t01`, ...) rather than
+    # the source title index, numbered densely over the titles that pass
+    # the minimum; file `_tNN` belongs to the NN-th entry of this list,
+    # which is how attribution gets back to tracks.
+    #
+    # Built from the scan, not the tracks: the scan lists every title
+    # (`--minlength=0`, ids = rank among them), while tracks exist only
+    # for the titles the preset kept, so a track-based list misses titles
+    # MakeMKV rips anyway (a minimum below the scan's baseline, or a
+    # preset that keeps fewer) and shifts every later file onto the wrong
+    # track. A `_tNN` whose title has no track is left on disk unclaimed.
+    # Without a stored scan, fall back to the tracks' own durations.
+    # Titles of unknown duration are treated as eligible so they aren't
+    # dropped silently; if MakeMKV skips them, they fall through to
+    # "produced no .mkv" downstream.
+    if scan_titles is not None:
+        duration_by_index = {t.index: t.duration_seconds for t in scan_titles}
+    else:
+        duration_by_index = {idx: t.duration_seconds for idx, t in track_by_index.items()}
     eligible_source_indexes = sorted(
-        idx
-        for idx, t in track_by_index.items()
-        if t.duration_seconds is None or t.duration_seconds >= min_length_seconds
+        idx for idx, duration in duration_by_index.items() if duration is None or duration >= min_length_seconds
     )
+    # Disc-level progress is credited to one track; the first eligible
+    # title may have no track of its own.
+    progress_index = next((idx for idx in eligible_source_indexes if idx in track_by_index), None)
 
     started: set[int] = set()
     # Source indexes whose Track has already been PATCHed DONE via the
@@ -202,7 +223,8 @@ async def _rip_optical(
         ever fires. Without this fallback the dashboard bar would stay
         at 0 % for the whole rip even though the file is being written.
 
-        We attribute disc-level progress to the first eligible track —
+        We attribute disc-level progress to the first eligible title
+        that has a track —
         the WS payload requires a track_id, but the UI's rips store
         keys live progress by `job_id` and only ever displays a single
         bar per disc (see [services/ui/src/components/JobCard.vue]),
@@ -211,12 +233,9 @@ async def _rip_optical(
         `total/max` channel. Per-title attribution still happens
         post-rip in the attribution loop below.
         """
-        if on_track_progress is None or not eligible_source_indexes:
+        if on_track_progress is None or progress_index is None:
             return
-        first_track = track_by_index.get(eligible_source_indexes[0])
-        if first_track is None:
-            return
-        await on_track_progress(first_track, fraction)
+        await on_track_progress(track_by_index[progress_index], fraction)
 
     async def _on_title_done(title_idx: int) -> None:
         """Mid-rip per-title finalisation. Stat the .mkv produced for
@@ -331,7 +350,7 @@ async def _rip_optical(
         await _ensure_started(title_idx, track)
         result = disc_result.titles.get(title_idx)
         if result is None:
-            duration = track.duration_seconds
+            duration = duration_by_index.get(title_idx, track.duration_seconds)
             if duration is not None and duration < min_length_seconds:
                 err = f"track duration {duration}s below minlength={min_length_seconds}s; makemkvcon skipped it"
             else:

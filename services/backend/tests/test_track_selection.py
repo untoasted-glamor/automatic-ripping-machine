@@ -191,3 +191,61 @@ def test_review_data_disc_delegates_to_single_dump():
     tracks = select_tracks_for_review("job_01JZXR7K3M5Q8N4VWA00000001", scan, _preset(TrackSelection.ALL_TRACKS))
     assert len(tracks) == 1
     assert tracks[0].kind == TrackKind.DATA_DUMP
+
+
+# --- scans that list every title (min_length_seconds set by the ripper) ---
+
+# The Sintel DVD at MakeMKV --minlength=0: 14:58, 14:57, 1:59, 6:05, 3:36, 1:47, 58:24.
+_SINTEL_DURATIONS = (898, 897, 119, 365, 216, 107, 3504)
+
+
+def _full_scan(min_length_seconds: int | None) -> ScanResult:
+    return _scan(*_SINTEL_DURATIONS).model_copy(update={"min_length_seconds": min_length_seconds})
+
+
+def test_archive_skips_titles_below_the_scan_minimum():
+    tracks = select_tracks("job_01JZXR7K3M5Q8N4VWA00000001", _full_scan(120), _preset(TrackSelection.ARCHIVE))
+    assert [t.index for t in tracks] == [0, 1, 3, 4, 6]
+
+
+def test_review_has_no_rows_for_titles_below_the_scan_minimum():
+    tracks = select_tracks_for_review(
+        "job_01JZXR7K3M5Q8N4VWA00000001", _full_scan(120), _preset(TrackSelection.ARCHIVE)
+    )
+    assert [t.index for t in tracks] == [0, 1, 3, 4, 6]
+    assert not any(t.excluded for t in tracks)
+
+
+@pytest.mark.parametrize("rule", [TrackSelection.ALL_TRACKS, TrackSelection.MAIN_FEATURE])
+def test_presets_choose_among_titles_at_or_above_the_scan_minimum(rule):
+    review = select_tracks_for_review("job_01JZXR7K3M5Q8N4VWA00000001", _full_scan(600), _preset(rule))
+    assert [t.index for t in review] == [0, 1, 6]
+
+
+def test_scan_minimum_keeps_titles_of_unknown_duration():
+    scan = ScanResult(
+        disc_type=DiscType.BLURAY,
+        titles=[ScanTitle(index=0, duration_seconds=10), ScanTitle(index=1, duration_seconds=None)],
+        min_length_seconds=120,
+    )
+    tracks = select_tracks("job_01JZXR7K3M5Q8N4VWA00000001", scan, _preset(TrackSelection.ARCHIVE))
+    assert [t.index for t in tracks] == [1]
+
+
+def test_scan_without_a_minimum_is_used_as_is():
+    """Scans stored before the scan listed every title carry no minimum:
+    every title they hold still gets a row."""
+    tracks = select_tracks_for_review(
+        "job_01JZXR7K3M5Q8N4VWA00000001", _full_scan(None), _preset(TrackSelection.ARCHIVE)
+    )
+    assert [t.index for t in tracks] == [0, 1, 2, 3, 4, 5, 6]
+
+
+def test_cd_tracks_ignore_a_minimum():
+    scan = ScanResult(
+        disc_type=DiscType.CD,
+        titles=[ScanTitle(index=i, duration_seconds=d) for i, d in ((1, 30), (2, 200))],
+        min_length_seconds=120,
+    )
+    tracks = select_tracks_for_review("job_01JZXR7K3M5Q8N4VWA00000001", scan, _preset(TrackSelection.ARCHIVE))
+    assert [t.index for t in tracks] == [1, 2]

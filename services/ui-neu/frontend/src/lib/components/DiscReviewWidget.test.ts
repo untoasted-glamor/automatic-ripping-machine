@@ -333,6 +333,34 @@ describe('DiscReviewWidget', () => {
 		await waitFor(() => expect(screen.getByText('Scanned titles (2)')).toBeInTheDocument());
 	});
 
+	it('hides scanned titles below the scan minimum', async () => {
+		const { fetchJob } = await import('$lib/api/jobs');
+		vi.mocked(fetchJob).mockResolvedValueOnce(
+			detail(
+				{
+					status: 'awaiting_user_id',
+					metadata_json: {
+						scan_result: {
+							disc_type: 'bluray',
+							min_length_seconds: 120,
+							titles: [
+								{ index: 0, duration_seconds: 1447, source_file: 'D1_t00.mkv' },
+								{ index: 8, duration_seconds: 80, source_file: 'D1_t08.mkv' },
+								{ index: 9, duration_seconds: 10, source_file: 'D1_t09.mkv' }
+							]
+						}
+					}
+				},
+				[]
+			)
+		);
+		renderWidget({ status: 'awaiting_user_id' });
+		await waitFor(() => expect(screen.getByRole('button', { name: 'Info' })).toBeInTheDocument());
+		await fireEvent.click(screen.getByRole('button', { name: 'Info' }));
+		await waitFor(() => expect(screen.getByText('Scanned titles (1)')).toBeInTheDocument());
+		expect(screen.queryByText('D1_t08.mkv')).not.toBeInTheDocument();
+	});
+
 	describe('header metadata strip', () => {
 		it('renders Type / Disc# / Titles / Season chips when present', async () => {
 			// The widget renders chips from `displayJob` = data.job (the loaded

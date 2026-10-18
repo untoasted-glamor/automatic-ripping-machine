@@ -206,6 +206,28 @@ async def test_unexpected_status_stops_without_rip(stub_scan, stub_eject):
     assert client.rip_complete_calls == []
 
 
+@pytest.mark.parametrize(("disc_type", "expected"), [(DiscType.DVD, 300), (DiscType.BLURAY, 300), (DiscType.CD, None)])
+async def test_identify_carries_the_baseline_minimum_on_video_scans(monkeypatch, stub_eject, disc_type, expected):
+    """The MakeMKV scan lists every title; identify tells the backend which of
+    them are long enough for a Track row (the ripper's baseline). CD scans
+    have no such cut."""
+
+    async def _scan(_device_path: str) -> ScanResult:
+        return ScanResult(disc_type=disc_type, titles=[ScanTitle(index=0, duration_seconds=30)])
+
+    monkeypatch.setattr(jc_module, "scan_disc", _scan)
+    client = FakeClient()
+    client.identify_responses.append(_job(JobStatus.AWAITING_USER_ID))
+    client.get_job_responses.append(_view(JobStatus.ABANDONED))
+    controller = JobController(client, "drv_test", default_min_length_seconds=300)
+
+    await asyncio.wait_for(controller.handle_disc_inserted("/dev/sr0"), timeout=2.0)
+
+    (scan,) = client.identify_calls
+    assert scan.min_length_seconds == expected
+    assert [t.duration_seconds for t in scan.titles] == [30]
+
+
 # --- timed review gate: park on awaiting_review, resume on Start / auto-start ---
 
 

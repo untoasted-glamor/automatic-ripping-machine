@@ -12163,6 +12163,17 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Raw"
+          },
+          "min_length_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Length Seconds"
           }
         },
         "type": "object",

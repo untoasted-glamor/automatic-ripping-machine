@@ -1,5 +1,6 @@
 import type { JobView } from '$lib/types/api.gen';
 import { discTypeLabel, isJobActive } from '$lib/utils/job-type';
+import { listedScanTitles } from '$lib/utils/scan-titles';
 
 export interface MetadataField {
 	label: string;
@@ -65,7 +66,7 @@ export function readJobMetadata(
 	const scan = md.scan_result;
 	if (scan && typeof scan === 'object') {
 		const titles = (scan as Record<string, unknown>).titles;
-		if (Array.isArray(titles)) out.titleCount = titles.length;
+		if (Array.isArray(titles)) out.titleCount = listedScanTitles(scan).length;
 	}
 
 	return out;
