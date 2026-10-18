@@ -397,7 +397,11 @@ acquire_jwt() {
         printf '\n' >&2
     fi
     local payload
-    payload=$(printf '{"username":"%s","password":"%s"}' "${user}" "${password}")
+    # json.dumps, not printf: a `"` or `\` in the password would otherwise
+    # break the JSON or turn into an escape (e.g. `\t`) and be rejected as 401.
+    # Passed via env so the password stays out of the process list.
+    payload=$(ARM_SMOKE_USER="${user}" ARM_SMOKE_PASSWORD="${password}" python3 -c \
+        'import json,os; print(json.dumps({"username": os.environ["ARM_SMOKE_USER"], "password": os.environ["ARM_SMOKE_PASSWORD"]}))')
     # `-f` would suppress the JSON error body on 4xx (e.g. 401 "invalid
     # credentials"); we'd then print "rc=0" because $? after `if !` is the
     # `!`'s status, not curl's. Parse http_code manually instead, same
