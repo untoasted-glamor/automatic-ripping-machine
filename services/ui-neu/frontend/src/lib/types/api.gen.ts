@@ -2352,6 +2352,10 @@ export type JobMetadata = {
     flags?: JobFlags;
     previously_ripped?: PreviouslyRipped | null;
     /**
+     * Identify Miss Reasons
+     */
+    identify_miss_reasons?: Array<string>;
+    /**
      * Provider Raw
      */
     provider_raw?: {

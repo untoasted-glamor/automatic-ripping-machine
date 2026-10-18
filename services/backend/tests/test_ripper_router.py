@@ -81,13 +81,21 @@ class _Dispatcher:
     """Mock MetadataDispatcher. `result` is returned from identify; set
     `raise_timeout` to simulate the asyncio.wait_for timeout path."""
 
-    def __init__(self, result: MetadataResult | None = None, *, raise_timeout: bool = False) -> None:
+    def __init__(
+        self,
+        result: MetadataResult | None = None,
+        *,
+        raise_timeout: bool = False,
+        miss_reasons: list[str] | None = None,
+    ) -> None:
         self.result = result
         self.raise_timeout = raise_timeout
+        self.miss_reasons = miss_reasons or []
         self.received_kwargs: dict[str, Any] = {}
 
     async def identify(self, _scan: Any, _cfg: Any, **_kw: Any) -> MetadataResult | None:
         self.received_kwargs = _kw
+        _kw["reasons"].extend(self.miss_reasons)
         if self.raise_timeout:
             raise asyncio.TimeoutError
         return self.result
@@ -875,6 +883,56 @@ def test_identify_timeout_records_diagnostic() -> None:
     assert r.json()["metadata_json"]["flags"]["dispatch_timeout"] is True
 
 
+@pytest.mark.parametrize("block_on_miss", [True, False])
+def test_identify_miss_persists_reasons(block_on_miss: bool) -> None:
+    db = FakeSession()
+    db.rows["drives"] = [_drive()]
+    db.rows["config"] = [_config(block_on_miss=block_on_miss)]
+    reasons = ["tmdb: no api key configured", "omdb_movie: no match for 'X' (not found)"]
+    app = _make_app(db, dispatcher=_Dispatcher(None, miss_reasons=reasons))
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/ripper/identify",
+            json={"drive_id": "drv_x", "scan_result": _scan_dict()},
+            headers=_SERVICE_AUTH,
+        )
+    assert r.status_code == 200
+    md = r.json()["metadata_json"]
+    assert md["identify_miss_reasons"] == reasons
+    assert md.get("flags", {}).get("unidentified", False) is (not block_on_miss)
+
+
+def test_identify_timeout_keeps_reasons_gathered_before_timeout() -> None:
+    db = FakeSession()
+    db.rows["drives"] = [_drive()]
+    db.rows["config"] = [_config(block_on_miss=True)]
+    app = _make_app(db, dispatcher=_Dispatcher(raise_timeout=True, miss_reasons=["arm_server: timed out"]))
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/ripper/identify",
+            json={"drive_id": "drv_x", "scan_result": _scan_dict()},
+            headers=_SERVICE_AUTH,
+        )
+    md = r.json()["metadata_json"]
+    assert md["flags"]["dispatch_timeout"] is True
+    assert md["identify_miss_reasons"] == ["arm_server: timed out"]
+
+
+def test_identify_hit_has_no_miss_reasons() -> None:
+    db = FakeSession()
+    db.rows["drives"] = [_drive()]
+    db.rows["config"] = [_config()]
+    hit = MetadataResult(title="The Matrix", year=1999, kind="movie", payload={})
+    app = _make_app(db, dispatcher=_Dispatcher(hit, miss_reasons=["tmdb_movie: no match"]))
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/ripper/identify",
+            json={"drive_id": "drv_x", "scan_result": _scan_dict()},
+            headers=_SERVICE_AUTH,
+        )
+    assert "identify_miss_reasons" not in r.json()["metadata_json"]
+
+
 # --- /identify (background episode stage trigger) -----------------------------
 
 
@@ -1001,7 +1059,7 @@ class _ImdbExactDispatcher:
         self.result = result
         self.identify_from_imdb_calls: list[str] = []
 
-    async def identify_from_imdb(self, imdb_id: str, _cfg: Any) -> MetadataResult | None:
+    async def identify_from_imdb(self, imdb_id: str, _cfg: Any, **_kw: Any) -> MetadataResult | None:
         self.identify_from_imdb_calls.append(imdb_id)
         return self.result
 
@@ -1146,7 +1204,8 @@ def test_identify_thediscdb_lookup_raises_behaves_as_no_match() -> None:
 class _AllMissDispatcher:
     """Both the exact-identity and fuzzy paths miss — the total-miss branch."""
 
-    async def identify_from_imdb(self, _imdb_id: str, _cfg: Any) -> MetadataResult | None:
+    async def identify_from_imdb(self, _imdb_id: str, _cfg: Any, **kw: Any) -> MetadataResult | None:
+        kw["reasons"].append("tmdb_find_imdb: no match for 'tt0371746' (none)")
         return None
 
     async def identify(self, _scan: Any, _cfg: Any, **_kw: Any) -> MetadataResult | None:
@@ -1181,6 +1240,8 @@ def test_identify_thediscdb_match_survives_total_identify_miss() -> None:
     assert out["status"] == "identified"  # unchanged synthetic-miss behavior
     assert out["metadata_json"]["flags"]["unidentified"] is True
     assert out["metadata_json"]["identity_claims"]["sources"]["thediscdb"]["tracks"]  # claims survived the overwrite
+    # The exact-identity miss is recorded with the fuzzy path's reasons.
+    assert out["metadata_json"]["identify_miss_reasons"] == ["tmdb_find_imdb: no match for 'tt0371746' (none)"]
 
 
 # --- /jobs/{id} & in-flight --------------------------------------------------

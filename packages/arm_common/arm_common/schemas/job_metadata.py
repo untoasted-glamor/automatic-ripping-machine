@@ -13,6 +13,8 @@ The bag holds four kinds of content, and this module gives each a home:
   `rerip_allowed` lets a ripped disc through the previously-ripped check once).
 - `previously_ripped` — the earlier rip a held disc matched (the review hold's
   reason; no countdown runs while it is set).
+- `identify_miss_reasons` — diagnostic: why identify found no match (one entry
+  per skipped or missed lookup). Written on a miss, cleared by a resolve.
 - `provider_raw` — everything a provider returned, keyed by provider name.
   Data for the raw viewer and future backfills, never read for behaviour.
   Rows migrated from the old top-level merge keep theirs under `"legacy"`.
@@ -114,6 +116,9 @@ class JobMetadata(BaseModel):
     flags: JobFlags = Field(default_factory=JobFlags)
     # Set when on_previously_ripped=hold parked this job; names the earlier rip.
     previously_ripped: PreviouslyRipped | None = None
+    # Why identify missed: one human-readable entry per skipped lookup or
+    # provider miss/timeout. Empty once the job is identified.
+    identify_miss_reasons: list[str] = Field(default_factory=list)
     provider_raw: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 

@@ -1228,6 +1228,8 @@ async def resolve(
     # forever would misreport it after the operator has already identified
     # it.
     new_metadata.pop("unidentified", None)
+    # Why identify missed no longer applies once the operator has identified it.
+    new_metadata.pop("identify_miss_reasons", None)
     if isinstance(new_metadata.get("flags"), dict):
         new_metadata["flags"] = {k: v for k, v in new_metadata["flags"].items() if k != "unidentified"}
     enters_review_gate = False

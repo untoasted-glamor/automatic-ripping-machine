@@ -732,13 +732,16 @@ async def identify(
         result = None
         timed_out = False
     else:
+        # Filled in place by the dispatcher; entries appended before a dispatch
+        # timeout survive the cancellation.
+        miss_reasons: list[str] = []
         try:
 
             async def _identify() -> MetadataResult | None:
                 if thediscdb_match is not None:
                     imdb = external_imdb_id(thediscdb_match)
                     if imdb:
-                        exact = await dispatcher.identify_from_imdb(imdb, cfg)
+                        exact = await dispatcher.identify_from_imdb(imdb, cfg, reasons=miss_reasons)
                         if exact is not None:
                             return exact
                 return await dispatcher.identify(
@@ -749,6 +752,7 @@ async def identify(
                     # Several same-length episode titles and no feature: a TV
                     # disc, whatever the label says (arm_common.disc_shape).
                     prefer_tv=looks_episodic(scan.titles),
+                    reasons=miss_reasons,
                 )
 
             result = await asyncio.wait_for(_identify(), timeout=DISPATCH_TIMEOUT_SECONDS)
@@ -800,6 +804,8 @@ async def identify(
                 job.status = JobStatus.IDENTIFIED
                 job.title = scan.volume_label
                 job.metadata_json = with_flags(job.metadata_json, unidentified=True, **diagnostic)
+            if miss_reasons:
+                job.metadata_json = {**(job.metadata_json or {}), "identify_miss_reasons": miss_reasons}
 
         if previous is not None:
             # on_previously_ripped=hold: whatever identify concluded, the disc

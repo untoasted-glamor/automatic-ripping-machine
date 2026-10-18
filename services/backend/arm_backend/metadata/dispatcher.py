@@ -7,7 +7,7 @@ from typing import Literal
 import httpx
 
 from arm_backend.metadata.arm_server import ArmServerClient
-from arm_backend.metadata.base import LookupError, MetadataResult
+from arm_backend.metadata.base import LookupError, LookupTimeout, MetadataResult
 from arm_backend.metadata.musicbrainz import MusicBrainzClient
 from arm_backend.metadata.omdb import OMDBClient
 from arm_backend.metadata.tmdb import TMDBClient
@@ -92,23 +92,32 @@ class MetadataDispatcher:
         title_hint: str | None = None,
         title_hint_is_tv: bool = False,
         prefer_tv: bool = False,
+        reasons: list[str] | None = None,
     ) -> MetadataResult | None:
+        # `reasons` is caller-owned and appended to in place, one human-readable
+        # entry per skipped or missed lookup, so the identify router can persist
+        # why a disc wasn't identified. It's passed per call (not stored on
+        # self) because the dispatcher is shared across requests.
+        if reasons is None:
+            reasons = []
         if scan.disc_type in (DiscType.DATA, DiscType.UNKNOWN):
+            self._skip(reasons, f"disc type {scan.disc_type.value} has no metadata lookup")
             return None
 
         if scan.disc_type == DiscType.CD:
-            return await self._identify_cd(scan)
+            return await self._identify_cd(scan, reasons)
 
         hit = await self._identify_video(
-            scan, cfg, title_hint=title_hint, title_hint_is_tv=title_hint_is_tv, prefer_tv=prefer_tv
+            scan, cfg, title_hint=title_hint, title_hint_is_tv=title_hint_is_tv, prefer_tv=prefer_tv, reasons=reasons
         )
         return await self._with_tmdb_ids(hit, cfg)
 
-    async def _identify_cd(self, scan: ScanResult) -> MetadataResult | None:
+    async def _identify_cd(self, scan: ScanResult, reasons: list[str]) -> MetadataResult | None:
         if not scan.musicbrainz_disc_id:
+            self._skip(reasons, "musicbrainz: no disc id in scan")
             return None
         client = MusicBrainzClient(MUSICBRAINZ_USER_AGENT, self._http)
-        return await self._call("musicbrainz", client.lookup_disc_id(scan.musicbrainz_disc_id))
+        return await self._call("musicbrainz", client.lookup_disc_id(scan.musicbrainz_disc_id), reasons)
 
     async def _identify_video(
         self,
@@ -118,6 +127,7 @@ class MetadataDispatcher:
         title_hint: str | None = None,
         title_hint_is_tv: bool = False,
         prefer_tv: bool = False,
+        reasons: list[str],
     ) -> MetadataResult | None:
         # 1337server first when we have a DVD CRC64. This is the
         # community-maintained crc64 → title DB; a hit beats fuzzy
@@ -129,7 +139,7 @@ class MetadataDispatcher:
         )
         if crc64:
             arm = ArmServerClient(self._http)
-            hit = await self._call("arm_server", arm.lookup_by_crc64(crc64))
+            hit = await self._call("arm_server", arm.lookup_by_crc64(crc64), reasons, crc64)
             if hit is not None:
                 return hit
 
@@ -170,6 +180,17 @@ class MetadataDispatcher:
             if key not in seen:
                 seen.add(key)
                 unique.append((title, year, tv_first))
+        if not unique:
+            if scan.volume_label:
+                self._skip(reasons, f"volume label {scan.volume_label!r} is empty after cleanup")
+            else:
+                self._skip(reasons, "no volume label or disc hint to search by")
+            return None
+        # Checked once here, not per candidate, so a missing key is one entry.
+        if not cfg.tmdb_api_key:
+            self._skip(reasons, "tmdb: no api key configured")
+        if not (self._omdb_api_key_override or cfg.omdb_api_key):
+            self._skip(reasons, "omdb: no api key configured")
         if prefer_tv:
             # The disc itself is TV-shaped (arm_common.disc_shape): search TV for
             # every candidate before any movie, so one candidate's movie
@@ -177,49 +198,49 @@ class MetadataDispatcher:
             # while another candidate would have found the series.
             for kind in ("tv", "movie"):
                 for title, year, _ in unique:
-                    hit = await self._search_kind(title, year, cfg, kind)
+                    hit = await self._search_kind(title, year, cfg, kind, reasons)
                     if hit is not None:
                         return hit
             return None
         for title, year, tv_first in unique:
-            hit = await self._search_title(title, year, cfg, tv_first=tv_first)
+            hit = await self._search_title(title, year, cfg, reasons, tv_first=tv_first)
             if hit is not None:
                 return hit
         return None
 
     async def _search_kind(
-        self, title: str, year: int | None, cfg: Config, kind: Literal["movie", "tv"]
+        self, title: str, year: int | None, cfg: Config, kind: Literal["movie", "tv"], reasons: list[str]
     ) -> MetadataResult | None:
         """One kind only: TMDb (movie or TV) when keyed, then OMDb of that kind."""
         if cfg.tmdb_api_key:
             tmdb = TMDBClient(cfg.tmdb_api_key, self._http)
             search = tmdb.search_tv(title) if kind == "tv" else tmdb.search_movie(title, year)
-            hit = await self._call(f"tmdb_{kind}", search)
+            hit = await self._call(f"tmdb_{kind}", search, reasons, title, year if kind == "movie" else None)
             if hit is not None:
                 return hit
         omdb_key = self._omdb_api_key_override or cfg.omdb_api_key
         if omdb_key:
             omdb = OMDBClient(omdb_key, self._http)
-            return await self._call(f"omdb_{kind}", omdb.lookup_by_title(title, year, kind=kind))
+            return await self._call(f"omdb_{kind}", omdb.lookup_by_title(title, year, kind=kind), reasons, title, year)
         return None
 
     async def _search_title(
-        self, title: str, year: int | None, cfg: Config, *, tv_first: bool = False
+        self, title: str, year: int | None, cfg: Config, reasons: list[str], *, tv_first: bool = False
     ) -> MetadataResult | None:
         if cfg.tmdb_api_key:
             tmdb = TMDBClient(cfg.tmdb_api_key, self._http)
             if tv_first:
-                hit = await self._call("tmdb_tv", tmdb.search_tv(title))
+                hit = await self._call("tmdb_tv", tmdb.search_tv(title), reasons, title)
                 if hit is not None:
                     return hit
-                hit = await self._call("tmdb_movie", tmdb.search_movie(title, year))
+                hit = await self._call("tmdb_movie", tmdb.search_movie(title, year), reasons, title, year)
                 if hit is not None:
                     return hit
             else:
-                hit = await self._call("tmdb_movie", tmdb.search_movie(title, year))
+                hit = await self._call("tmdb_movie", tmdb.search_movie(title, year), reasons, title, year)
                 if hit is not None:
                     return hit
-                hit = await self._call("tmdb_tv", tmdb.search_tv(title))
+                hit = await self._call("tmdb_tv", tmdb.search_tv(title), reasons, title)
                 if hit is not None:
                     return hit
 
@@ -230,20 +251,23 @@ class MetadataDispatcher:
             # (no TMDb key) must search OMDb `type=series` for it, or a hint
             # like "lost" silently identifies as the movie "Lost" (finding 1).
             kind: Literal["movie", "tv"] = "tv" if tv_first else "movie"
-            hit = await self._call(f"omdb_{kind}", omdb.lookup_by_title(title, year, kind=kind))
+            hit = await self._call(f"omdb_{kind}", omdb.lookup_by_title(title, year, kind=kind), reasons, title, year)
             if hit is not None:
                 return hit
 
         return None
 
-    async def identify_from_imdb(self, imdb_id: str, cfg: Config) -> MetadataResult | None:
+    async def identify_from_imdb(
+        self, imdb_id: str, cfg: Config, *, reasons: list[str] | None = None
+    ) -> MetadataResult | None:
         """Exact-ID identify for a TheDiscDB-matched disc. TMDb's /find
         endpoint resolves an IMDb id for both movies and TV; requires a TMDb
-        key. Returns None (caller falls back to fuzzy identify) otherwise."""
+        key. Returns None (caller falls back to fuzzy identify) otherwise.
+        `reasons` gets an entry when the lookup misses, as in identify()."""
         if not imdb_id or not cfg.tmdb_api_key:
             return None
         tmdb = TMDBClient(cfg.tmdb_api_key, self._http)
-        hit = await self._call("tmdb_find_imdb", tmdb.find_by_imdb_id(imdb_id))
+        hit = await self._call("tmdb_find_imdb", tmdb.find_by_imdb_id(imdb_id), reasons, imdb_id)
         if hit is not None:
             hit.payload.setdefault("imdb_id", imdb_id)
         return await self._with_tmdb_ids(hit, cfg)
@@ -270,7 +294,24 @@ class MetadataDispatcher:
             hit.payload.setdefault(key, value)
         return hit
 
-    async def _call(self, label: str, coro) -> MetadataResult | None:  # type: ignore[no-untyped-def]
+    @staticmethod
+    def _skip(reasons: list[str], reason: str) -> None:
+        logger.info("metadata.skip %s", reason)
+        reasons.append(reason)
+
+    async def _call(  # type: ignore[no-untyped-def]
+        self,
+        label: str,
+        coro,
+        reasons: list[str] | None = None,
+        query: str | None = None,
+        year: int | None = None,
+    ) -> MetadataResult | None:
+        # `reasons` (when given) gets one entry per miss or timeout, naming what
+        # was searched for so the operator can see which query failed.
+        what = f" for {query!r}" + (f" ({year})" if year else "") if query else ""
+        if reasons is None:
+            reasons = []
         try:
             result: MetadataResult | None = await asyncio.wait_for(coro, timeout=PROVIDER_TIMEOUT_SECONDS)
             if result is not None:
@@ -279,8 +320,19 @@ class MetadataDispatcher:
                 result.provider = _PROVIDER_BY_LABEL_PREFIX.get(label.split("_", 1)[0], label)
             return result
         except asyncio.TimeoutError:
+            # Our own per-provider budget expired.
             logger.info("metadata.%s timeout", label)
+            reasons.append(f"{label}: timed out{what}")
+            return None
+        except LookupTimeout as e:
+            # Client-side (httpx) timeout, raised before our budget elapsed.
+            # LookupTimeout subclasses LookupError, so this arm must stay above
+            # the miss arm: otherwise a provider that was never reached is
+            # recorded as "no match", the misdiagnosis these reasons exist to stop.
+            logger.info("metadata.%s timeout: %s", label, e)
+            reasons.append(f"{label}: timed out{what} ({e})")
             return None
         except LookupError as e:
             logger.info("metadata.%s miss: %s", label, e)
+            reasons.append(f"{label}: no match{what} ({e})")
             return None

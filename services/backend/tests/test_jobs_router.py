@@ -603,6 +603,24 @@ def test_resolve_success_preserves_scan_and_emits(signing_key: bytes) -> None:
     assert {"identify.resolved", "rip.identify_resolved"} <= types
 
 
+def test_resolve_clears_identify_miss_reasons(signing_key: bytes) -> None:
+    """Why identify missed no longer applies once the operator identified the
+    disc; resolve drops it with the spent `unidentified` flag."""
+    db = FakeSession()
+    app, token = _make_app(signing_key, db, _Hub())
+    meta = {"flags": {"unidentified": True}, "identify_miss_reasons": ["tmdb: no api key configured"]}
+    db.rows["jobs"] = [_job(status=JobStatus.IDENTIFIED, meta=meta)]
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/resolve",
+            json={"title": "Blade Runner", "year": 1982},
+            headers=_auth(token),
+        )
+    assert r.status_code == 200, r.text
+    assert "identify_miss_reasons" not in db.rows["jobs"][0].metadata_json
+    assert r.json()["job"]["metadata_json"]["identify_miss_reasons"] == []
+
+
 def test_resolve_new_season_schedules_episode_stage(signing_key: bytes) -> None:
     db = FakeSession()
     app, token = _make_app(signing_key, db)

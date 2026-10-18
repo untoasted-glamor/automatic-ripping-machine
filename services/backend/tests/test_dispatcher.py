@@ -6,7 +6,7 @@ import respx
 
 from arm_backend.metadata.dispatcher import MetadataDispatcher, _normalize_volume_label
 from arm_common import Config, DiscType
-from arm_common.schemas import ScanResult
+from arm_common.schemas import DiscFingerprintInput, ScanResult
 
 
 def _config(**overrides) -> Config:
@@ -751,3 +751,112 @@ async def test_with_tmdb_ids_timeout_keeps_the_hit(monkeypatch):
         hit = MetadataResult(provider="tmdb", kind="tv", title="X", year=1999, payload={"id": 1})
         assert await MetadataDispatcher(client)._with_tmdb_ids(hit, _config()) is hit
     assert hit.payload == {"id": 1}
+
+
+# --- miss reasons --------------------------------------------------------
+
+
+async def _reasons_for(scan: ScanResult, cfg: Config, **kw) -> list[str]:
+    reasons: list[str] = []
+    async with httpx.AsyncClient() as client:
+        result = await MetadataDispatcher(client).identify(scan, cfg, reasons=reasons, **kw)
+    assert result is None
+    return reasons
+
+
+async def test_reasons_data_disc():
+    reasons = await _reasons_for(ScanResult(disc_type=DiscType.DATA), _config())
+    assert reasons == ["disc type data has no metadata lookup"]
+
+
+async def test_reasons_cd_without_disc_id():
+    assert await _reasons_for(ScanResult(disc_type=DiscType.CD), _config()) == ["musicbrainz: no disc id in scan"]
+
+
+async def test_reasons_no_volume_label_or_hint():
+    reasons = await _reasons_for(ScanResult(disc_type=DiscType.DVD), _config())
+    assert reasons == ["no volume label or disc hint to search by"]
+
+
+async def test_reasons_label_empty_after_normalize():
+    reasons = await _reasons_for(ScanResult(disc_type=DiscType.DVD, volume_label="_NTSC"), _config())
+    assert reasons == ["volume label '_NTSC' is empty after cleanup"]
+
+
+async def test_reasons_no_keys_configured_are_recorded_once():
+    # Two candidates (hint + label): a missing key is still one entry, not one per candidate.
+    reasons = await _reasons_for(
+        ScanResult(disc_type=DiscType.DVD, volume_label="THE_MATRIX_1999"),
+        _config(tmdb_api_key=None, omdb_api_key=None),
+        title_hint="matrix",
+    )
+    assert reasons == ["tmdb: no api key configured", "omdb: no api key configured"]
+
+
+async def test_reasons_without_a_caller_list_still_identifies():
+    async with httpx.AsyncClient() as client:
+        result = await MetadataDispatcher(client).identify(ScanResult(disc_type=DiscType.DATA), _config())
+    assert result is None
+
+
+@respx.mock
+async def test_reasons_all_providers_miss_name_the_query():
+    respx.get("https://api.themoviedb.org/3/search/movie").mock(return_value=httpx.Response(200, json={"results": []}))
+    respx.get("https://api.themoviedb.org/3/search/tv").mock(return_value=httpx.Response(200, json={"results": []}))
+    respx.get("https://www.omdbapi.com/").mock(
+        return_value=httpx.Response(200, json={"Response": "False", "Error": "Movie not found!"})
+    )
+    reasons = await _reasons_for(ScanResult(disc_type=DiscType.DVD, volume_label="NOPE_1999"), _config())
+    assert [r.split(":")[0] for r in reasons] == ["tmdb_movie", "tmdb_tv", "omdb_movie"]
+    assert reasons[0].startswith("tmdb_movie: no match for 'NOPE' (1999) (")
+    assert reasons[1].startswith("tmdb_tv: no match for 'NOPE' (")
+    assert all("no match" in r for r in reasons)
+
+
+@respx.mock
+async def test_reasons_tv_first_hint_and_prefer_tv_paths():
+    respx.get("https://api.themoviedb.org/3/search/movie").mock(return_value=httpx.Response(200, json={"results": []}))
+    respx.get("https://api.themoviedb.org/3/search/tv").mock(return_value=httpx.Response(200, json={"results": []}))
+    respx.get("https://www.omdbapi.com/").mock(
+        return_value=httpx.Response(200, json={"Response": "False", "Error": "Series not found!"})
+    )
+    scan = ScanResult(disc_type=DiscType.DVD, volume_label="LOST_S2D3")
+    tv_first = await _reasons_for(scan, _config(), title_hint="lost", title_hint_is_tv=True)
+    assert [r.split(":")[0] for r in tv_first][:3] == ["tmdb_tv", "tmdb_movie", "omdb_tv"]
+    prefer_tv = await _reasons_for(scan, _config(), prefer_tv=True)
+    assert [r.split(":")[0] for r in prefer_tv] == ["tmdb_tv", "omdb_tv", "tmdb_movie", "omdb_movie"]
+
+
+@respx.mock
+async def test_reasons_client_timeout_is_not_recorded_as_a_miss():
+    # httpx gives up before PROVIDER_TIMEOUT_SECONDS, so the clients raise
+    # LookupTimeout. It subclasses LookupError, so without a dedicated except
+    # arm a provider that was never reached would be recorded as "no match".
+    for url in (
+        "https://api.themoviedb.org/3/search/movie",
+        "https://api.themoviedb.org/3/search/tv",
+        "https://www.omdbapi.com/",
+    ):
+        respx.get(url).mock(side_effect=httpx.TimeoutException("connect timeout"))
+    reasons = await _reasons_for(ScanResult(disc_type=DiscType.DVD, volume_label="NOPE_1999"), _config())
+    assert [r.split(":")[0] for r in reasons] == ["tmdb_movie", "tmdb_tv", "omdb_movie"]
+    assert all("timed out" in r for r in reasons)
+    assert not any("no match" in r for r in reasons)
+
+
+@respx.mock
+async def test_reasons_arm_server_and_imdb_misses():
+    respx.get(url__startswith="https://1337server.pythonanywhere.com/").mock(
+        return_value=httpx.Response(200, json={"success": False, "error": "not found"})
+    )
+    respx.get("https://api.themoviedb.org/3/find/tt0000001").mock(
+        return_value=httpx.Response(200, json={"movie_results": [], "tv_results": []})
+    )
+    scan = ScanResult(disc_type=DiscType.DVD, fingerprints=[DiscFingerprintInput(algo="crc64", value="abcd")])
+    reasons = await _reasons_for(scan, _config())
+    assert reasons[0] == "arm_server: no match for 'abcd' (arm_server miss: not found)"
+    imdb_reasons: list[str] = []
+    async with httpx.AsyncClient() as client:
+        hit = await MetadataDispatcher(client).identify_from_imdb("tt0000001", _config(), reasons=imdb_reasons)
+    assert hit is None
+    assert imdb_reasons == ["tmdb_find_imdb: no match for 'tt0000001' (tmdb find no results for tt0000001)"]
