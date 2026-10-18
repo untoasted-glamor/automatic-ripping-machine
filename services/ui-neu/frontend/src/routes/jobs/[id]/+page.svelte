@@ -62,6 +62,8 @@
 		matchingTimer = null;
 	}
 	let editingTrackId = $state<string | null>(null);
+	// Why the last Include toggle was refused (shown above the Tracks table).
+	let trackError = $state<string | null>(null);
 	let previewItems = $state<NamingPreviewItem[]>([]);
 	// The last preview answered 409 (no routed session, so no template). The
 	// 5s poll then asks again only every PREVIEW_UNROUTED_EVERY_N_POLLS polls,
@@ -145,12 +147,22 @@
 		loadJob();
 	}
 
-	async function toggleExcluded(trackId: string, excluded: boolean) {
+	async function toggleExcluded(trackId: string, input: HTMLInputElement) {
+		const excluded = !input.checked;
+		trackError = null;
 		try {
 			await updateTrack($page.params.id ?? '', trackId, { excluded });
+		} catch (e) {
+			// e.g. a 409 for re-including a track that has no ripped file. Show the
+			// backend's reason, and undo the click directly: the server value is
+			// unchanged, so the refetch below re-renders nothing to restore the box.
+			trackError = `Could not update the track: ${e instanceof Error ? e.message : 'unknown error'}`;
+			// Checked means included and the refused request was `excluded`, so the
+			// pre-click state is checked === excluded.
+			input.checked = excluded;
 		} finally {
 			// Refetch regardless: on success to pick up new naming/derived state,
-			// on failure to restore the last server-truth value in the checkbox.
+			// on failure to pick up anything else that changed meanwhile.
 			await loadJob();
 		}
 	}
@@ -518,6 +530,9 @@
 							Tracks ({tracks.length})
 						</h2>
 					</div>
+					{#if trackError}
+						<p class="alert alert-danger mb-3" role="alert" data-testid="track-error">{trackError}</p>
+					{/if}
 					<div class="overflow-x-auto job-detail-table-scroll">
 						<table class="table responsive-table">
 							<thead>
@@ -635,7 +650,7 @@
 												<input
 													type="checkbox"
 													checked={!track.excluded}
-													onchange={(e) => toggleExcluded(track.id, !(e.currentTarget as HTMLInputElement).checked)}
+													onchange={(e) => toggleExcluded(track.id, e.currentTarget as HTMLInputElement)}
 													title="Include this track in transcode output (the disc still rips in full)"
 													class="job-detail-track-checkbox"
 												/>

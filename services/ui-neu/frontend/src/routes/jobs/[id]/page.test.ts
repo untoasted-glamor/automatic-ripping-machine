@@ -260,6 +260,39 @@ describe('Job detail page (v3)', () => {
 		});
 	});
 
+	it("shows the backend's reason when re-including a track is refused, and reverts the checkbox", async () => {
+		const skipped = {
+			job: createJob({ id: 'job_42', status: 'ripped' }),
+			tracks: [createTrack({ id: 'trk_1', index: 3, excluded: true, output_path: null })],
+			fingerprints: []
+		};
+		mockFetchJob.mockResolvedValue(skipped);
+		mockUpdateTrack.mockRejectedValueOnce(
+			new ApiError(409, 'track 3 has no ripped file; re-rip the disc to include it', {
+				detail: 'track 3 has no ripped file; re-rip the disc to include it'
+			})
+		);
+		renderComponent(Page);
+		const checkbox = (await screen.findByRole('checkbox')) as HTMLInputElement;
+		expect(checkbox.checked).toBe(false);
+		await fireEvent.click(checkbox);
+		expect(await screen.findByTestId('track-error')).toHaveTextContent(
+			'Could not update the track: track 3 has no ripped file; re-rip the disc to include it'
+		);
+		expect(mockUpdateTrack).toHaveBeenCalledWith('job_42', 'trk_1', { excluded: false });
+		expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+	});
+
+	it('clears the refused-include message on the next successful toggle', async () => {
+		mockUpdateTrack.mockRejectedValueOnce(new Error('nope'));
+		renderComponent(Page);
+		const checkbox = (await screen.findByRole('checkbox')) as HTMLInputElement;
+		await fireEvent.click(checkbox);
+		expect(await screen.findByTestId('track-error')).toHaveTextContent('nope');
+		await fireEvent.click(screen.getByRole('checkbox'));
+		await waitFor(() => expect(screen.queryByTestId('track-error')).not.toBeInTheDocument());
+	});
+
 	it('shows track length as H:MM:SS, a dimmed ~estimate before the rip, or a dash', async () => {
 		mockFetchJob.mockResolvedValue({
 			job: createJob({ id: 'job_42', title: 'Test Movie', status: 'ripped', disc_type: 'bluray' }),
