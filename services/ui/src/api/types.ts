@@ -98,9 +98,14 @@ export interface TrackView {
   last_error: string | null
 }
 
+// The job's raw disc backup (`/raw/<job_id>/.backup/`), from the generated schema.
+export type RawBackupView = components['schemas']['RawBackupView']
+
 export interface JobDetailView {
   job: JobView
   tracks: TrackView[]
+  // Null/absent when the job has no raw backup on disk.
+  raw_backup?: RawBackupView | null
 }
 
 export interface ManualTriggerRequest {

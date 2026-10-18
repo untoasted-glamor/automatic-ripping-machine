@@ -75,6 +75,9 @@ export const useJobsStore = defineStore('jobs', {
       await api.del(`/api/jobs/${jobId}${qs}`)
       this.jobs = this.jobs.filter((j) => j.id !== jobId)
     },
+    async deleteBackup(jobId: string): Promise<void> {
+      await api.del(`/api/jobs/${jobId}/backup`)
+    },
     async deleteAll(opts: { deleteRaw?: boolean } = {}): Promise<BulkDeleteJobsResponse> {
       const qs = opts.deleteRaw ? '?delete_raw=true' : ''
       const result = await api.delJson<BulkDeleteJobsResponse>(`/api/jobs${qs}`)

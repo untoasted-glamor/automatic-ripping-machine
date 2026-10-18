@@ -4,6 +4,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { api, ApiError } from '../api/client'
 import AbandonJobDialog from '../components/AbandonJobDialog.vue'
 import ApplySessionDialog from '../components/ApplySessionDialog.vue'
+import DeleteBackupDialog from '../components/DeleteBackupDialog.vue'
 import DeleteJobDialog from '../components/DeleteJobDialog.vue'
 import IdentifyDiscDialog from '../components/IdentifyDiscDialog.vue'
 import JobLogsCard from '../components/JobLogsCard.vue'
@@ -19,6 +20,7 @@ import type {
   ResolveResponse,
 } from '../api/types'
 import { trackDuration } from '../utils/duration'
+import { formatSizeGb } from '../utils/size'
 import { isTerminalJobStatus } from '../utils/jobStatus'
 
 const route = useRoute()
@@ -28,6 +30,7 @@ const error = ref<string | null>(null)
 const showApply = ref(false)
 const showAbandon = ref(false)
 const showDelete = ref(false)
+const showDeleteBackup = ref(false)
 const showIdentify = ref(false)
 const lastApplied = ref<ApplySessionResponse | null>(null)
 const lastFanOutSkipped = ref<ResolveFanOutOutcomeView[]>([])
@@ -79,6 +82,16 @@ const identifyButtonLabel = computed(() => {
 const canAbandon = computed(
   () => detail.value !== null && !isTerminalJobStatus(detail.value.job.status),
 )
+// The raw backup is the ripper's encrypted copy of the disc, kept only while a
+// title still needs remuxing from it. The API refuses to delete it mid-rip.
+const RAW_BACKUP_INFO =
+  'The raw is an encrypted backup of the disc (an .iso for DVD, a folder for Blu-ray) ' +
+  'saved to the filesystem, used to selectively extract .mkvs before transcoding. It is ' +
+  'automatically deleted when all tracks have been successfully extracted.'
+const canDeleteBackup = computed(
+  () => detail.value?.raw_backup != null && detail.value.job.status !== 'ripping',
+)
+
 // API refuses delete on non-terminal jobs (must abandon first), so the button
 // only renders when the row is safely deletable.
 const canDelete = computed(
@@ -206,6 +219,11 @@ function onRipStarted(updated: JobView): void {
 
 function onJobUpdated(updated: JobView): void {
   if (detail.value) detail.value = { ...detail.value, job: updated }
+}
+
+function onBackupDeleted(): void {
+  showDeleteBackup.value = false
+  if (detail.value) detail.value = { ...detail.value, raw_backup: null }
 }
 
 function onDeleted(): void {
@@ -352,7 +370,44 @@ async function savePoster(): Promise<void> {
         </button>
       </template>
     </div>
+
+    <div
+      v-if="detail.raw_backup"
+      class="row"
+      data-testid="raw-backup"
+      style="margin-top: 12px; gap: 8px; align-items: center; flex-wrap: wrap"
+    >
+      <span class="muted">Raw backup</span>
+      <span data-testid="raw-backup-size">{{ formatSizeGb(detail.raw_backup.size_bytes) }}</span>
+      <span v-if="!detail.raw_backup.complete" class="muted">(incomplete)</span>
+      <span
+        class="info-icon"
+        role="img"
+        tabindex="0"
+        aria-label="About the raw backup"
+        data-testid="raw-backup-info"
+        :title="RAW_BACKUP_INFO"
+        >ⓘ</span
+      >
+      <button
+        v-if="canDeleteBackup && !showDeleteBackup"
+        class="secondary"
+        type="button"
+        data-testid="delete-raw-backup"
+        @click="showDeleteBackup = true"
+      >
+        Delete raw backup
+      </button>
+    </div>
   </div>
+
+  <DeleteBackupDialog
+    v-if="detail && detail.raw_backup && showDeleteBackup"
+    :job="detail.job"
+    :backup="detail.raw_backup"
+    @close="showDeleteBackup = false"
+    @deleted="onBackupDeleted"
+  />
 
   <AbandonJobDialog
     v-if="detail && showAbandon"
@@ -545,5 +600,9 @@ async function savePoster(): Promise<void> {
 .num {
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+.info-icon {
+  color: var(--muted);
+  cursor: help;
 }
 </style>
