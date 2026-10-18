@@ -19,10 +19,13 @@ Per-title attribution is reconstructed from the robot stream:
     PRGC:5017 arrives).
   - MSG:5003 lines tell us a title failed (with reason). We capture the
     title index from the args.
-  - Post-exit, we walk `output_dir` for `title_tNN.mkv` files: a file
-    that exists for an attempted title means success; an attempted
-    title with no file means failure (reason from MSG:5003 if any,
-    otherwise "no .mkv produced").
+  - Post-exit, we walk `output_dir` for `title_tNN.mkv` files. The file
+    `_tNN.mkv` belongs to `eligible_source_indexes[NN]`: matched by the
+    suffix's value, never by its rank among the files found, so a title
+    MakeMKV skipped can't shift its neighbours onto the wrong tracks. A
+    file that exists for an attempted title means success; an attempted
+    title with no file of its own number means failure (reason from
+    MSG:5003 if any, otherwise "no .mkv produced").
 
 Tracks that were *not* attempted by makemkvcon (below `--minlength`)
 never appear in the result map; the dispatcher decides what to do
@@ -419,7 +422,10 @@ async def _stream_output(
                         # Unattributable fail — append to overall diagnostics
                         # so the disc-level error captures it.
                         logger.warning("MSG:5003 without parseable title index: %s", line)
-            logger.debug("makemkvcon: %s", line)
+            # MSG lines are MakeMKV's own account of the rip (a few dozen per
+            # disc, unlike the ~30k PRGV lines) and the only record of why a
+            # title was skipped or failed, so they reach the job log at INFO.
+            logger.info("makemkvcon: %s", line)
 
 
 def _compose_error(prefix: str, diagnostics: list[str]) -> str:
@@ -439,9 +445,9 @@ def _compose_error(prefix: str, diagnostics: list[str]) -> str:
 _OUTPUT_FILE_RE = re.compile(r"_t(\d+)\.mkv$", re.IGNORECASE)
 
 
-def _output_files_in_rip_order(output_dir: Path) -> list[Path]:
-    """Return the `.mkv` files MakeMKV produced, sorted by their `_tNN`
-    suffix (the per-rip output index, ascending).
+def _output_files_by_position(output_dir: Path) -> dict[int, Path]:
+    """Map the value of each produced `.mkv`'s `_tNN` suffix (its output
+    position in this rip) to the file.
 
     MakeMKV in `mkv ... all <outdir>` mode writes files named
     `<volume_label>_tNN.mkv` (or `<custom_template>_tNN.mkv` if the
@@ -451,17 +457,32 @@ def _output_files_in_rip_order(output_dir: Path) -> list[Path]:
     titles 0 and 2 met `--minlength` produces `<label>_t00.mkv`
     (= source 0) and `<label>_t01.mkv` (= source 2).
 
+    The position comes from the name, not from the file's rank in the
+    directory: when MakeMKV skips a title mid-rip (no `_t03.mkv`), the
+    files after the gap keep their own numbers (`_t04.mkv` is still
+    position 4), so callers index `eligible_source_indexes[NN]` with it.
+
     Files without a parseable `_tNN.mkv` suffix (legacy strays, partial
-    writes from a crashed earlier run, etc.) are skipped.
+    writes from a crashed earlier run, etc.) are skipped. If two files
+    share a suffix (a stray from an earlier run under another label),
+    the first by name wins and the other stays on disk unclaimed.
     """
-    pairs: list[tuple[int, Path]] = []
-    for f in output_dir.glob("*.mkv"):
+    by_position: dict[int, Path] = {}
+    for f in sorted(output_dir.glob("*.mkv")):
         m = _OUTPUT_FILE_RE.search(f.name)
         if not m:
             continue
-        pairs.append((int(m.group(1)), f))
-    pairs.sort(key=lambda p: p[0])
-    return [p for _, p in pairs]
+        position = int(m.group(1))
+        if position in by_position:
+            logger.warning(
+                "two output files claim position %d: keeping %s, ignoring %s",
+                position,
+                by_position[position].name,
+                f.name,
+            )
+            continue
+        by_position[position] = f
+    return by_position
 
 
 @dataclass
@@ -601,10 +622,16 @@ async def rip_disc(
     output-position suffix (`_t00`, `_t01`, ...) rather than the
     source title index, and the robot stream emits no per-title MSG /
     PRGT we can rely on (empirically silent on MakeMKV 1.17.5+ in
-    `mkv all` mode). We pair `eligible_source_indexes[i]` with the
-    file whose suffix is `_t{i:02d}` to get back to source-index
-    keys. Pass `None` (or `[]`) only if the caller will handle
+    `mkv all` mode). The file whose suffix is `_t{i:02d}` belongs to
+    `eligible_source_indexes[i]`: paired by the suffix's value, not by
+    the order files are found, so a title MakeMKV skipped comes back
+    FAILED instead of shifting every later file onto its neighbour's
+    track. Pass `None` (or `[]`) only if the caller will handle
     attribution itself; the result will have an empty `titles` dict.
+
+    Not matched against the scan's TINFO 27 (planned output filename):
+    the scan runs without `--minlength`, so its `_tNN` numbering differs
+    from this rip's whenever `--minlength` drops a scanned title.
 
     `stop`, when set mid-rip, kills makemkvcon and returns STOPPED_ERROR as
     the overall error (see _run_makemkvcon).
@@ -664,16 +691,19 @@ async def rip_disc(
     #
     # MakeMKV's `mkv all` mode is opaque per-title — the stream emits
     # only overall PRGT/MSG (5014 start, 5005/5036 summary). We get
-    # back to per-title outcomes by pairing the eligible-source list
-    # we were given with the output files in rip order. Files past
-    # the eligible list are stragglers (e.g. user lowered minlength
-    # mid-disc, MakeMKV picked up extras we didn't expect) and we
-    # simply don't claim them — they remain on disk for inspection.
+    # back to per-title outcomes from the files' `_tNN` suffixes: file
+    # NN belongs to `eligible[NN]`. A suffix past the eligible list is a
+    # straggler (e.g. user lowered minlength mid-disc, MakeMKV picked up
+    # extras we didn't expect) and we simply don't claim it — it
+    # remains on disk for inspection.
     titles_out: dict[int, RipResult] = {}
-    output_files = _output_files_in_rip_order(output_dir)
     eligible = eligible_source_indexes or []
 
-    for source_idx, file_path in zip(eligible, output_files):
+    for position, file_path in sorted(_output_files_by_position(output_dir).items()):
+        if position >= len(eligible):
+            logger.warning("output file %s has no eligible title (eligible has %d)", file_path.name, len(eligible))
+            continue
+        source_idx = eligible[position]
         size = file_path.stat().st_size
         digest = await sha256_file(file_path) if hash_outputs else None
         titles_out[source_idx] = RipResult(
@@ -684,9 +714,7 @@ async def rip_disc(
         )
 
     # If MSG:5003 captured a per-title failure reason and we didn't
-    # produce a file for it (because the eligible list and files
-    # ran out at different points), surface that reason via a
-    # FAILED entry. Cheap belt-and-braces — most of the time
+    # produce a file for it, surface that reason via a FAILED entry. Cheap belt-and-braces — most of the time
     # state.titles is empty in `mkv all` mode.
     for title_idx, ts in state.titles.items():
         if title_idx in titles_out:
