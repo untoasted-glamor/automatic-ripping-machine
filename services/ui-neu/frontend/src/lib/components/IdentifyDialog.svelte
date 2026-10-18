@@ -37,6 +37,14 @@
 			: 0
 	);
 
+	// Why automatic identification missed (one entry per skipped or failed
+	// lookup), recorded at identify and cleared by a resolve.
+	const missReasons = $derived(
+		Array.isArray(job.metadata_json?.identify_miss_reasons)
+			? (job.metadata_json.identify_miss_reasons as unknown[]).filter((r): r is string => typeof r === 'string')
+			: []
+	);
+
 	// Video / DVD / BD / data fields.
 	let title = $state(job.title ?? '');
 	let year = $state<number | null>(job.year);
@@ -179,6 +187,17 @@
 			</p>
 		{/if}
 
+		{#if missReasons.length > 0}
+			<div class="alert alert-warning mt-3" data-testid="identify-miss-reasons">
+				<div class="alert-title">Why automatic identification missed</div>
+				<ul class="alert-body identify-dialog-miss-list">
+					{#each missReasons as reason, i (i)}
+						<li class="mono">{reason}</li>
+					{/each}
+				</ul>
+			</div>
+		{/if}
+
 		<form class="mt-4" onsubmit={submit}>
 			{#if isCd}
 				<div class="mb-3 flex gap-3">
@@ -274,5 +293,12 @@
 	}
 	.identify-dialog-field-wide {
 		flex: 2 1 0%;
+	}
+	.identify-dialog-miss-list {
+		margin: 0.25rem 0 0;
+		padding-left: 1.125rem;
+		list-style: disc;
+		font-size: 0.75rem;
+		overflow-wrap: anywhere;
 	}
 </style>

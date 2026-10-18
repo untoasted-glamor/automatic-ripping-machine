@@ -56,6 +56,31 @@ describe('IdentifyDialog', () => {
 		});
 	});
 
+	describe('identify miss reasons', () => {
+		it('lists why automatic identification missed', () => {
+			const job = createJob({
+				disc_type: 'dvd',
+				status: 'awaiting_user_id',
+				metadata_json: {
+					identify_miss_reasons: ['tmdb: no match for "DISC_1"', 'omdb: skipped (no API key)', 42 as unknown as string]
+				}
+			});
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+			const box = screen.getByTestId('identify-miss-reasons');
+			const items = box.querySelectorAll('li');
+			expect(Array.from(items, (li) => li.textContent)).toEqual([
+				'tmdb: no match for "DISC_1"',
+				'omdb: skipped (no API key)'
+			]);
+		});
+
+		it('shows nothing when there are none', () => {
+			const job = createJob({ disc_type: 'dvd', status: 'awaiting_user_id', metadata_json: {} });
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+			expect(screen.queryByTestId('identify-miss-reasons')).not.toBeInTheDocument();
+		});
+	});
+
 	describe('season and disc position', () => {
 		it('seeds season / disc # / disc total from the job and omits them when unchanged', async () => {
 			resolveJobMock.mockResolvedValue(makeResp());
