@@ -10,6 +10,7 @@ from arm_common.schemas import ScanTitle, TrackView
 from arm_ripper.rip.abcde_rip import rip_cd
 from arm_ripper.rip.data_rip import rip_data
 from arm_ripper.rip.makemkv_rip import RipResult, _output_files_by_position, backup_disc, remux_title, rip_disc
+from arm_ripper.rip.preflight import check_backup_space
 from arm_ripper.rip.title_map import match_titles
 from arm_ripper.scan.makemkv import ScanError, list_source_titles
 from arm_ripper.source import is_iso_source
@@ -494,7 +495,8 @@ async def _rip_selected_titles(
     """Backup-then-remux (D1): rip only the kept titles.
 
     1. `backup_disc`: one read of the whole disc into `.backup/` (skipped for
-       an `.iso`, which is read directly).
+       an `.iso`, which is read directly), after checking `/raw` has room
+       for it and the kept titles.
     2. List the backup's titles and match each kept disc-scan title to one
        by what it plays (`title_map`): backup ids differ from the disc's.
     3. `remux_title` per kept title, in index order, from disk; each file is
@@ -551,6 +553,19 @@ async def _rip_selected_titles(
         # A DVD backup is one ISO image; a Blu-ray backup a folder.
         target = backup_dir / ("disc.iso" if disc_type == DiscType.DVD else "disc")
         shutil.rmtree(backup_dir, ignore_errors=True)
+        # Room for the whole disc plus the kept titles, before the drive is
+        # touched: running out mid-backup wastes the read and fills /raw.
+        shortfall = check_backup_space(
+            output_dir,
+            titles=scan_titles,
+            disc_type=disc_type,
+            kept_bytes=sum(scan_by_index[idx].size_bytes or kept[idx].expected_size_bytes or 0 for idx in to_rip),
+            backup_dirname=BACKUP_DIRNAME,
+        )
+        if shortfall is not None:
+            logger.warning("not backing up the disc: %s", shortfall)
+            await fail_all(shortfall)
+            return
         logger.info(
             "backing up disc %s to %s to rip %d of %d titles",
             device_path,

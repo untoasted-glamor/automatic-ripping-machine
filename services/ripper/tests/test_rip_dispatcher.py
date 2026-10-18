@@ -19,7 +19,9 @@ import asyncio
 import errno
 import logging
 import os
+import shutil as shutil_module
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -1124,6 +1126,23 @@ async def test_rip_minimum_above_a_kept_title_fails_only_that_title(monkeypatch,
 
 _HANAKO_PLAY_ALL = "00008.mpls"
 _HANAKO_LABEL = "ToiletBound HanakoKun D1"
+_GB = 1_000_000_000
+
+
+def _set_free_space(monkeypatch, free: int) -> None:
+    """`/raw`'s free space as the OS reports it (S8's preflight reads it)."""
+
+    def disk_usage(_path: Any) -> Any:
+        return SimpleNamespace(total=10 * free, used=9 * free, free=free)
+
+    monkeypatch.setattr(shutil_module, "disk_usage", disk_usage)
+
+
+@pytest.fixture(autouse=True)
+def _plenty_of_space(monkeypatch):
+    """A roomy `/raw`, so no test depends on the host's disk; S8's tests
+    set their own."""
+    _set_free_space(monkeypatch, 10_000 * _GB)
 
 
 class _Run:
@@ -1418,3 +1437,54 @@ async def test_every_track_excluded_rips_nothing(monkeypatch, tmp_path):
 
     assert run.starts == [] and run.done == {}
     assert fake.invocations == []
+
+
+# --- disk-space preflight before a backup (S8) --------------------------------
+
+
+async def test_not_enough_space_fails_the_kept_tracks_before_the_drive_is_read(monkeypatch, tmp_path):
+    fake, scan = await _hanako(monkeypatch)
+    _set_free_space(monkeypatch, 20 * _GB)
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+
+    run = await _rip_recorded(tracks, scan, tmp_path / "job", device="/dev/sr0")
+
+    for track in tracks[:7]:
+        error = run.final(track).error or ""
+        assert run.final(track).ok is False
+        assert error.startswith(f"not enough space on {tmp_path}: need ~")
+        assert "have 20.0 GB free" in error
+    assert "trk_7" not in run.starts
+    assert fake.invocations == []
+    assert not (tmp_path / "job" / ".backup").exists()
+
+
+async def test_a_play_all_is_not_counted_twice(monkeypatch, tmp_path):
+    """The Hanako-kun titles add up to 92.5 GB, but the play-all holds the
+    episodes' clips: the backup needs about the disc (46.5 GB), so 60 GB
+    free is enough for it plus one 6.6 GB episode."""
+    fake, scan = await _hanako(monkeypatch)
+    _set_free_space(monkeypatch, 60 * _GB)
+    assert sum(t.size_bytes or 0 for t in scan.titles) > 90 * _GB
+    tracks = _exclude(_rip_start_tracks(scan), 1, 2, 3, 4, 5, 6, 7)
+
+    run = await _rip_recorded(tracks, scan, tmp_path / "job", device="/dev/sr0")
+
+    assert run.final(tracks[0]).ok is True, run.final(tracks[0]).error
+    assert [inv.command for inv in fake.drive_reads] == ["backup"]
+
+
+async def test_the_space_message_names_backups_other_jobs_keep(monkeypatch, tmp_path):
+    _, scan = await _hanako(monkeypatch)
+    _set_free_space(monkeypatch, 30 * _GB)
+    other = tmp_path / "job_older" / ".backup" / "disc" / "BDMV" / "STREAM"
+    other.mkdir(parents=True)
+    with (other / "00014.m2ts").open("wb") as f:
+        f.truncate(25 * _GB)  # sparse: costs nothing here
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+
+    run = await _rip_recorded(tracks, scan, tmp_path / "job", device="/dev/sr0")
+
+    error = run.final(tracks[0]).error or ""
+    assert "1 other job(s) keep a disc backup in <job>/.backup/" in error
+    assert "job_older (25.0 GB)" in error
