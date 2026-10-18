@@ -519,7 +519,8 @@ class JobController:
         logger.error(
             "DISC_UNREADABLE_AFTER_RETRIES device=%s drive_state=DISC_OK attempts=%d — "
             "disc present per ioctl but no readable titles after retries; check disc/drive "
-            "readiness (dirty/damaged disc, drive spin-up, or container device passthrough)",
+            "readiness (dirty/damaged disc, drive spin-up, or container device passthrough); "
+            "the 'makemkvcon found 0 titles' warnings above say what MakeMKV reported",
             device_path,
             SCAN_NOT_READY_MAX_ATTEMPTS,
         )

@@ -981,6 +981,7 @@ async def test_scan_retry_exhausts_and_logs_marker(monkeypatch, caplog):
         out = await controller._scan_with_ready_retry("/dev/sr0")
     assert not out.titles
     assert "DISC_UNREADABLE_AFTER_RETRIES" in caplog.text
+    assert "the 'makemkvcon found 0 titles' warnings above" in caplog.text
 
 
 async def test_scan_retry_iso_source_never_touches_drive_ioctl(monkeypatch, tmp_path):

@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import logging
 import re
 from typing import Iterable
@@ -6,7 +7,7 @@ from typing import Iterable
 from arm_common import DiscType, MakemkvKeyState
 from arm_common.schemas import DiscFingerprintInput, ScanResult, ScanTitle
 from arm_ripper.scan.disc_probe import probe_disc
-from arm_ripper.source import makemkv_source_url
+from arm_ripper.source import is_file_source, makemkv_source_url
 
 logger = logging.getLogger("arm_ripper.scan.makemkv")
 
@@ -200,6 +201,49 @@ def parse_makemkvcon_info(
     return volume_label, parsed, mkv_disc_type
 
 
+_EMPTY_SCAN_MAX_MESSAGES = 15
+
+
+def summarize_empty_scan(lines: Iterable[str], *, drives: bool = True) -> str:
+    """Condense makemkvcon's robot output into something an operator can act
+    on when a scan found no titles: MakeMKV's own MSG texts (deduped, capped)
+    and, for a drive source, the drives it could see (DRV lines with a name).
+
+    Robot-mode formats (quoted fields may contain commas):
+      MSG:code,flags,count,"message","format",params...
+      DRV:index,visible,enabled,flags,"drive name","disc name","device path"
+    No named drive at all means MakeMKV couldn't open the drive: it finds
+    drives through their /dev/sgN node, so that node is missing or unreadable.
+    """
+    messages: list[str] = []
+    seen: list[str] = []
+    for raw in lines:
+        msg_type, _, rest = raw.strip().partition(":")
+        if msg_type not in ("MSG", "DRV") or not rest:
+            continue
+        fields = next(csv.reader([rest]), [])
+        if msg_type == "MSG" and len(fields) >= 4:
+            text = f"[{fields[0]}] {fields[3]}"
+            if text not in messages:
+                messages.append(text)
+        elif msg_type == "DRV" and len(fields) >= 7 and fields[4]:
+            disc = f' disc="{fields[5]}"' if fields[5] else ""
+            seen.append(f'"{fields[4]}" dev={fields[6] or "?"}{disc}')
+
+    shown = messages[:_EMPTY_SCAN_MAX_MESSAGES]
+    if len(messages) > len(shown):
+        shown.append(f"... {len(messages) - len(shown)} more")
+    said = f"makemkv said: {' | '.join(shown) if shown else '(no MSG output)'}"
+    if not drives:
+        return said
+    drive_text = (
+        "; ".join(seen)
+        if seen
+        else "none (MakeMKV could not open any drive: is the drive's /dev/sgN node in this container?)"
+    )
+    return f"drives seen: {drive_text}; {said}"
+
+
 def _classify_from_titles(titles: list[ScanTitle]) -> DiscType:
     """Last-resort fallback used only when MakeMKV's CINFO:1 disc-type
     string was missing. Title size > 4.7GB is unreliable (DVD-9s exceed it
@@ -354,6 +398,14 @@ async def scan_disc(device_path: str) -> ScanResult:
 
     lines = stdout.decode(errors="replace").splitlines()
     volume_label, titles, mkv_disc_type = parse_makemkvcon_info(lines)
+    if not titles:
+        # Without this MakeMKV's reason (no drive found, AACS failure, read
+        # errors) was discarded and the operator only ever saw "0 titles".
+        logger.warning(
+            "makemkvcon found 0 titles device=%s: %s",
+            device_path,
+            summarize_empty_scan(lines, drives=not is_file_source(device_path)),
+        )
 
     # MakeMKV's CINFO:1 is the authoritative disc-type signal — works on
     # region-locked discs that the kernel refuses to mount, and on UDF
