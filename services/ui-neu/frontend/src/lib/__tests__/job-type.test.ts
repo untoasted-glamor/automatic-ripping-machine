@@ -101,6 +101,10 @@ describe('isJobActive', () => {
 		expect(isJobActive('waiting_transcode')).toBe(true);
 	});
 
+	it('treats a disc held at the review gate as active', () => {
+		expect(isJobActive('awaiting_review')).toBe(true);
+	});
+
 	it('returns true for legacy pre-v2.0.0 wire strings (defensive fallback)', () => {
 		// Kept so in-flight jobs observed during a mid-deploy window still
 		// register as active rather than silently flipping to terminal.

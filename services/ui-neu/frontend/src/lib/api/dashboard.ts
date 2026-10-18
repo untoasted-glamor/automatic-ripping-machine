@@ -38,6 +38,10 @@ export interface DashboardData {
 	drive_names: Record<string, string>;
 	notification_count: number;
 	ripping_enabled: boolean;
+	// Review-gate countdown (config manual_wait_seconds): null = mandatory
+	// confirm, a number = the timed auto-start. Absent when config didn't load,
+	// so the review card can tell "unknown" apart from mandatory mode.
+	manual_wait_seconds?: number | null;
 	makemkv_key_valid: boolean | null;
 	makemkv_key_checked_at: string | null;
 	transcoder_online: boolean;
@@ -118,6 +122,7 @@ export async function fetchDashboard(): Promise<DashboardData> {
 		drive_names: driveNames,
 		notification_count: notifications?.unseen ?? 0,
 		ripping_enabled: config ? !config.ripping_paused : true,
+		manual_wait_seconds: config ? config.manual_wait_seconds : undefined,
 		makemkv_key_valid: config?.makemkv_key_valid ?? null,
 		makemkv_key_checked_at: config?.makemkv_key_checked_at ?? null,
 		transcoder_online: transcoderOnline,

@@ -286,7 +286,7 @@
 				<div class="grid gap-4">
 					{#each waitingJobs as job (job.id)}
 						<div in:fade|local={fadeIn} out:fade|local={fadeOut}>
-							<DiscReviewWidget {job} driveNames={dash.drive_names} paused={!dash.ripping_enabled} onrefresh={refreshDashboard} ondismiss={() => dismissJob(job.id)} />
+							<DiscReviewWidget {job} driveNames={dash.drive_names} paused={!dash.ripping_enabled} manualWaitSeconds={dash.manual_wait_seconds} onrefresh={refreshDashboard} ondismiss={() => dismissJob(job.id)} />
 						</div>
 					{/each}
 				</div>

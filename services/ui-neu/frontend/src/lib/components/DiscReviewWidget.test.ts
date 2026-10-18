@@ -201,6 +201,40 @@ describe('DiscReviewWidget', () => {
 			);
 		});
 
+		it('Start rip also starts a disc the save parked in awaiting_review', async () => {
+			// hold_for_review on: resolving an awaiting_user_id disc promotes it to
+			// awaiting_review instead of starting it, so Start must follow up.
+			const { resolveJob } = await import('$lib/api/jobs');
+			vi.mocked(resolveJob).mockResolvedValueOnce({
+				job: createJob({ id: 'job_p', status: 'awaiting_review' }),
+				fan_out: []
+			});
+			renderWidget({ id: 'job_p', status: 'awaiting_user_id' });
+			await fireEvent.click(await screen.findByText('Start rip'));
+			await waitFor(() => expect(mockStart).toHaveBeenCalledWith('job_p'));
+		});
+
+		it('mandatory mode (manualWaitSeconds null) shows no countdown, just the confirm prompt', async () => {
+			renderWidget(
+				{ id: 'job_m', status: 'awaiting_review', wait_start_time: new Date().toISOString() },
+				{ manualWaitSeconds: null }
+			);
+			expect(await screen.findByTestId('review-awaiting-confirm')).toHaveTextContent(
+				'Waiting for your confirmation'
+			);
+			expect(screen.queryByTitle('Pause timer')).not.toBeInTheDocument();
+			expect(screen.getByText('Start rip')).toBeInTheDocument();
+		});
+
+		it('timed mode counts down from the configured seconds', async () => {
+			renderWidget(
+				{ id: 'job_t', status: 'awaiting_review', wait_start_time: new Date().toISOString() },
+				{ manualWaitSeconds: 300 }
+			);
+			expect(await screen.findByText(/^[45]m \d\ds$/)).toBeInTheDocument();
+			expect(screen.queryByTestId('review-awaiting-confirm')).not.toBeInTheDocument();
+		});
+
 		it('the countdown pause control toggles per-job pause', async () => {
 			// awaiting_review + a wait_start_time renders the CountdownTimer with a
 			// pause toggle; clicking it calls pauseWaitingJob(id, true).

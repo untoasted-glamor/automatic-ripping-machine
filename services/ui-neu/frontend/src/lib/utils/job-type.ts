@@ -101,6 +101,9 @@ const ACTIVE_STATUSES = new Set([
 	'created',
 	'awaiting_user_id',
 	'identified',
+	// Held at the review gate. In mandatory mode it waits indefinitely for the
+	// operator's confirm, so it must stay live (job page polling, Abandon).
+	'awaiting_review',
 	'identifying',
 	'ready',
 	'ripping',                  // legacy pre-v2.0.0

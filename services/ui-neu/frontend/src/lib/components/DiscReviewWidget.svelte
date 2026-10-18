@@ -22,8 +22,10 @@
 		driveNames?: Record<string, string> | null;
 		paused?: boolean;
 		/** Review countdown duration (config manual_wait_seconds). Cosmetic — the
-		 *  ripper owns the authoritative clock; this only drives the UI timer. */
-		manualWaitSeconds?: number;
+		 *  ripper owns the authoritative clock; this only drives the UI timer.
+		 *  `null` = mandatory confirm: the disc never auto-starts, so no countdown.
+		 *  Omitted (config not loaded) falls back to the 60s default. */
+		manualWaitSeconds?: number | null;
 		onrefresh?: () => void;
 		ondismiss?: () => void;
 	}
@@ -34,6 +36,8 @@
 	// awaiting_review = the timed review gate (Start / countdown); other waiting
 	// statuses (awaiting_user_id / ripped_awaiting_identify) are identify-only.
 	let isReviewGate = $derived(job?.status === 'awaiting_review');
+	// Mandatory sub-mode: held until an explicit Start, with nothing counting down.
+	let isMandatoryGate = $derived(isReviewGate && manualWaitSeconds === null);
 	let starting = $state(false);
 	let pauseBusy = $state(false);
 	// The countdown is frozen by the global pause OR this disc's own pause.
@@ -160,7 +164,7 @@
 		starting = true;
 		errorMessage = null;
 		try {
-			await resolveJob(job.id, {
+			const resolved = await resolveJob(job.id, {
 				title: startTitle,
 				year: j.year ?? null,
 				disc_number: j.disc_number ?? null,
@@ -168,7 +172,10 @@
 				season_number: j.season_number ?? null,
 				metadata: {}
 			});
-			if (isReviewGate) {
+			// With hold_for_review on, resolving an awaiting_user_id disc parks it in
+			// awaiting_review rather than starting it - so check the resolved status
+			// too, or Start rip would leave a mandatory-gate disc waiting forever.
+			if (isReviewGate || resolved?.job?.status === 'awaiting_review') {
 				await startWaitingJob(job.id);
 			}
 			ondismiss?.();
@@ -238,10 +245,14 @@
 		     timer's pause/resume toggles THIS disc only (per-job manual_pause);
 		     it's hidden while globally paused since one disc can't un-pause the
 		     whole machine. -->
-		{#if isReviewGate && job.wait_start_time}
+		{#if isMandatoryGate}
+			<span class="text-sm font-medium text-on-primary/90" data-testid="review-awaiting-confirm">
+				Waiting for your confirmation
+			</span>
+		{:else if isReviewGate && job.wait_start_time}
 			<CountdownTimer
 				startTime={job.wait_start_time}
-				waitSeconds={manualWaitSeconds}
+				waitSeconds={manualWaitSeconds ?? 60}
 				paused={countdownPaused}
 				inverted
 				onpause={!$isAdmin || paused || pauseBusy ? undefined : () => handlePauseToggle(true)}
