@@ -114,7 +114,16 @@
 		const isSeries = editType === 'series';
 		try {
 			if (canResolve) {
-				await resolveJob(job.id, { title, year, metadata: { video_type: editType } });
+				// Carry the job's season/disc through: resolve assigns them
+				// unconditionally, so omitting them would clear the box-set position.
+				await resolveJob(job.id, {
+					title,
+					year,
+					season_number: job.season_number ?? null,
+					disc_number: job.disc_number ?? null,
+					disc_total: job.disc_total ?? null,
+					metadata: { video_type: editType }
+				});
 				let message = 'Identified';
 				if (poster !== (job.poster_url_manual ?? null)) {
 					try {

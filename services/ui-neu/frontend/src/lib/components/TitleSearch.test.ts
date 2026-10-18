@@ -166,16 +166,29 @@ describe('TitleSearch', () => {
 				candidates: [createCandidate({ title: 'The Matrix', year: 1999, poster_url: 'https://img/m.jpg' })]
 			});
 			renderComponent(TitleSearch, {
-				props: { job: createJob({ id: 'job_7', status: 'awaiting_user_id', title: 'matrix' }) }
+				props: {
+					job: createJob({
+						id: 'job_7',
+						status: 'awaiting_user_id',
+						title: 'matrix',
+						season_number: 1,
+						disc_number: 2,
+						disc_total: 3
+					})
+				}
 			});
 			await fireEvent.click(screen.getByText('Search'));
 			await waitFor(() => expect(screen.getByText('The Matrix')).toBeInTheDocument());
 			await fireEvent.click(screen.getByText('The Matrix'));
 			await fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
 			await waitFor(() => {
+				// The job's season/disc ride along so the resolve doesn't clear them.
 				expect(mockResolve).toHaveBeenCalledWith('job_7', {
 					title: 'The Matrix',
 					year: 1999,
+					season_number: 1,
+					disc_number: 2,
+					disc_total: 3,
 					metadata: { video_type: 'movie' }
 				});
 				expect(mockUpdateTitle).toHaveBeenCalledWith('job_7', { poster_url_manual: 'https://img/m.jpg' });

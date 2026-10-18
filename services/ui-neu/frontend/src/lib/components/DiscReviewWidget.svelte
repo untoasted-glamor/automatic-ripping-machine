@@ -165,6 +165,7 @@
 				year: j.year ?? null,
 				disc_number: j.disc_number ?? null,
 				disc_total: j.disc_total ?? null,
+				season_number: j.season_number ?? null,
 				metadata: {}
 			});
 			if (isReviewGate) {

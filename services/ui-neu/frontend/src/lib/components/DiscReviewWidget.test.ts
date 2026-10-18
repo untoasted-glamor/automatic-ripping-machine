@@ -186,6 +186,21 @@ describe('DiscReviewWidget', () => {
 			expect(mockStart).not.toHaveBeenCalled();
 		});
 
+		it('Start rip carries the season/disc so the save does not clear them', async () => {
+			const { resolveJob } = await import('$lib/api/jobs');
+			const mockResolve = vi.mocked(resolveJob);
+			const seeded = { id: 'job_s', status: 'awaiting_user_id' as const, season_number: 2, disc_number: 1, disc_total: 4 };
+			mockFetchJob.mockResolvedValueOnce(detail(seeded));
+			renderWidget(seeded);
+			await fireEvent.click(await screen.findByText('Start rip'));
+			await waitFor(() =>
+				expect(mockResolve).toHaveBeenCalledWith(
+					'job_s',
+					expect.objectContaining({ season_number: 2, disc_number: 1, disc_total: 4 })
+				)
+			);
+		});
+
 		it('the countdown pause control toggles per-job pause', async () => {
 			// awaiting_review + a wait_start_time renders the CountdownTimer with a
 			// pause toggle; clicking it calls pauseWaitingJob(id, true).

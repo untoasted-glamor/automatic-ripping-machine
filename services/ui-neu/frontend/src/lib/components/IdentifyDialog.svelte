@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { resolveJob } from '$lib/api/jobs';
-	import type { JobView, ResolveResponse } from '$lib/types/api.gen';
+	import { resolveJob, searchMetadata } from '$lib/api/jobs';
+	import type { JobView, MetadataCandidate, ResolveResponse } from '$lib/types/api.gen';
+	import PosterImage from './PosterImage.svelte';
 
 	let {
 		job,
@@ -41,6 +42,23 @@
 	let title = $state(job.title ?? '');
 	let year = $state<number | null>(job.year);
 
+	// Season / disc are pure operator input - MakeMKV surfaces no season or disc
+	// signal and no metadata provider fills them in - and they are the only source
+	// the `{season}` / `{disc}` naming tokens have at apply time. Without them a
+	// box set applied against the built-in TV session fails with "token {disc}
+	// resolved empty". Seeded from the job because resolve overwrites all three
+	// unconditionally: submitting without them would clear what was set earlier.
+	let seasonNumber = $state<number | null>(job.season_number ?? null);
+	let discNumber = $state<number | null>(job.disc_number ?? null);
+	let discTotal = $state<number | null>(job.disc_total ?? null);
+
+	// A cleared number input binds as null/undefined/''; the API wants null.
+	function numOrNull(v: number | string | null | undefined): number | null {
+		if (v === '' || v == null) return null;
+		const n = Number(v);
+		return Number.isFinite(n) ? n : null;
+	}
+
 	// CD fields.
 	let album = $state(job.title ?? '');
 	let artist = $state('');
@@ -49,6 +67,58 @@
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
 
+	// Manual title search against the configured metadata provider. Mitigates
+	// auto-identify misses from a noisy volume label (a disc/volume-set token can
+	// make the automatic query miss entirely). Video path only: the CD path needs
+	// a structured artist/album/track shape this candidate search doesn't return.
+	let searchTitle = $state(job.title ?? '');
+	let searchType = $state<'movie' | 'tv'>('movie');
+	let searching = $state(false);
+	let searchError = $state<string | null>(null);
+	let candidates = $state<MetadataCandidate[]>([]);
+	let pickedCandidate = $state<MetadataCandidate | null>(null);
+
+	async function doSearch(): Promise<void> {
+		const q = searchTitle.trim();
+		if (!q) return;
+		searching = true;
+		searchError = null;
+		try {
+			const resp = await searchMetadata(q, searchType);
+			candidates = resp.candidates;
+			searchError = resp.candidates.length === 0 ? (resp.detail ?? 'No results') : null;
+		} catch (e) {
+			candidates = [];
+			searchError = e instanceof Error ? e.message : 'Search failed';
+		} finally {
+			searching = false;
+		}
+	}
+
+	function onSearchKeydown(e: KeyboardEvent): void {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			void doSearch();
+		}
+	}
+
+	function pickCandidate(c: MetadataCandidate): void {
+		title = c.title;
+		year = c.year ?? null;
+		pickedCandidate = c;
+	}
+
+	// The picked candidate's identity rides along as metadata - provider id,
+	// kind, and its poster (resolve promotes `metadata.poster_url` onto the job's
+	// poster, so correcting a mis-identified disc also swaps the wrong artwork).
+	// Only while the title still matches the pick: once the operator retypes the
+	// title, the candidate no longer describes what they're submitting.
+	function candidateMetadata(): Record<string, unknown> | undefined {
+		const c = pickedCandidate;
+		if (!c || c.title !== title.trim()) return undefined;
+		return { provider_id: c.provider_id ?? null, poster_url: c.poster_url ?? null, kind: c.kind };
+	}
+
 	const canSubmit = $derived(
 		submitting
 			? false
@@ -56,6 +126,11 @@
 				? album.trim().length > 0 && artist.trim().length > 0
 				: title.trim().length > 0
 	);
+
+	const inputClass =
+		'w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-white';
+	const labelClass = 'text-sm font-medium text-gray-700 dark:text-gray-300';
+	const hintClass = 'mb-3 text-xs text-gray-500 dark:text-gray-400';
 
 	async function submit(event: Event): Promise<void> {
 		event.preventDefault();
@@ -69,10 +144,15 @@
 						album: album.trim(),
 						tracks: trackTitles.map((t) => ({ title: t.trim() }))
 					}
-				: undefined;
+				: candidateMetadata();
 			const resp = await resolveJob(job.id, {
 				title: isCd ? album.trim() : title.trim(),
-				year: year ?? null,
+				year: numOrNull(year),
+				// Sent on both paths: resolve assigns these unconditionally. A CD has
+				// no season, so it always sends null there.
+				season_number: isCd ? null : numOrNull(seasonNumber),
+				disc_number: numOrNull(discNumber),
+				disc_total: numOrNull(discTotal),
 				metadata
 			});
 			onidentified(resp);
@@ -93,7 +173,7 @@
 	></button>
 
 	<div
-		class="relative z-10 w-full max-w-xl rounded-lg bg-surface p-6 shadow-xl dark:bg-surface-dark"
+		class="relative z-10 max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-lg bg-surface p-6 shadow-xl dark:bg-surface-dark"
 		data-dialog
 		role="dialog"
 		aria-modal="true"
@@ -126,10 +206,82 @@
 			</p>
 		{/if}
 
+		{#if !isCd}
+			<div
+				class="mt-4 rounded-lg border border-primary/20 p-3 dark:border-primary/20"
+				data-testid="identify-search"
+			>
+				<div class="flex flex-wrap items-end gap-2">
+					<label class="min-w-[10rem] flex-[2] {labelClass}">
+						Search title
+						<input
+							bind:value={searchTitle}
+							type="text"
+							data-testid="search-title"
+							disabled={submitting || searching}
+							onkeydown={onSearchKeydown}
+							class="mt-1 {inputClass}"
+						/>
+					</label>
+					<label class="flex-1 {labelClass}">
+						Type
+						<select
+							bind:value={searchType}
+							data-testid="search-type"
+							disabled={submitting || searching}
+							class="mt-1 {inputClass}"
+						>
+							<option value="movie">Movie</option>
+							<option value="tv">TV</option>
+						</select>
+					</label>
+					<button
+						type="button"
+						data-testid="search-run"
+						onclick={doSearch}
+						disabled={searching || submitting || !searchTitle.trim()}
+						class="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+					>
+						{searching ? 'Searching...' : 'Search'}
+					</button>
+				</div>
+				{#if searchError}
+					<p class="mt-2 text-sm text-red-600 dark:text-red-400" data-testid="search-error">
+						{searchError}
+					</p>
+				{/if}
+				{#if candidates.length > 0}
+					<div class="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
+						{#each candidates as c, i (`${c.provider_id ?? i}-${c.title}-${c.year ?? ''}`)}
+							<button
+								type="button"
+								data-testid="identify-candidate-{c.provider_id ?? i}"
+								aria-pressed={pickedCandidate === c}
+								onclick={() => pickCandidate(c)}
+								disabled={submitting}
+								class="flex flex-col overflow-hidden rounded-lg border text-left transition-all {pickedCandidate === c
+									? 'border-primary ring-2 ring-primary/30'
+									: 'border-primary/20 hover:border-primary/40 dark:border-primary/20 dark:hover:border-primary/40'}"
+							>
+								<PosterImage
+									url={c.poster_url}
+									alt={c.title}
+									class="aspect-[2/3] w-full object-cover"
+								/>
+								<span class="line-clamp-2 p-1.5 text-xs font-medium text-gray-900 dark:text-white">
+									{c.title}{#if c.year}&nbsp;({c.year}){/if}
+								</span>
+							</button>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
+
 		<form class="mt-4" onsubmit={submit}>
 			{#if isCd}
 				<div class="mb-3 flex gap-3">
-					<label class="flex-[2] text-sm font-medium text-gray-700 dark:text-gray-300">
+					<label class="flex-[2] {labelClass}">
 						Album
 						<input
 							bind:value={album}
@@ -137,10 +289,10 @@
 							required
 							data-testid="identify-album"
 							disabled={submitting}
-							class="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+							class="mt-1 {inputClass}"
 						/>
 					</label>
-					<label class="flex-1 text-sm font-medium text-gray-700 dark:text-gray-300">
+					<label class="flex-1 {labelClass}">
 						Year
 						<input
 							bind:value={year}
@@ -149,12 +301,12 @@
 							max="2100"
 							data-testid="identify-year"
 							disabled={submitting}
-							class="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+							class="mt-1 {inputClass}"
 						/>
 					</label>
 				</div>
 				<div class="mb-3">
-					<label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+					<label class={labelClass}>
 						Artist
 						<input
 							bind:value={artist}
@@ -162,10 +314,40 @@
 							required
 							data-testid="identify-artist"
 							disabled={submitting}
-							class="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+							class="mt-1 {inputClass}"
 						/>
 					</label>
 				</div>
+				<div class="mb-1 flex gap-3">
+					<label class="flex-1 {labelClass}">
+						Disc #
+						<input
+							bind:value={discNumber}
+							type="number"
+							min="1"
+							placeholder="—"
+							data-testid="identify-disc-number"
+							disabled={submitting}
+							class="mt-1 {inputClass}"
+						/>
+					</label>
+					<label class="flex-1 {labelClass}">
+						Disc total
+						<input
+							bind:value={discTotal}
+							type="number"
+							min="1"
+							placeholder="—"
+							data-testid="identify-disc-total"
+							disabled={submitting}
+							class="mt-1 {inputClass}"
+						/>
+					</label>
+				</div>
+				<p class={hintClass}>
+					Multi-disc sets only - the source of the <code>{'{disc}'}</code> naming token when the
+					MusicBrainz match doesn't supply one. Leave blank for a single disc.
+				</p>
 				{#if scanTrackCount > 0}
 					<div class="mb-3">
 						<div class="mb-1 text-sm text-gray-500 dark:text-gray-400">Track titles</div>
@@ -179,7 +361,7 @@
 									type="text"
 									data-testid={`identify-track-${idx + 1}`}
 									disabled={submitting}
-									class="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+									class="flex-1 {inputClass}"
 								/>
 							</div>
 						{/each}
@@ -192,7 +374,7 @@
 				{/if}
 			{:else}
 				<div class="mb-3 flex gap-3">
-					<label class="flex-[2] text-sm font-medium text-gray-700 dark:text-gray-300">
+					<label class="flex-[2] {labelClass}">
 						Title
 						<input
 							bind:value={title}
@@ -200,10 +382,10 @@
 							required
 							data-testid="identify-title"
 							disabled={submitting}
-							class="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+							class="mt-1 {inputClass}"
 						/>
 					</label>
-					<label class="flex-1 text-sm font-medium text-gray-700 dark:text-gray-300">
+					<label class="flex-1 {labelClass}">
 						Year
 						<input
 							bind:value={year}
@@ -212,10 +394,53 @@
 							max="2100"
 							data-testid="identify-year"
 							disabled={submitting}
-							class="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+							class="mt-1 {inputClass}"
 						/>
 					</label>
 				</div>
+				<div class="mb-1 flex gap-3">
+					<label class="flex-1 {labelClass}">
+						Season
+						<input
+							bind:value={seasonNumber}
+							type="number"
+							min="0"
+							placeholder="—"
+							data-testid="identify-season-number"
+							disabled={submitting}
+							class="mt-1 {inputClass}"
+						/>
+					</label>
+					<label class="flex-1 {labelClass}">
+						Disc #
+						<input
+							bind:value={discNumber}
+							type="number"
+							min="1"
+							placeholder="—"
+							data-testid="identify-disc-number"
+							disabled={submitting}
+							class="mt-1 {inputClass}"
+						/>
+					</label>
+					<label class="flex-1 {labelClass}">
+						Disc total
+						<input
+							bind:value={discTotal}
+							type="number"
+							min="1"
+							placeholder="—"
+							data-testid="identify-disc-total"
+							disabled={submitting}
+							class="mt-1 {inputClass}"
+						/>
+					</label>
+				</div>
+				<p class={hintClass}>
+					TV box sets only. Nothing on the disc records these, so sessions whose template uses
+					<code>{'{season}'}</code> or <code>{'{disc}'}</code> can't be applied until you fill them
+					in. Leave blank for a film.
+				</p>
 			{/if}
 
 			<div class="mt-4 flex justify-end gap-3">

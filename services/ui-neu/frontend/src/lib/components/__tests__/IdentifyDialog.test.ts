@@ -2,14 +2,16 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderComponent, screen, fireEvent, cleanup, waitFor } from '$lib/test-utils';
 import IdentifyDialog from '../IdentifyDialog.svelte';
 import { createJob } from '../__fixtures__/job';
-import { resolveJob } from '$lib/api/jobs';
+import { resolveJob, searchMetadata } from '$lib/api/jobs';
 import type { ResolveResponse } from '$lib/types/api.gen';
 
 vi.mock('$lib/api/jobs', () => ({
-	resolveJob: vi.fn()
+	resolveJob: vi.fn(),
+	searchMetadata: vi.fn()
 }));
 
 const resolveJobMock = vi.mocked(resolveJob);
+const searchMetadataMock = vi.mocked(searchMetadata);
 
 function makeResp(): ResolveResponse {
 	return { job: createJob({ status: 'identified' }), fan_out: [] };
@@ -46,13 +48,190 @@ describe('IdentifyDialog', () => {
 			await fireEvent.click(screen.getByTestId('identify-submit'));
 
 			await waitFor(() => {
+				// season/disc ride along as explicit nulls: resolve assigns them
+				// unconditionally, so omitting them would clear whatever was set before.
 				expect(resolveJobMock).toHaveBeenCalledWith('job_v', {
 					title: 'Blade Runner',
 					year: 1982,
+					season_number: null,
+					disc_number: null,
+					disc_total: null,
 					metadata: undefined
 				});
 				expect(onidentified).toHaveBeenCalledTimes(1);
 			});
+		});
+	});
+
+	describe('season / disc box-set fields', () => {
+		it('sends the season/disc typed into the form', async () => {
+			resolveJobMock.mockResolvedValue(makeResp());
+			const job = createJob({ id: 'job_s', disc_type: 'bluray', status: 'awaiting_user_id', title: '' });
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+
+			await fireEvent.input(screen.getByTestId('identify-title'), { target: { value: 'ACCA' } });
+			await fireEvent.input(screen.getByTestId('identify-season-number'), { target: { value: '1' } });
+			await fireEvent.input(screen.getByTestId('identify-disc-number'), { target: { value: '2' } });
+			await fireEvent.input(screen.getByTestId('identify-disc-total'), { target: { value: '3' } });
+			await fireEvent.click(screen.getByTestId('identify-submit'));
+
+			await waitFor(() =>
+				expect(resolveJobMock).toHaveBeenCalledWith(
+					'job_s',
+					expect.objectContaining({ season_number: 1, disc_number: 2, disc_total: 3 })
+				)
+			);
+		});
+
+		it('seeds season/disc from the job so an edit does not clear them', async () => {
+			resolveJobMock.mockResolvedValue(makeResp());
+			const job = createJob({
+				id: 'job_s2',
+				disc_type: 'bluray',
+				status: 'identified',
+				title: 'ACCA',
+				season_number: 1,
+				disc_number: 2,
+				disc_total: 3
+			});
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+			await fireEvent.click(screen.getByTestId('identify-submit'));
+
+			await waitFor(() =>
+				expect(resolveJobMock).toHaveBeenCalledWith(
+					'job_s2',
+					expect.objectContaining({ season_number: 1, disc_number: 2, disc_total: 3 })
+				)
+			);
+		});
+
+		it('offers disc (not season) fields on a music disc and sends them', async () => {
+			resolveJobMock.mockResolvedValue(makeResp());
+			const job = createJob({
+				id: 'job_cd2',
+				disc_type: 'cd',
+				status: 'awaiting_user_id',
+				title: 'Album',
+				metadata_json: {}
+			});
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+			expect(screen.queryByTestId('identify-season-number')).not.toBeInTheDocument();
+			await fireEvent.input(screen.getByTestId('identify-artist'), { target: { value: 'A' } });
+			await fireEvent.input(screen.getByTestId('identify-disc-number'), { target: { value: '1' } });
+			await fireEvent.input(screen.getByTestId('identify-disc-total'), { target: { value: '2' } });
+			await fireEvent.click(screen.getByTestId('identify-submit'));
+
+			await waitFor(() =>
+				expect(resolveJobMock).toHaveBeenCalledWith(
+					'job_cd2',
+					expect.objectContaining({ season_number: null, disc_number: 1, disc_total: 2 })
+				)
+			);
+		});
+	});
+
+	describe('manual title search', () => {
+		const candidate = {
+			title: 'ACCA: 13-Territory Inspection Dept.',
+			year: 2017,
+			kind: 'tv',
+			poster_url: 'https://img/acca.jpg',
+			provider_id: 'tmdb:123'
+		};
+
+		function renderVideo(overrides: Record<string, unknown> = {}) {
+			const job = createJob({
+				id: 'job_q',
+				disc_type: 'bluray',
+				status: 'awaiting_user_id',
+				title: 'ACCA CS D2',
+				year: null,
+				...overrides
+			});
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+		}
+
+		it('is seeded with the job title and searches the chosen type', async () => {
+			searchMetadataMock.mockResolvedValue({ candidates: [candidate] });
+			renderVideo();
+			const input = screen.getByTestId('search-title') as HTMLInputElement;
+			expect(input.value).toBe('ACCA CS D2');
+			await fireEvent.input(input, { target: { value: 'ACCA' } });
+			await fireEvent.change(screen.getByTestId('search-type'), { target: { value: 'tv' } });
+			await fireEvent.click(screen.getByTestId('search-run'));
+			await waitFor(() => expect(searchMetadataMock).toHaveBeenCalledWith('ACCA', 'tv'));
+			expect(await screen.findByTestId('identify-candidate-tmdb:123')).toBeInTheDocument();
+		});
+
+		it('searches on Enter in the search box', async () => {
+			searchMetadataMock.mockResolvedValue({ candidates: [] });
+			renderVideo();
+			await fireEvent.keyDown(screen.getByTestId('search-title'), { key: 'Enter' });
+			await waitFor(() => expect(searchMetadataMock).toHaveBeenCalledWith('ACCA CS D2', 'movie'));
+		});
+
+		it('shows the provider detail (or "No results") when nothing matches', async () => {
+			searchMetadataMock.mockResolvedValueOnce({ candidates: [], detail: 'TMDB key rejected' });
+			renderVideo();
+			await fireEvent.click(screen.getByTestId('search-run'));
+			expect(await screen.findByTestId('search-error')).toHaveTextContent('TMDB key rejected');
+
+			searchMetadataMock.mockResolvedValueOnce({ candidates: [] });
+			await fireEvent.click(screen.getByTestId('search-run'));
+			await waitFor(() => expect(screen.getByTestId('search-error')).toHaveTextContent('No results'));
+		});
+
+		it('shows the error when the search request fails', async () => {
+			searchMetadataMock.mockRejectedValue(new Error('provider down'));
+			renderVideo();
+			await fireEvent.click(screen.getByTestId('search-run'));
+			expect(await screen.findByTestId('search-error')).toHaveTextContent('provider down');
+		});
+
+		it('picking a candidate fills title/year and submits its id, kind and poster', async () => {
+			searchMetadataMock.mockResolvedValue({ candidates: [candidate] });
+			resolveJobMock.mockResolvedValue(makeResp());
+			renderVideo();
+			await fireEvent.click(screen.getByTestId('search-run'));
+			const pick = await screen.findByTestId('identify-candidate-tmdb:123');
+			await fireEvent.click(pick);
+			expect(pick).toHaveAttribute('aria-pressed', 'true');
+			expect((screen.getByTestId('identify-title') as HTMLInputElement).value).toBe(candidate.title);
+			expect((screen.getByTestId('identify-year') as HTMLInputElement).value).toBe('2017');
+
+			await fireEvent.click(screen.getByTestId('identify-submit'));
+			await waitFor(() =>
+				expect(resolveJobMock).toHaveBeenCalledWith('job_q', {
+					title: candidate.title,
+					year: 2017,
+					season_number: null,
+					disc_number: null,
+					disc_total: null,
+					metadata: { provider_id: 'tmdb:123', poster_url: 'https://img/acca.jpg', kind: 'tv' }
+				})
+			);
+		});
+
+		it('drops the picked candidate metadata once the title is retyped', async () => {
+			searchMetadataMock.mockResolvedValue({ candidates: [candidate] });
+			resolveJobMock.mockResolvedValue(makeResp());
+			renderVideo();
+			await fireEvent.click(screen.getByTestId('search-run'));
+			await fireEvent.click(await screen.findByTestId('identify-candidate-tmdb:123'));
+			await fireEvent.input(screen.getByTestId('identify-title'), { target: { value: 'Something else' } });
+			await fireEvent.click(screen.getByTestId('identify-submit'));
+			await waitFor(() =>
+				expect(resolveJobMock).toHaveBeenCalledWith(
+					'job_q',
+					expect.objectContaining({ title: 'Something else', metadata: undefined })
+				)
+			);
+		});
+
+		it('is not offered on a music disc', () => {
+			const job = createJob({ disc_type: 'cd', status: 'awaiting_user_id', metadata_json: {} });
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+			expect(screen.queryByTestId('search-title')).not.toBeInTheDocument();
 		});
 	});
 
@@ -92,6 +271,9 @@ describe('IdentifyDialog', () => {
 				expect(resolveJobMock).toHaveBeenCalledWith('job_cd', {
 					title: 'Dark Side',
 					year: null,
+					season_number: null,
+					disc_number: null,
+					disc_total: null,
 					metadata: {
 						artist: 'Pink Floyd',
 						album: 'Dark Side',
