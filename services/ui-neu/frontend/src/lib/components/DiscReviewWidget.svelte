@@ -8,7 +8,7 @@
 	import { driveLabel } from '$lib/utils/drive-name';
 	import { previouslyRippedJobId, reviewPhaseBadge } from '$lib/utils/job-status';
 	import { formatDateTime } from '$lib/utils/format';
-	import CountdownTimer from './CountdownTimer.svelte';
+	import ReviewWaitStatus from './ReviewWaitStatus.svelte';
 	import { discTypeLabel } from '$lib/utils/job-type';
 	import PosterImage from './PosterImage.svelte';
 	import TitleSearch from './TitleSearch.svelte';
@@ -35,6 +35,9 @@
 		/** Review countdown duration (config manual_wait_seconds). Cosmetic — the
 		 *  ripper owns the authoritative clock; this only drives the UI timer. */
 		manualWaitSeconds?: number;
+		/** Mandatory-confirm mode (config review_requires_confirm): a held disc
+		 *  has no countdown and waits for Start. */
+		requiresConfirm?: boolean;
 		onrefresh?: () => void;
 		ondismiss?: () => void;
 	}
@@ -46,6 +49,7 @@
 		isoSourceKinds,
 		paused = false,
 		manualWaitSeconds = 60,
+		requiresConfirm = false,
 		onrefresh,
 		ondismiss
 	}: Props = $props();
@@ -55,8 +59,6 @@
 	let isReviewGate = $derived(job?.status === 'awaiting_review');
 	let starting = $state(false);
 	let pauseBusy = $state(false);
-	// The countdown is frozen by the global pause OR this disc's own pause.
-	let countdownPaused = $derived(paused || !!job?.manual_pause);
 
 	let data = $state<JobDetailView | null>(null);
 	let initialLoading = $state(true);
@@ -108,6 +110,8 @@
 	// on_previously_ripped = hold: this disc matched an earlier rip. No
 	// countdown runs; the operator chooses Rip again (Start) or Discard (Cancel).
 	let previousId = $derived(isReviewGate ? previouslyRippedJobId(displayJob) : null);
+	// Held for an explicit confirm: no countdown, Start is the only way on.
+	let awaitingConfirm = $derived(isReviewGate && requiresConfirm && !previousId);
 	let previous = $derived(data?.previous_rip ?? null);
 
 	function shortId(id: string): string {
@@ -197,8 +201,11 @@
 	// Action-row "Start rip": save + start. Resolving the job's current identity
 	// (title/year/disc, preferring the freshly-loaded detail) is the save — it
 	// also unblocks the parked ripper for an awaiting_user_id disc. For an
-	// awaiting_review disc the rip is held by the countdown, so additionally skip
-	// it via rip-start-review. Then dismiss the card; the disc is on its way.
+	// awaiting_review disc the rip is held at the review gate, so additionally
+	// start it via rip-start-review. With hold_for_review on, resolving an
+	// awaiting_user_id disc parks it in awaiting_review too, so the resolve's
+	// answer decides, not the status the card was opened with. Then dismiss the
+	// card; the disc is on its way.
 	async function handleStartRip() {
 		if (!job) return;
 		const j = data?.job ?? job;
@@ -210,13 +217,13 @@
 		starting = true;
 		errorMessage = null;
 		try {
-			await resolveJob(job.id, {
+			const resolved = await resolveJob(job.id, {
 				title: startTitle,
 				year: j.year ?? null,
 				disc_number: j.disc_number ?? null,
 				disc_total: j.disc_total ?? null
 			});
-			if (isReviewGate) {
+			if (isReviewGate || resolved.job.status === 'awaiting_review') {
 				await startWaitingJob(job.id);
 			}
 			ondismiss?.();
@@ -288,23 +295,26 @@
 				<span class="disc-review-widget-status-label">
 					{previousId
 						? 'Already ripped: Rip again or Discard'
-						: isReviewGate
-							? 'Ready: Review & Start'
-							: isPostRip
-								? 'Ripped: Apply Session'
-								: 'Awaiting Review'}
+						: awaitingConfirm
+							? 'Ready: Review & Confirm'
+							: isReviewGate
+								? 'Ready: Review & Start'
+								: isPostRip
+									? 'Ripped: Apply Session'
+									: 'Awaiting Review'}
 				</span>
 			</div>
-			<!-- Timed review gate: cosmetic countdown to auto-start (the ripper owns the
-		     real clock). Frozen by the global pause OR this disc's own pause. The
-		     timer's pause/resume toggles THIS disc only (per-job manual_pause);
-		     it's hidden while globally paused since one disc can't un-pause the
-		     whole machine. -->
-			{#if isReviewGate && job.wait_start_time}
-				<CountdownTimer
-					startTime={job.wait_start_time}
+			<!-- Review gate: "Waiting for your confirmation" in mandatory-confirm mode,
+		     else the cosmetic countdown to auto-start (the ripper owns the real
+		     clock). The timer's pause/resume toggles THIS disc only (per-job
+		     manual_pause); its controls are off while globally paused since one
+		     disc can't un-pause the whole machine. -->
+			{#if isReviewGate && !previousId}
+				<ReviewWaitStatus
+					{job}
+					{requiresConfirm}
 					waitSeconds={manualWaitSeconds}
-					paused={countdownPaused}
+					{paused}
 					inverted
 					onpause={!$isAdmin || paused || pauseBusy ? undefined : () => handlePauseToggle(true)}
 					onresume={!$isAdmin || paused || pauseBusy ? undefined : () => handlePauseToggle(false)}
@@ -461,7 +471,7 @@
 					class="btn disc-review-widget-success-btn"
 					title={previousId ? 'Rip this disc again' : 'Save the metadata and start ripping this disc'}
 				>
-					{starting ? 'Starting...' : previousId ? 'Rip again' : 'Start rip'}
+					{starting ? 'Starting...' : previousId ? 'Rip again' : awaitingConfirm ? 'Confirm & start rip' : 'Start rip'}
 				</button>
 			{/if}
 		</div>

@@ -25,7 +25,7 @@ vi.mock('$lib/api/jobs', () => ({
 	abandonJob: vi.fn(() => Promise.resolve()),
 	startWaitingJob: vi.fn(() => Promise.resolve(createJob())),
 	pauseWaitingJob: vi.fn(() => Promise.resolve(createJob())),
-	resolveJob: vi.fn(() => Promise.resolve(createJob())),
+	resolveJob: vi.fn(() => Promise.resolve({ job: createJob({ status: 'identified' }), fan_out: [] })),
 	updateTrack: vi.fn(() => Promise.resolve(createJob())),
 	patchJob: vi.fn(() => Promise.resolve(createJob())),
 	applySession: vi.fn(() => Promise.resolve({ created_task_ids: [], collisions: [] })),
@@ -189,6 +189,41 @@ describe('DiscReviewWidget', () => {
 			// resolve (the save) fires; for awaiting_user_id no rip-start-review is needed
 			await waitFor(() => expect(mockResolve).toHaveBeenCalled());
 			expect(mockStart).not.toHaveBeenCalled();
+		});
+
+		it('Start rip also starts a disc the resolve parked at the review gate', async () => {
+			// hold_for_review on: resolving an awaiting_user_id disc lands it in
+			// awaiting_review, so Start must follow up with rip-start-review or the
+			// disc waits there (forever, in mandatory-confirm mode).
+			const { resolveJob } = await import('$lib/api/jobs');
+			vi.mocked(resolveJob).mockResolvedValueOnce({
+				job: createJob({ id: 'job_u', status: 'awaiting_review' }),
+				fan_out: []
+			});
+			renderWidget({ id: 'job_u', status: 'awaiting_user_id' });
+			await fireEvent.click(await screen.findByText('Start rip'));
+			await waitFor(() => expect(mockStart).toHaveBeenCalledWith('job_u'));
+		});
+
+		it('mandatory-confirm mode waits for a confirm instead of counting down', async () => {
+			renderWidget(
+				{ id: 'job_9', status: 'awaiting_review', wait_start_time: new Date().toISOString() },
+				{ requiresConfirm: true }
+			);
+			expect(screen.getByTestId('review-wait-confirm')).toHaveTextContent('Waiting for your confirmation');
+			expect(screen.queryByTitle('Pause timer')).not.toBeInTheDocument();
+			expect(screen.getByText('Ready: Review & Confirm')).toBeInTheDocument();
+			await fireEvent.click(screen.getByText('Confirm & start rip'));
+			await waitFor(() => expect(mockStart).toHaveBeenCalledWith('job_9'));
+		});
+
+		it('timed mode counts down from the configured seconds', () => {
+			renderWidget(
+				{ status: 'awaiting_review', wait_start_time: new Date().toISOString() },
+				{ manualWaitSeconds: 120 }
+			);
+			expect(screen.queryByTestId('review-wait-confirm')).not.toBeInTheDocument();
+			expect(screen.getByText(/^2m 00s$|^1m 59s$/)).toBeInTheDocument();
 		});
 
 		it('the countdown pause control toggles per-job pause', async () => {

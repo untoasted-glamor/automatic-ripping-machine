@@ -2,7 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('$lib/api/client', () => ({
 	apiFetch: vi.fn(() =>
-		Promise.resolve({ ripping_paused: false, makemkv_key_valid: true, makemkv_key_checked_at: null })
+		Promise.resolve({
+			ripping_paused: false,
+			review_requires_confirm: true,
+			manual_wait_seconds: 90,
+			makemkv_key_valid: true,
+			makemkv_key_checked_at: null
+		})
 	)
 }));
 
@@ -68,6 +74,15 @@ describe('fetchDashboard', () => {
 		expect(dash.drive_names.drv_iso_done).toBe('Done.iso');
 		expect(dash.iso_sources).toEqual({ drv_iso_live: 'Live.iso' });
 		expect(dash.drives_online).toBe(1);
+	});
+
+	it('carries the review-gate mode from config', async () => {
+		mockFetchDrives.mockResolvedValue([]);
+
+		const dash = await fetchDashboard();
+
+		expect(dash.review_requires_confirm).toBe(true);
+		expect(dash.manual_wait_seconds).toBe(90);
 	});
 
 	it('degrades to zero drives when the drives fetch fails', async () => {

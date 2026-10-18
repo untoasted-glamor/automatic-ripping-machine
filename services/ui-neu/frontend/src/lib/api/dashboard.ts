@@ -54,6 +54,10 @@ export interface DashboardData {
 	preparing: IsoPreparing[];
 	notification_count: number;
 	ripping_enabled: boolean;
+	// Review gate (config): mandatory confirm vs the countdown's length, for
+	// the held-disc cards. Absent until the config read succeeds once.
+	review_requires_confirm?: boolean;
+	manual_wait_seconds?: number;
 	makemkv_key_valid: boolean | null;
 	makemkv_key_checked_at: string | null;
 	transcoder_online: boolean;
@@ -144,6 +148,8 @@ export async function fetchDashboard(): Promise<DashboardData> {
 		preparing,
 		notification_count: notifications?.unseen ?? 0,
 		ripping_enabled: config ? !config.ripping_paused : true,
+		review_requires_confirm: config?.review_requires_confirm,
+		manual_wait_seconds: config?.manual_wait_seconds,
 		makemkv_key_valid: config?.makemkv_key_valid ?? null,
 		makemkv_key_checked_at: config?.makemkv_key_checked_at ?? null,
 		transcoder_online: transcoderOnline,

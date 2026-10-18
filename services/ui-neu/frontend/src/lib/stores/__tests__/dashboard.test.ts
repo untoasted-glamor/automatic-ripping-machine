@@ -47,6 +47,18 @@ describe('dashboard store sticky merge', () => {
 		expect(get(dashboard).notification_count).toBe(7);
 	});
 
+	it('keeps the review-gate mode through a config blip', async () => {
+		fetchDashboardMock
+			.mockResolvedValueOnce(fullPayload({ review_requires_confirm: true, manual_wait_seconds: 90 }))
+			.mockResolvedValueOnce(fullPayload({ review_requires_confirm: undefined, manual_wait_seconds: undefined }));
+
+		const { dashboard } = await import('../dashboard');
+		await dashboard.refresh();
+		await dashboard.refresh();
+		expect(get(dashboard).review_requires_confirm).toBe(true);
+		expect(get(dashboard).manual_wait_seconds).toBe(90);
+	});
+
 	it('keeps prior drives_online + drive_names when BFF sends null', async () => {
 		fetchDashboardMock
 			.mockResolvedValueOnce(fullPayload({ drives_online: 3, drive_names: { '/dev/sr0': 'A' } }))

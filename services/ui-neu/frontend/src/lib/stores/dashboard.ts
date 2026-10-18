@@ -29,7 +29,9 @@ const STICKY_FIELDS = [
 	'iso_sources',
 	'iso_source_kinds',
 	'notification_count',
-	'ripping_enabled'
+	'ripping_enabled',
+	'review_requires_confirm',
+	'manual_wait_seconds'
 ] as const satisfies readonly (keyof DashboardData)[];
 
 // Booleans that flip to `false` on a single backend blip (RemoteProtocolError,

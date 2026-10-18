@@ -50,7 +50,9 @@ vi.mock('$lib/api/jobs', () => ({
 	applySession: vi.fn(() => Promise.resolve({ session_application: {}, tasks: [], collisions: [], idempotent: false })),
 	searchMusicMetadata: vi.fn(() => Promise.resolve({ candidates: [] })),
 	fetchMusicDetail: vi.fn(() => Promise.resolve({})),
-	setJobMediaType: vi.fn(() => Promise.resolve(createJob({ id: 'job_42' })))
+	setJobMediaType: vi.fn(() => Promise.resolve(createJob({ id: 'job_42' }))),
+	startWaitingJob: vi.fn(() => Promise.resolve(createJob({ id: 'job_42', status: 'ripping' }))),
+	pauseWaitingJob: vi.fn(() => Promise.resolve(createJob({ id: 'job_42' })))
 }));
 
 // The Match Episodes panel reads the job's identity on mount.
@@ -108,7 +110,8 @@ vi.mock('$lib/api/settings', () => ({
 	fetchSettings: vi.fn(() => Promise.resolve({ transcoder_config: { config: {} } }))
 }));
 
-import { fetchJob, updateTrack, fetchNamingPreview, setJobMediaType } from '$lib/api/jobs';
+import { fetchJob, updateTrack, fetchNamingPreview, setJobMediaType, startWaitingJob } from '$lib/api/jobs';
+import { dashboard } from '$lib/stores/dashboard';
 import * as authStore from '$lib/stores/auth';
 import { fetchIdentity } from '$lib/api/identity';
 import { ApiError } from '$lib/api/client';
@@ -545,6 +548,54 @@ describe('Job detail page (v3)', () => {
 		const transcodeCell = document.querySelector('td[data-label="Transcode"]');
 		expect(transcodeCell?.textContent?.trim()).toBe('-');
 	});
+	describe('review gate', () => {
+		// A JobDetailView built directly: createJobDetail() reads job overrides
+		// from its top level, not from a `job` key.
+		const detailOf = (job: JobView) => ({ job, tracks: [], fingerprints: [] });
+		const held = () =>
+			detailOf(
+				createJob({
+					id: 'job_42',
+					title: 'Held Movie',
+					status: 'awaiting_review',
+					wait_start_time: new Date().toISOString()
+				})
+			);
+
+		const defaultJobImpl = mockFetchJob.getMockImplementation();
+		afterEach(() => {
+			dashboard.update((d) => ({ ...d, review_requires_confirm: false, manual_wait_seconds: 60 }));
+			mockFetchJob.mockImplementation(defaultJobImpl!);
+		});
+
+		it('a held disc waits for a confirm in mandatory-confirm mode and starts from the job page', async () => {
+			dashboard.update((d) => ({ ...d, review_requires_confirm: true }));
+			mockFetchJob.mockResolvedValue(held());
+			renderComponent(Page);
+			expect(await screen.findByTestId('review-gate-panel')).toBeInTheDocument();
+			expect(screen.getByTestId('review-wait-confirm')).toHaveTextContent('Waiting for your confirmation');
+			expect(screen.queryByTitle('Pause timer')).not.toBeInTheDocument();
+			await fireEvent.click(screen.getByRole('button', { name: 'Confirm & start rip' }));
+			await waitFor(() => expect(startWaitingJob).toHaveBeenCalledWith('job_42'));
+		});
+
+		it('timed mode keeps the countdown and its per-job pause', async () => {
+			mockFetchJob.mockResolvedValue(held());
+			renderComponent(Page);
+			expect(await screen.findByTestId('review-gate-panel')).toBeInTheDocument();
+			expect(screen.queryByTestId('review-wait-confirm')).not.toBeInTheDocument();
+			expect(screen.getByTitle('Pause timer')).toBeInTheDocument();
+			expect(screen.getByRole('button', { name: 'Start rip now' })).toBeInTheDocument();
+		});
+
+		it('has no review panel once the disc has left the gate', async () => {
+			mockFetchJob.mockResolvedValue(detailOf(createJob({ id: 'job_42', title: 'Ripped Movie', status: 'ripped' })));
+			renderComponent(Page);
+			await screen.findByRole('heading', { name: 'Ripped Movie' });
+			expect(screen.queryByTestId('review-gate-panel')).not.toBeInTheDocument();
+		});
+	});
+
 	describe('TV episode matching', () => {
 		afterEach(() => {
 			(authStore as unknown as { __setRole: (r: string | null) => void }).__setRole('admin');

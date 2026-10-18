@@ -291,6 +291,8 @@
 								isoSources={dash.iso_sources}
 								isoSourceKinds={dash.iso_source_kinds}
 								paused={!dash.ripping_enabled}
+								manualWaitSeconds={dash.manual_wait_seconds ?? 60}
+								requiresConfirm={dash.review_requires_confirm ?? false}
 								onrefresh={refreshDashboard}
 								ondismiss={() => dismissJob(job.id)}
 							/>

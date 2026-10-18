@@ -17,6 +17,7 @@
 	import IdentifyDialog from '$lib/components/IdentifyDialog.svelte';
 	import ApplySessionDialog from '$lib/components/ApplySessionDialog.svelte';
 	import JobLifecycle from '$lib/components/JobLifecycle.svelte';
+	import ReviewGatePanel from '$lib/components/ReviewGatePanel.svelte';
 	import { effectiveJobStatus, isPartialComplete } from '$lib/utils/job-status';
 	import { isAwaitingIdentity, isLive, isPostRipStatus } from '$lib/utils/job-status-groups';
 	import { fetchSessions } from '$lib/api/sessions';
@@ -481,6 +482,16 @@
 			<div class="job-detail-lifecycle-card">
 				<JobLifecycle status={effectiveJobStatus(job)} sourceType={null} size="md" partial={isPartialComplete(job)} />
 			</div>
+
+			{#if job.status === 'awaiting_review'}
+				<ReviewGatePanel
+					{job}
+					requiresConfirm={$dashboard.review_requires_confirm ?? false}
+					waitSeconds={$dashboard.manual_wait_seconds ?? 60}
+					paused={!$dashboard.ripping_enabled}
+					onchanged={() => loadJob()}
+				/>
+			{/if}
 
 			{#if ripping}
 				<section class="job-detail-lifecycle-card stack job-detail-rip" data-testid="job-rip-progress">
