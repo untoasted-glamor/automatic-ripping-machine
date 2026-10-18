@@ -124,6 +124,33 @@ async def maybe_reacquire_current_job(
     await controller.pickup(job, device_path)
 
 
+async def send_heartbeat(
+    client: BackendClient, drive_id: str, handle: DriveHandle, controller: JobController
+) -> tuple[DriveMediaStatus, str | None]:
+    """Probe the media status and post one heartbeat carrying it plus the
+    controller's scan activity (None when not scanning). Returns the status
+    and the node it was read from. Raises on transport errors."""
+    device_path = handle.current
+    if device_path is None:
+        status = DriveMediaStatus.DETACHED
+    elif is_file_source(device_path):
+        status = DriveMediaStatus.LOADED
+    else:
+        status, _ = probe_drive_media(device_path)
+    await client.heartbeat(drive_id=drive_id, media_status=status, scan=controller.scan_activity)
+    return status, device_path
+
+
+async def push_scan_activity(
+    client: BackendClient, drive_id: str, handle: DriveHandle, controller: JobController, lock: asyncio.Lock
+) -> None:
+    """An immediate heartbeat when a scan starts, retries or ends, so the UI's
+    "scanning" doesn't lag a heartbeat interval. Serialized so a slow "started"
+    post can't land after the "ended" one; each reads the state at send time."""
+    async with lock:
+        await send_heartbeat(client, drive_id, handle, controller)
+
+
 async def heartbeat_loop(client: BackendClient, drive_id: str, handle: DriveHandle, controller: JobController) -> None:
     """Post the current media status to the backend every
     HEARTBEAT_INTERVAL_SECONDS. Errors are logged + swallowed —
@@ -143,17 +170,13 @@ async def heartbeat_loop(client: BackendClient, drive_id: str, handle: DriveHand
     whether the idle ripper should re-acquire a rip-ready job from the
     backend (handles the case where the in-memory wait timed out or the
     backend restarted while a disc was seated).
+
+    Each beat also carries the controller's scan activity; the controller
+    pushes one at once on every change too (`push_scan_activity`).
     """
     while True:
         try:
-            device_path = handle.current
-            if device_path is None:
-                status = DriveMediaStatus.DETACHED
-            elif is_file_source(device_path):
-                status = DriveMediaStatus.LOADED
-            else:
-                status, _ = probe_drive_media(device_path)
-            await client.heartbeat(drive_id=drive_id, media_status=status)
+            status, device_path = await send_heartbeat(client, drive_id, handle, controller)
             if device_path is not None:
                 await maybe_reacquire_current_job(
                     controller,
@@ -464,6 +487,11 @@ async def amain() -> None:
             hostname=settings.HOSTNAME,
             ssl_context=ssl_ctx,
         ) as ws:
+            scan_push_lock = asyncio.Lock()
+
+            def on_scan_activity_change() -> Awaitable[None]:
+                return push_scan_activity(client, drive_id, handle, controller, scan_push_lock)
+
             if source_mode:
                 # Until identify creates the job, the dashboard shows this rip
                 # through its "preparing" reports (scanning / extracting).
@@ -478,6 +506,7 @@ async def amain() -> None:
                     device_path=handle,
                     default_min_length_seconds=settings.ARM_MIN_LENGTH_SECONDS,
                     resolution_timeout=None,
+                    on_scan_activity_change=on_scan_activity_change,
                 )
             else:
                 controller = JobController(
@@ -486,6 +515,7 @@ async def amain() -> None:
                     ws=ws,
                     device_path=handle,
                     default_min_length_seconds=settings.ARM_MIN_LENGTH_SECONDS,
+                    on_scan_activity_change=on_scan_activity_change,
                 )
             await ws.subscribe(f"ripper.commands.{drive_id}", controller.on_ws_command)
             if not source_mode and not handle.absent:

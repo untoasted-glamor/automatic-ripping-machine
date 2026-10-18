@@ -1074,6 +1074,72 @@ async def test_scan_retry_propagates_scanerror(monkeypatch):
         await controller._scan_with_ready_retry("/dev/sr0")
 
 
+# `jc_module.asyncio` is the asyncio module itself, so patching its sleep
+# patches everyone's; keep the real one to let fire-and-forget tasks run.
+_real_sleep = asyncio.sleep
+
+
+async def test_scan_activity_is_reported_per_attempt_and_cleared_after(monkeypatch):
+    """Each attempt publishes (started_at, attempt, max) and fires the change
+    callback; the scan's end clears it. started_at stays the first attempt's."""
+    monkeypatch.setattr(jc_module.asyncio, "sleep", _noop_async)
+    results = deque([_empty_scan(), _titled_scan()])
+    seen: list = []
+    pushed: list = []
+    controller: JobController
+
+    async def _scan(device_path):
+        seen.append(controller.scan_activity)
+        return results.popleft()
+
+    async def _on_change() -> None:
+        pushed.append(controller.scan_activity)
+
+    monkeypatch.setattr(jc_module, "scan_disc", _scan)
+    monkeypatch.setattr(jc_module, "read_drive_status", lambda _p: DriveState.DISC_OK)
+    controller = JobController(FakeClient(), "drv_test", on_scan_activity_change=_on_change)
+    assert controller.scan_activity is None
+
+    out = await controller._scan_with_ready_retry("/dev/sr0")
+    assert out.titles
+    assert [(a.attempt, a.max_attempts) for a in seen] == [(1, 5), (2, 5)]
+    assert seen[0].started_at == seen[1].started_at
+    assert controller.scan_activity is None
+    # Let the fire-and-forget pushes run.
+    for _ in range(5):
+        await _real_sleep(0)
+    assert len(pushed) == 3  # attempt 1, attempt 2, cleared
+    assert pushed[-1] is None
+
+
+async def test_scan_activity_clears_when_the_scan_raises(monkeypatch):
+    async def _scan(device_path):
+        raise jc_module.ScanError("makemkvcon rc=1")
+
+    monkeypatch.setattr(jc_module, "scan_disc", _scan)
+    controller = JobController(FakeClient(), "drv_test")
+    with pytest.raises(jc_module.ScanError):
+        await controller._scan_with_ready_retry("/dev/sr0")
+    assert controller.scan_activity is None
+
+
+async def test_scan_activity_push_failure_never_breaks_the_scan(monkeypatch, caplog):
+    async def _scan(device_path):
+        return _titled_scan()
+
+    async def _boom() -> None:
+        raise RuntimeError("backend down")
+
+    monkeypatch.setattr(jc_module, "scan_disc", _scan)
+    controller = JobController(FakeClient(), "drv_test", on_scan_activity_change=_boom)
+    with caplog.at_level("WARNING"):
+        out = await controller._scan_with_ready_retry("/dev/sr0")
+        for _ in range(5):
+            await _real_sleep(0)
+    assert out.titles
+    assert "scan-activity update failed: backend down" in caplog.text
+
+
 async def test_run_command_kill_survives_process_lookup_error(monkeypatch):
     class _DeadProc:
         returncode = None

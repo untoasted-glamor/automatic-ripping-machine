@@ -725,3 +725,49 @@ def test_drive_view_connection_from_by_id_prefix(by_id: str | None, expected: st
 
     d = Drive(id="drv_1", hostname="h", device_path="/dev/sr0", status=DriveStatus.ONLINE, by_id_name=by_id)
     assert drives_router._to_view(d, []).connection == expected
+
+
+def _scan_db(drive: Drive) -> FakeSession:
+    db = FakeSession()
+    db.rows["users"] = [User(id="usr_admin", username="admin", password_hash="x", password_must_change=False)]
+    db.rows["drives"] = [drive]
+    return db
+
+
+def _scanning_drive(*, media_status_at: datetime | None) -> Drive:
+    d = _drive(id="drv_scan", lifecycle=DriveLifecycle.ENROLLED)
+    d.media_status_at = media_status_at
+    d.scan_started_at = datetime.now(timezone.utc) - timedelta(seconds=40)
+    d.scan_attempt = 2
+    d.scan_max_attempts = 5
+    return d
+
+
+def test_list_shows_scan_activity_while_the_heartbeat_is_fresh(signing_key: bytes) -> None:
+    db = _scan_db(_scanning_drive(media_status_at=datetime.now(timezone.utc)))
+    app, token = _make_app(signing_key, db)
+    with TestClient(app) as c:
+        row = c.get("/api/drives", headers=_auth(token)).json()[0]
+    assert row["scan_started_at"] is not None
+    assert row["scan_attempt"] == 2
+    assert row["scan_max_attempts"] == 5
+
+
+@pytest.mark.parametrize("seen", [None, datetime.now(timezone.utc) - timedelta(minutes=10)])
+def test_list_hides_scan_activity_once_the_heartbeat_is_stale(signing_key: bytes, seen: datetime | None) -> None:
+    db = _scan_db(_scanning_drive(media_status_at=seen))
+    app, token = _make_app(signing_key, db)
+    with TestClient(app) as c:
+        row = c.get("/api/drives", headers=_auth(token)).json()[0]
+    assert row["scan_started_at"] is None
+    assert row["scan_attempt"] is None
+    assert row["scan_max_attempts"] is None
+
+
+def test_list_scan_activity_accepts_a_naive_heartbeat_time(signing_key: bytes) -> None:
+    # SQLite hands back naive datetimes; they are UTC.
+    db = _scan_db(_scanning_drive(media_status_at=datetime.now(timezone.utc).replace(tzinfo=None)))
+    app, token = _make_app(signing_key, db)
+    with TestClient(app) as c:
+        row = c.get("/api/drives", headers=_auth(token)).json()[0]
+    assert row["scan_attempt"] == 2

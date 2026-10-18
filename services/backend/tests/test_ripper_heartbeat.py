@@ -147,3 +147,49 @@ def test_detached_heartbeat_on_an_error_drive_stays_error() -> None:
         )
     assert drive.status is DriveStatus.ERROR
     assert drive.present is False
+
+
+def test_heartbeat_records_and_then_clears_scan_activity() -> None:
+    db = FakeSession()
+    drive = _seed(db)
+    app = _make_app(db)
+    started = "2026-10-18T12:00:00+00:00"
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/ripper/heartbeat",
+            json={
+                "drive_id": "drv_x",
+                "media_status": "loaded",
+                "scan": {"started_at": started, "attempt": 3, "max_attempts": 5},
+            },
+            headers=_service_auth(),
+        )
+        assert r.status_code == 204, r.text
+        assert drive.scan_started_at is not None and drive.scan_started_at.isoformat() == started
+        assert (drive.scan_attempt, drive.scan_max_attempts) == (3, 5)
+
+        # A heartbeat without `scan` (scan over, or an older ripper) clears it.
+        r = client.post(
+            "/api/ripper/heartbeat",
+            json={"drive_id": "drv_x", "media_status": "loaded"},
+            headers=_service_auth(),
+        )
+    assert r.status_code == 204, r.text
+    assert (drive.scan_started_at, drive.scan_attempt, drive.scan_max_attempts) == (None, None, None)
+
+
+def test_heartbeat_rejects_a_zero_scan_attempt() -> None:
+    db = FakeSession()
+    _seed(db)
+    app = _make_app(db)
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/ripper/heartbeat",
+            json={
+                "drive_id": "drv_x",
+                "media_status": "loaded",
+                "scan": {"started_at": "2026-10-18T12:00:00+00:00", "attempt": 0, "max_attempts": 5},
+            },
+            headers=_service_auth(),
+        )
+    assert r.status_code == 422

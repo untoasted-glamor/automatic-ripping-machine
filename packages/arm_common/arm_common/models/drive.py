@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, JSON, Column, DateTime, ForeignKey, String
+from sqlalchemy import Boolean, JSON, Column, DateTime, ForeignKey, Integer, String
 from sqlmodel import Field, SQLModel
 
 from arm_common.models._columns import created_at_column, enum_column, updated_at_column
@@ -89,6 +89,13 @@ class Drive(SQLModel, table=True):
         sa_column=enum_column(DriveMediaStatus, "drive_media_status", nullable=True)
     )
     media_status_at: datetime | None = Field(sa_column=Column(DateTime(timezone=True), nullable=True))
+    # Disc scan in progress, overwritten by every ripper heartbeat (all None =
+    # not scanning). The scan runs before identify creates a job, so without
+    # this the drive looks idle for a scan that can take minutes across
+    # not-ready retries. The drives API hides it once the heartbeat is stale.
+    scan_started_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+    scan_attempt: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
+    scan_max_attempts: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
     rip_params_json: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSON, nullable=False, server_default="{}"),

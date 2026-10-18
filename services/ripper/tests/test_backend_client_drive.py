@@ -37,6 +37,28 @@ async def test_update_device_path_patches_the_ripper_endpoint() -> None:
     }
 
 
+async def test_heartbeat_posts_the_scan_activity_or_null() -> None:
+    from datetime import datetime, timezone
+
+    from arm_common import DriveMediaStatus
+    from arm_common.schemas import RipperScanActivity
+
+    bodies: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.url.path == "/api/ripper/heartbeat"
+        bodies.append(json.loads(req.read()))
+        return httpx.Response(204)
+
+    c = _client(handler)
+    started = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+    scan = RipperScanActivity(started_at=started, attempt=1, max_attempts=5)
+    await c.heartbeat(drive_id="drv_1", media_status=DriveMediaStatus.LOADED, scan=scan)
+    await c.heartbeat(drive_id="drv_1", media_status=DriveMediaStatus.LOADED)
+    assert bodies[0]["scan"] == {"started_at": "2026-10-18T12:00:00Z", "attempt": 1, "max_attempts": 5}
+    assert bodies[1]["scan"] is None
+
+
 async def test_update_device_path_swallows_404_until_the_backend_side_lands(caplog) -> None:
     caplog.set_level(logging.INFO, logger="arm_ripper.backend_client")
     c = _client(lambda req: httpx.Response(404))

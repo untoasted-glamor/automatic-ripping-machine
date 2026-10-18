@@ -335,11 +335,19 @@ async def heartbeat(req: RipperHeartbeatRequest, session: AsyncSession = Depends
     empty scan_result.
 
     `last_seen_at` is bumped on every call so the drive's online state
-    is implicitly refreshed too — no separate liveness ping needed."""
+    is implicitly refreshed too — no separate liveness ping needed.
+
+    `scan` (a disc scan in progress, if any) is overwritten on every call,
+    so a heartbeat without it (not scanning, or an older ripper) clears the
+    previous report. The drives API shows it to the UI."""
     drive = (await session.execute(select(Drive).where(col(Drive.id) == req.drive_id))).scalar_one_or_none()
     if drive is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown drive_id: {req.drive_id}")
     now = datetime.now(timezone.utc)
+    scan = req.scan
+    drive.scan_started_at = scan.started_at if scan is not None else None
+    drive.scan_attempt = scan.attempt if scan is not None else None
+    drive.scan_max_attempts = scan.max_attempts if scan is not None else None
     # The disc a notice was about has left the tray: the open tray an eject
     # leaves has closed empty. Only that change clears it. A slot-loading drive
     # has no open tray and reads "no disc" the moment it ejects, so its notice

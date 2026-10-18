@@ -26,6 +26,19 @@ export function isRipping(d: DriveView): boolean {
 	return d.status === 'ripping' || d.current_job?.status === 'ripping';
 }
 
+/** The ripper is scanning a disc before identify creates a job (the backend
+ *  hides a report whose heartbeat went stale). A live job wins: its own status
+ *  says more than "scanning". */
+export function isScanning(d: DriveView): boolean {
+	return d.scan_started_at != null && d.current_job == null;
+}
+
+/** "retry, attempt 2/5" once the scan is past its first attempt, else null. */
+export function scanRetryLabel(d: DriveView): string | null {
+	if (d.scan_attempt == null || d.scan_max_attempts == null || d.scan_attempt <= 1) return null;
+	return `retry, attempt ${d.scan_attempt}/${d.scan_max_attempts}`;
+}
+
 /** The drive's ripper still owns a job (scan, identify, review or rip): the backend refuses Unenroll. */
 export function hasLiveJob(d: DriveView): boolean {
 	return isRipping(d) || d.current_job != null;

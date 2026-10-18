@@ -227,7 +227,7 @@
           "ripper"
         ],
         "summary": "Heartbeat",
-        "description": "Each ripper posts here every HEARTBEAT_INTERVAL_SECONDS with the\ncurrent CDROM_DRIVE_STATUS reading. The manual-trigger endpoint\nreads `media_status` + `media_status_at` to refuse clicks made\nagainst an empty / open tray, instead of letting identify land an\nempty scan_result.\n\n`last_seen_at` is bumped on every call so the drive's online state\nis implicitly refreshed too \u2014 no separate liveness ping needed.",
+        "description": "Each ripper posts here every HEARTBEAT_INTERVAL_SECONDS with the\ncurrent CDROM_DRIVE_STATUS reading. The manual-trigger endpoint\nreads `media_status` + `media_status_at` to refuse clicks made\nagainst an empty / open tray, instead of letting identify land an\nempty scan_result.\n\n`last_seen_at` is bumped on every call so the drive's online state\nis implicitly refreshed too \u2014 no separate liveness ping needed.\n\n`scan` (a disc scan in progress, if any) is overwritten on every call,\nso a heartbeat without it (not scanning, or an older ripper) clears the\nprevious report. The drives API shows it to the UI.",
         "operationId": "heartbeat_api_ripper_heartbeat_post",
         "parameters": [
           {
@@ -11513,6 +11513,40 @@
             ],
             "title": "Media Status At"
           },
+          "scan_started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Started At"
+          },
+          "scan_attempt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Attempt"
+          },
+          "scan_max_attempts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Max Attempts"
+          },
           "rip_params_json": {
             "additionalProperties": true,
             "type": "object",
@@ -12095,6 +12129,40 @@
               }
             ],
             "title": "Media Status At"
+          },
+          "scan_started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Started At"
+          },
+          "scan_attempt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Attempt"
+          },
+          "scan_max_attempts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Max Attempts"
           },
           "default_session_id": {
             "anyOf": [
@@ -16943,6 +17011,16 @@
           },
           "media_status": {
             "$ref": "#/components/schemas/DriveMediaStatus"
+          },
+          "scan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RipperScanActivity"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -16951,7 +17029,34 @@
           "media_status"
         ],
         "title": "RipperHeartbeatRequest",
-        "description": "POST /api/ripper/heartbeat body. Each ripper sends one of these\nevery HEARTBEAT_INTERVAL_SECONDS so the backend can refuse manual-\ntrigger requests against drives whose tray is open / empty without\nwaiting for a doomed identify.\n\nNamed distinctly from the transcoder HeartbeatRequest because the\ntwo services post completely different payloads to different paths."
+        "description": "POST /api/ripper/heartbeat body. Each ripper sends one of these\nevery HEARTBEAT_INTERVAL_SECONDS so the backend can refuse manual-\ntrigger requests against drives whose tray is open / empty without\nwaiting for a doomed identify. It also sends one at once when a disc\nscan starts, moves to a retry, or ends.\n\nNamed distinctly from the transcoder HeartbeatRequest because the\ntwo services post completely different payloads to different paths."
+      },
+      "RipperScanActivity": {
+        "properties": {
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Attempt"
+          },
+          "max_attempts": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Attempts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "started_at",
+          "attempt",
+          "max_attempts"
+        ],
+        "title": "RipperScanActivity",
+        "description": "A disc scan in progress on the reporting ripper's drive.\n\nThe scan runs before identify creates a job and can take minutes across\nnot-ready retries, so this is the only sign the drive is busy.\n`started_at` is when the first attempt began (elapsed time spans\nretries); `attempt` is the 1-based attempt running or being backed off\nbefore."
       },
       "ScanResult": {
         "properties": {

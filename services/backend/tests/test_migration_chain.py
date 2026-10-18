@@ -18,6 +18,7 @@ from alembic.config import Config  # noqa: E402
 from alembic.script import ScriptDirectory  # noqa: E402
 
 from arm_common import Config as ArmConfig  # noqa: E402
+from arm_common import Drive  # noqa: E402
 from arm_common import User  # noqa: E402
 
 _BACKEND_DIR = Path(__file__).parent.parent
@@ -125,3 +126,19 @@ def test_0045_adds_review_requires_confirm() -> None:
 def test_0045_downgrade_drops_review_requires_confirm() -> None:
     sql = _render_sql("0045_review_requires_confirm", "0044_previously_ripped", downgrade=True)
     assert "ALTER TABLE config DROP COLUMN review_requires_confirm" in sql
+
+
+def test_0046_adds_the_drive_scan_activity_columns() -> None:
+    sql = _render_sql("0045_review_requires_confirm", "0046_drive_scan_activity")
+    assert "ALTER TABLE drives ADD COLUMN scan_started_at TIMESTAMP WITH TIME ZONE" in sql
+    assert "ALTER TABLE drives ADD COLUMN scan_attempt INTEGER" in sql
+    assert "ALTER TABLE drives ADD COLUMN scan_max_attempts INTEGER" in sql
+    assert "CREATE TYPE" not in sql
+    for name in ("scan_started_at", "scan_attempt", "scan_max_attempts"):
+        assert Drive.__table__.columns[name].nullable, f"Drive.{name} must be nullable to match 0046"
+
+
+def test_0046_downgrade_drops_the_drive_scan_activity_columns() -> None:
+    sql = _render_sql("0046_drive_scan_activity", "0045_review_requires_confirm", downgrade=True)
+    for name in ("scan_started_at", "scan_attempt", "scan_max_attempts"):
+        assert f"ALTER TABLE drives DROP COLUMN {name}" in sql

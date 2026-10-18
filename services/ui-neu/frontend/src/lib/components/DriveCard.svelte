@@ -10,9 +10,12 @@
 		driveTitle,
 		hasLiveJob,
 		isRipping,
+		isScanning,
 		mediaLabel,
+		scanRetryLabel,
 		DETACHED_LABEL
 	} from '$lib/utils/drives';
+	import { elapsedTime } from '$lib/utils/format';
 	import StatusStrip from './StatusStrip.svelte';
 	import StatusBadge from './StatusBadge.svelte';
 	import SkeletonCard from './SkeletonCard.svelte';
@@ -223,6 +226,26 @@
 	let isError = $derived(drive?.status === 'error');
 	let isOfflinePresent = $derived(!isError && !isDetached && drive?.status === 'offline' && drive?.present === true);
 
+	// The ripper scans the disc (MakeMKV, maybe several not-ready retries)
+	// before identify creates a job, so without this the card reads "Idle"
+	// through a scan that can take minutes.
+	let scanning = $derived(!!drive && isScanning(drive));
+	let scanRetry = $derived(drive ? scanRetryLabel(drive) : null);
+	// Ticks once a second only while scanning, so the elapsed time stays live
+	// between the drive list's polls.
+	let scanTick = $state(0);
+	$effect(() => {
+		if (!scanning) return;
+		const timer = setInterval(() => {
+			scanTick += 1;
+		}, 1000);
+		return () => clearInterval(timer);
+	});
+	let scanElapsed = $derived.by(() => {
+		void scanTick;
+		return drive?.scan_started_at ? elapsedTime(drive.scan_started_at) : '';
+	});
+
 	async function startManualRip() {
 		if (!drive || triggering) return;
 		triggering = true;
@@ -390,6 +413,8 @@
 			/>
 		{:else if isRipping(drive)}
 			<StatusStrip tone="busy" title="Ripping" detail="A disc is being ripped right now." />
+		{:else if scanning}
+			<StatusStrip tone="busy" title="Scanning disc..." detail={scanRetry} />
 		{:else if drive.notice}
 			<!-- e.g. on_previously_ripped = reject ejected a disc; cleared when the
 			     tray closes empty or the next disc is identified. -->
@@ -463,6 +488,8 @@
 			</div>
 			{#if drive.current_job}
 				<StatusBadge status={drive.current_job.status} />
+			{:else if scanning}
+				<span class="flex-shrink-0 drive-card-scanning-label">Scanning</span>
 			{:else}
 				<span class="flex-shrink-0 drive-card-idle">Idle</span>
 			{/if}
@@ -542,6 +569,15 @@
 				<Glyph name="info" class="h-3 w-3 drive-card-uhd-info" />
 			</label>
 		</div>
+
+		{#if scanning}
+			<!-- Visible text, not tooltip-only. The strip is the live region; the
+			     elapsed counter sits outside it so it isn't re-announced each second. -->
+			<div class="mb-2 drive-card-scanning" data-testid="drive-scanning">
+				<StatusStrip tone="busy" title="Scanning disc..." detail={scanRetry} />
+				<span class="drive-card-scanning-elapsed" data-testid="drive-scanning-elapsed">{scanElapsed} elapsed</span>
+			</div>
+		{/if}
 
 		<!-- Consolidated action bar -->
 		<div class="flex items-center gap-1 drive-card-action-bar">
@@ -736,6 +772,21 @@
 		font-size: 0.75rem;
 		line-height: 1rem;
 		color: var(--color-text-faint);
+	}
+	.drive-card-scanning-label {
+		font-size: 0.75rem;
+		line-height: 1rem;
+		font-weight: 500;
+		color: var(--color-primary-text);
+	}
+	.drive-card-scanning {
+		display: grid;
+		gap: 0.25rem;
+	}
+	.drive-card-scanning-elapsed {
+		font-size: 0.6875rem;
+		color: var(--color-text-muted);
+		font-variant-numeric: tabular-nums;
 	}
 	.drive-card-status-error {
 		font-size: 0.625rem;

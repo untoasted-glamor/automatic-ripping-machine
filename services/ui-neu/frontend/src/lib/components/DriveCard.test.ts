@@ -434,6 +434,59 @@ describe('DriveCard', () => {
 		});
 	});
 
+	describe('disc scan in progress', () => {
+		it('says Scanning instead of Idle, with visible elapsed time', () => {
+			const started = new Date(Date.now() - 75_000).toISOString();
+			renderDrive({ scan_started_at: started, scan_attempt: 1, scan_max_attempts: 5 });
+			expect(screen.getByText('Scanning')).toBeInTheDocument();
+			expect(screen.queryByText('Idle')).not.toBeInTheDocument();
+			const strip = screen.getByTestId('drive-scanning');
+			expect(within(strip).getByText('Scanning disc...')).toBeInTheDocument();
+			expect(within(strip).queryByText(/retry/)).not.toBeInTheDocument();
+			expect(screen.getByTestId('drive-scanning-elapsed')).toHaveTextContent('1m 15s elapsed');
+		});
+
+		it('names the retry attempt', () => {
+			renderDrive({ scan_started_at: new Date().toISOString(), scan_attempt: 3, scan_max_attempts: 5 });
+			expect(within(screen.getByTestId('drive-scanning')).getByText('retry, attempt 3/5')).toBeInTheDocument();
+		});
+
+		it('ticks the elapsed time between polls', async () => {
+			vi.useFakeTimers({ shouldAdvanceTime: false });
+			try {
+				const started = new Date(Date.now() - 5_000).toISOString();
+				renderDrive({ scan_started_at: started, scan_attempt: 1, scan_max_attempts: 5 });
+				expect(screen.getByTestId('drive-scanning-elapsed')).toHaveTextContent('5s elapsed');
+				await vi.advanceTimersByTimeAsync(2_000);
+				expect(screen.getByTestId('drive-scanning-elapsed')).toHaveTextContent('7s elapsed');
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('shows the job status, not Scanning, once a job exists', () => {
+			renderDrive({
+				scan_started_at: new Date().toISOString(),
+				scan_attempt: 1,
+				scan_max_attempts: 5,
+				current_job: { id: 'job_1', status: 'created', title: null }
+			});
+			expect(screen.queryByTestId('drive-scanning')).not.toBeInTheDocument();
+		});
+
+		it('essentials variant says Scanning disc instead of Ready', () => {
+			renderComponent(DriveCard, {
+				props: {
+					drive: createDrive({ scan_started_at: new Date().toISOString(), scan_attempt: 2, scan_max_attempts: 5 }),
+					variant: 'essentials'
+				}
+			});
+			expect(screen.getByText('Scanning disc...')).toBeInTheDocument();
+			expect(screen.getByText('retry, attempt 2/5')).toBeInTheDocument();
+			expect(screen.queryByText('Ready')).not.toBeInTheDocument();
+		});
+	});
+
 	describe('essentials variant (setup walkthrough)', () => {
 		it('shows Ready for an online drive and saves the name on blur and 4K on change', async () => {
 			renderComponent(DriveCard, {

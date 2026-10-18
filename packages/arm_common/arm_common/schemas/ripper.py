@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -50,11 +51,26 @@ class RegisterRequest(BaseModel):
     by_id_name: str | None = None
 
 
+class RipperScanActivity(BaseModel):
+    """A disc scan in progress on the reporting ripper's drive.
+
+    The scan runs before identify creates a job and can take minutes across
+    not-ready retries, so this is the only sign the drive is busy.
+    `started_at` is when the first attempt began (elapsed time spans
+    retries); `attempt` is the 1-based attempt running or being backed off
+    before."""
+
+    started_at: datetime
+    attempt: int = Field(ge=1)
+    max_attempts: int = Field(ge=1)
+
+
 class RipperHeartbeatRequest(BaseModel):
     """POST /api/ripper/heartbeat body. Each ripper sends one of these
     every HEARTBEAT_INTERVAL_SECONDS so the backend can refuse manual-
     trigger requests against drives whose tray is open / empty without
-    waiting for a doomed identify.
+    waiting for a doomed identify. It also sends one at once when a disc
+    scan starts, moves to a retry, or ends.
 
     Named distinctly from the transcoder HeartbeatRequest because the
     two services post completely different payloads to different paths.
@@ -62,6 +78,8 @@ class RipperHeartbeatRequest(BaseModel):
 
     drive_id: str
     media_status: DriveMediaStatus
+    # None / omitted = not scanning (also what an older ripper sends).
+    scan: RipperScanActivity | None = None
 
 
 class ScanTitle(BaseModel):
