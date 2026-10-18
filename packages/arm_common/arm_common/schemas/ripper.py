@@ -87,7 +87,20 @@ class ScanTitle(BaseModel):
     duration_seconds: int | None = None
     chapter_count: int | None = None
     size_bytes: int | None = None
+    # TINFO 27: MakeMKV's planned *output* file name (`<label>_tNN.mkv`),
+    # numbered by the scan's own title ids. Kept under this name for
+    # compatibility with stored scans.
     source_file: str | None = None
+    # TINFO 16 (Blu-ray only): the playlist or clip the title plays, e.g.
+    # `00800.mpls`. Title ids are not stable between a disc and its backup;
+    # this is.
+    source_playlist: str | None = None
+    # TINFO 24 (DVD only): the disc's own title number, DVD's stable key.
+    original_title_id: int | None = None
+    # TINFO 25 / 26: segment count and segment map, the map kept verbatim
+    # (a clip list like `14,15,16` on Blu-ray, a cell range like `1-7` on DVD).
+    segment_count: int | None = None
+    segment_map: str | None = None
 
 
 class DiscFingerprintInput(BaseModel):

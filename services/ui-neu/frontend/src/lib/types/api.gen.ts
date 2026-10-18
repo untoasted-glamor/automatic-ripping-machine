@@ -2652,6 +2652,22 @@ export type ScanTitle = {
      * Source File
      */
     source_file?: string | null;
+    /**
+     * Source Playlist
+     */
+    source_playlist?: string | null;
+    /**
+     * Original Title Id
+     */
+    original_title_id?: number | null;
+    /**
+     * Segment Count
+     */
+    segment_count?: number | null;
+    /**
+     * Segment Map
+     */
+    segment_map?: string | null;
 };
 
 /**
