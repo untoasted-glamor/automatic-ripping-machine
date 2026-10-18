@@ -416,6 +416,22 @@ describe('Job detail page (v3)', () => {
 		expect(screen.getByText('Failed')).toBeInTheDocument();
 	});
 
+	it("shows each track's length: the actual, else the ~estimate, else a dash", async () => {
+		mockFetchJob.mockResolvedValueOnce({
+			job: createJob({ id: 'job_42', status: 'ripped' }),
+			tracks: [
+				createTrack({ id: 'trk_0', index: 0, duration_seconds: null, expected_duration_seconds: 1452 }),
+				createTrack({ id: 'trk_1', index: 1, duration_seconds: 13078, expected_duration_seconds: 13000 }),
+				createTrack({ id: 'trk_2', index: 2, duration_seconds: null, expected_duration_seconds: null })
+			],
+			fingerprints: []
+		} as any);
+		renderComponent(Page);
+		await waitFor(() => expect(screen.getByText('Tracks (3)')).toBeInTheDocument());
+		const cells = screen.getAllByTestId('track-duration').map((c) => c.textContent?.trim());
+		expect(cells).toEqual(['~24:12', '3:37:58', '—']);
+	});
+
 	it('shows only the rip badge when transcode_status is null', async () => {
 		mockFetchJob.mockResolvedValueOnce({
 			job: createJob({ id: 'job_42', status: 'ripped' }),

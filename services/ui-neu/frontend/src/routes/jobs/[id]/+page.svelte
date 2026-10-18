@@ -19,6 +19,7 @@
 	import { buildMetadataFields, readJobMetadata } from '$lib/utils/job-fields';
 	import { extractMusicTracks } from '$lib/utils/music-tracks';
 	import { trackKindLabel, trackSizeLabel } from '$lib/utils/track-fields';
+	import { trackDuration } from '$lib/utils/duration';
 	import LoadState from '$lib/components/LoadState.svelte';
 	import SkeletonCard from '$lib/components/SkeletonCard.svelte';
 	import JsonTree from '$lib/components/JsonTree.svelte';
@@ -167,13 +168,6 @@
 	function handleMusicApply() {
 		activePanel = null;
 		loadJob();
-	}
-
-	function formatDuration(seconds: number | null | undefined): string {
-		if (seconds == null) return '';
-		const m = Math.floor(seconds / 60);
-		const s = seconds % 60;
-		return `${m}:${String(s).padStart(2, '0')}`;
 	}
 
 	onMount(() => {
@@ -377,6 +371,7 @@
 						<tbody class="divide-y divide-gray-200 dark:divide-gray-700">
 							{#each tracks as track}
 								{@const preview = previewByTrack.get(track.id)}
+								{@const length = trackDuration(track.duration_seconds, track.expected_duration_seconds)}
 								<tr class="hover:bg-page dark:hover:bg-gray-800/50 {track.excluded ? 'opacity-50' : ''}">
 									<td class="px-4 py-3" data-label="#">{track.index}</td>
 									<td class="px-4 py-3 text-gray-700 dark:text-gray-300" data-label="Kind">{trackKindLabel(track.kind)}</td>
@@ -434,11 +429,11 @@
 											<span class="text-gray-400">{track.excluded ? 'excluded' : '—'}</span>
 										{/if}
 									</td>
-									<td class="px-4 py-3" data-label="Length">
-										{#if track.duration_seconds != null}
-											{formatDuration(track.duration_seconds)}
-										{:else if track.expected_duration_seconds != null}
-											<span class="text-gray-400">~{formatDuration(track.expected_duration_seconds)}</span>
+									<td class="px-4 py-3 tabular-nums" data-label="Length" data-testid="track-duration">
+										{#if length && !length.estimated}
+											{length.label}
+										{:else if length}
+											<span class="text-gray-400" title="Scan-time estimate">~{length.label}</span>
 										{:else}—{/if}
 									</td>
 									<td class="px-4 py-3 text-gray-700 dark:text-gray-300" data-label="Size">{trackSizeLabel(track)}</td>
