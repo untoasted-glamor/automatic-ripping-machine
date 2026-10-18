@@ -11,6 +11,12 @@ export interface AppConfig {
 	transcoder_enabled: boolean;
 }
 
+// The raw v3 config row, for callers that need a specific setting (e.g. the
+// review-gate countdown, manual_wait_seconds: null = mandatory confirm).
+export function fetchConfigView(): Promise<ConfigView> {
+	return get<ConfigView>('/api/config');
+}
+
 export async function fetchConfig(): Promise<AppConfig> {
 	await get<ConfigView>('/api/config');
 	return { transcoder_enabled: true };

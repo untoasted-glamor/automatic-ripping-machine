@@ -2,16 +2,30 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderComponent, screen, fireEvent, cleanup, waitFor } from '$lib/test-utils';
 import IdentifyDialog from '../IdentifyDialog.svelte';
 import { createJob } from '../__fixtures__/job';
-import { resolveJob, searchMetadata } from '$lib/api/jobs';
-import type { ResolveResponse } from '$lib/types/api.gen';
+import { resolveJob, searchMetadata, startWaitingJob, pauseWaitingJob } from '$lib/api/jobs';
+import { fetchConfigView } from '$lib/api/config';
+import type { ConfigView, ResolveResponse } from '$lib/types/api.gen';
 
 vi.mock('$lib/api/jobs', () => ({
 	resolveJob: vi.fn(),
-	searchMetadata: vi.fn()
+	searchMetadata: vi.fn(),
+	startWaitingJob: vi.fn(),
+	pauseWaitingJob: vi.fn()
+}));
+
+vi.mock('$lib/api/config', () => ({
+	fetchConfigView: vi.fn()
 }));
 
 const resolveJobMock = vi.mocked(resolveJob);
 const searchMetadataMock = vi.mocked(searchMetadata);
+const startWaitingJobMock = vi.mocked(startWaitingJob);
+const pauseWaitingJobMock = vi.mocked(pauseWaitingJob);
+const fetchConfigViewMock = vi.mocked(fetchConfigView);
+
+function configWith(manual_wait_seconds: number | null): ConfigView {
+	return { manual_wait_seconds } as ConfigView;
+}
 
 function makeResp(): ResolveResponse {
 	return { job: createJob({ status: 'identified' }), fan_out: [] };
@@ -232,6 +246,105 @@ describe('IdentifyDialog', () => {
 			const job = createJob({ disc_type: 'cd', status: 'awaiting_user_id', metadata_json: {} });
 			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
 			expect(screen.queryByTestId('search-title')).not.toBeInTheDocument();
+		});
+	});
+
+	describe('review gate (awaiting_review)', () => {
+		function renderReview(
+			overrides: Record<string, unknown> = {},
+			handlers: Record<string, unknown> = {}
+		) {
+			const job = createJob({
+				id: 'job_r',
+				disc_type: 'bluray',
+				status: 'awaiting_review',
+				title: 'Heat',
+				year: 1995,
+				...overrides
+			});
+			renderComponent(IdentifyDialog, {
+				props: { job, onclose: vi.fn(), onidentified: vi.fn(), ...handlers }
+			});
+		}
+
+		it('is not shown outside the review gate', () => {
+			const job = createJob({ disc_type: 'bluray', status: 'ripped' });
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+			expect(screen.queryByTestId('confirm-start-rip')).not.toBeInTheDocument();
+			expect(fetchConfigViewMock).not.toHaveBeenCalled();
+		});
+
+		it('titles the dialog for review and offers Confirm & start rip', async () => {
+			fetchConfigViewMock.mockResolvedValue(configWith(null));
+			renderReview();
+			expect(screen.getByRole('heading', { name: 'Review & confirm identity' })).toBeInTheDocument();
+			expect(screen.getByTestId('confirm-start-rip')).toHaveTextContent('Confirm & start rip');
+		});
+
+		it('Confirm & start rip calls rip-start-review and reports the started job', async () => {
+			fetchConfigViewMock.mockResolvedValue(configWith(null));
+			const started = createJob({ id: 'job_r', status: 'ripping' });
+			startWaitingJobMock.mockResolvedValue(started);
+			const onripstarted = vi.fn();
+			renderReview({}, { onripstarted });
+			await fireEvent.click(screen.getByTestId('confirm-start-rip'));
+			await waitFor(() => expect(startWaitingJobMock).toHaveBeenCalledWith('job_r'));
+			await waitFor(() => expect(onripstarted).toHaveBeenCalledWith(started));
+		});
+
+		it('shows the error when starting the rip fails', async () => {
+			fetchConfigViewMock.mockResolvedValue(configWith(null));
+			startWaitingJobMock.mockRejectedValue(new Error('drive busy'));
+			renderReview();
+			await fireEvent.click(screen.getByTestId('confirm-start-rip'));
+			expect(await screen.findByTestId('identify-error')).toHaveTextContent('drive busy');
+		});
+
+		it('mandatory mode has no countdown to pause', async () => {
+			fetchConfigViewMock.mockResolvedValue(configWith(null));
+			renderReview();
+			expect(await screen.findByTestId('review-mandatory-note')).toBeInTheDocument();
+			expect(screen.queryByTestId('review-pause-toggle')).not.toBeInTheDocument();
+		});
+
+		it('timed mode offers a pause toggle that pauses this disc', async () => {
+			fetchConfigViewMock.mockResolvedValue(configWith(60));
+			const paused = createJob({ id: 'job_r', status: 'awaiting_review', manual_pause: true });
+			pauseWaitingJobMock.mockResolvedValue(paused);
+			const onjobupdated = vi.fn();
+			renderReview({ manual_pause: false }, { onjobupdated });
+			const toggle = await screen.findByTestId('review-pause-toggle');
+			expect(toggle).toHaveTextContent('Pause countdown');
+			await fireEvent.click(toggle);
+			await waitFor(() => expect(pauseWaitingJobMock).toHaveBeenCalledWith('job_r', true));
+			expect(onjobupdated).toHaveBeenCalledWith(paused);
+		});
+
+		it('timed mode offers Resume on a paused disc', async () => {
+			fetchConfigViewMock.mockResolvedValue(configWith(60));
+			pauseWaitingJobMock.mockResolvedValue(createJob({ id: 'job_r' }));
+			renderReview({ manual_pause: true });
+			const toggle = await screen.findByTestId('review-pause-toggle');
+			expect(toggle).toHaveTextContent('Resume countdown');
+			expect(screen.getByText('Countdown paused')).toBeInTheDocument();
+			await fireEvent.click(toggle);
+			await waitFor(() => expect(pauseWaitingJobMock).toHaveBeenCalledWith('job_r', false));
+		});
+
+		it('shows the error when toggling the pause fails', async () => {
+			fetchConfigViewMock.mockResolvedValue(configWith(60));
+			pauseWaitingJobMock.mockRejectedValue(new Error('nope'));
+			renderReview();
+			await fireEvent.click(await screen.findByTestId('review-pause-toggle'));
+			expect(await screen.findByTestId('identify-error')).toHaveTextContent('nope');
+		});
+
+		it('renders no pause control when the config fetch fails', async () => {
+			fetchConfigViewMock.mockRejectedValue(new Error('offline'));
+			renderReview();
+			await waitFor(() => expect(fetchConfigViewMock).toHaveBeenCalled());
+			expect(screen.queryByTestId('review-pause-toggle')).not.toBeInTheDocument();
+			expect(screen.getByTestId('confirm-start-rip')).toBeInTheDocument();
 		});
 	});
 

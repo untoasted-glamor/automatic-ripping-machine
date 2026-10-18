@@ -47,21 +47,32 @@
 		'awaiting_user_id',
 		'ripped_awaiting_identify',
 		'identified',
+		// Held at the review gate: identity edits are accepted (status preserved),
+		// and the dialog carries the Confirm & start rip action.
+		'awaiting_review',
 		'ripped',
 		'ripped_partial'
 	];
-	const APPLY_STATUSES = ['identified', 'ripped', 'ripped_partial', 'awaiting_user_id'];
+	// `awaiting_user_id` and `awaiting_review` are accepted but PARK: the backend
+	// records the application as `waiting_identify` with no tasks and fans it out
+	// at rip-complete, so review exclusions are honoured instead of frozen in at
+	// click time. `identified` is deliberately absent - the backend refuses it
+	// (the rip hasn't produced files to transcode yet); `applyAfterRip` points the
+	// operator at the manual rip, which attaches a session to the rip itself.
+	const APPLY_STATUSES = ['awaiting_review', 'ripped', 'ripped_partial', 'awaiting_user_id'];
 
 	let canResolve = $derived(!!detail && RESOLVABLE_STATUSES.includes(detail.job.status));
 	let canApply = $derived(!!detail && APPLY_STATUSES.includes(detail.job.status));
+	let applyAfterRip = $derived(detail?.job.status === 'identified');
 
-	// Identify is "Edit identity" once an identity already exists (post-rip /
-	// identified), otherwise "Identify disc" for the auto-id-failed case.
-	let identifyLabel = $derived(
-		detail && ['awaiting_user_id', 'ripped_awaiting_identify'].includes(detail.job.status)
-			? 'Identify disc'
-			: 'Edit identity'
-	);
+	// "Identify disc" for the auto-id-failed case, "Review & confirm" at the
+	// review gate, otherwise "Edit identity" once an identity already exists.
+	let identifyLabel = $derived.by(() => {
+		const s = detail?.job.status;
+		if (s === 'awaiting_user_id' || s === 'ripped_awaiting_identify') return 'Identify disc';
+		if (s === 'awaiting_review') return 'Review & confirm';
+		return 'Edit identity';
+	});
 
 	function flashNote(message: string) {
 		actionNote = message;
@@ -83,8 +94,19 @@
 	function handleApplied(resp: ApplySessionResponse) {
 		showApply = false;
 		loadJob();
+		if (resp.session_application?.status === 'waiting_identify') {
+			flashNote(
+				'Session parked - transcodes are created once this disc clears its gate, so any titles you drop during review are left out.'
+			);
+			return;
+		}
 		const n = resp.tasks?.length ?? 0;
 		flashNote(`${n} transcode task${n === 1 ? '' : 's'} queued`);
+	}
+
+	function handleRipStarted() {
+		showIdentify = false;
+		loadJob();
 	}
 
 	let isVideoDisc = $derived(
@@ -276,6 +298,14 @@
 						>
 							Apply session
 						</button>
+					{:else if applyAfterRip && $isAdmin}
+						<a
+							href="/settings#drives"
+							data-testid="apply-after-rip"
+							class="text-xs text-gray-500 hover:underline dark:text-gray-400"
+						>
+							Sessions apply once the rip has produced files - pick one when starting a manual rip
+						</a>
 					{/if}
 					{#if $isAdmin}
 						<JobActions {job} onaction={loadJob} ondelete={() => goto('/')} />
@@ -572,7 +602,13 @@
 	</div>
 
 	{#if showIdentify}
-		<IdentifyDialog {job} onclose={() => (showIdentify = false)} onidentified={handleIdentified} />
+		<IdentifyDialog
+			{job}
+			onclose={() => (showIdentify = false)}
+			onidentified={handleIdentified}
+			onripstarted={handleRipStarted}
+			onjobupdated={() => loadJob()}
+		/>
 	{/if}
 	{#if showApply}
 		<ApplySessionDialog {job} onclose={() => (showApply = false)} onapplied={handleApplied} />

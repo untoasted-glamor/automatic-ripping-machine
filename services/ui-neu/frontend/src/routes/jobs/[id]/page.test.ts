@@ -151,6 +151,86 @@ describe('Job detail page (v3)', () => {
 		});
 	});
 
+	describe('review gate + apply-session gating', () => {
+		function withStatus(status: string) {
+			mockFetchJob.mockResolvedValueOnce({
+				job: createJob({ id: 'job_42', status: status as never, disc_type: 'bluray' }),
+				tracks: [],
+				fingerprints: []
+			});
+		}
+
+		it('labels the identify button "Review & confirm" for a disc held at the gate', async () => {
+			withStatus('awaiting_review');
+			renderComponent(Page);
+			expect(await screen.findByTestId('identify-open')).toHaveTextContent('Review & confirm');
+		});
+
+		it.each(['ripped', 'ripped_partial', 'awaiting_user_id', 'awaiting_review'])(
+			'offers Apply session when status is %s',
+			async (status) => {
+				withStatus(status);
+				renderComponent(Page);
+				expect(await screen.findByTestId('apply-open')).toBeInTheDocument();
+				expect(screen.queryByTestId('apply-after-rip')).not.toBeInTheDocument();
+			}
+		);
+
+		it('points a pre-rip identified job at the manual rip instead of Apply', async () => {
+			// The backend refuses apply on `identified`: fanned-out tasks would have
+			// no ripped file to read, so the session is chosen at manual-rip time.
+			withStatus('identified');
+			renderComponent(Page);
+			const hint = await screen.findByTestId('apply-after-rip');
+			expect(hint).toHaveAttribute('href', '/settings#drives');
+			expect(screen.queryByTestId('apply-open')).not.toBeInTheDocument();
+		});
+
+		async function applyWith(status: string, applicationStatus: string, taskCount = 0) {
+			const { fetchSessions } = await import('$lib/api/sessions');
+			vi.mocked(fetchSessions).mockResolvedValueOnce([
+				{
+					id: 'ses_movie',
+					name: 'Movie MKV',
+					media_type: 'movie',
+					is_builtin: false,
+					rip_preset_id: 'rip_1',
+					transcode_preset_id: null,
+					output_path_template: '{title}/{title}.mkv',
+					overrides_json: null,
+					created_by_user_id: null,
+					created_at: null,
+					updated_at: null
+				} as never
+			]);
+			const { applySession } = await import('$lib/api/jobs');
+			vi.mocked(applySession).mockResolvedValueOnce({
+				session_application: { status: applicationStatus },
+				tasks: Array.from({ length: taskCount }, () => ({})),
+				collisions: [],
+				idempotent: false
+			} as never);
+			withStatus(status);
+			renderComponent(Page);
+			await fireEvent.click(await screen.findByTestId('apply-open'));
+			await waitFor(() => expect(screen.getByText(/Movie MKV/)).toBeInTheDocument());
+			await fireEvent.change(screen.getByTestId('apply-session-select'), {
+				target: { value: 'ses_movie' }
+			});
+			await fireEvent.click(screen.getByTestId('apply-session-apply'));
+		}
+
+		it('explains that a session applied to a held disc is parked until its gate clears', async () => {
+			await applyWith('awaiting_review', 'waiting_identify');
+			expect(await screen.findByTestId('action-note')).toHaveTextContent(/Session parked/);
+		});
+
+		it('reports a queued session as queued tasks', async () => {
+			await applyWith('ripped', 'queued', 2);
+			expect(await screen.findByTestId('action-note')).toHaveTextContent('2 transcode tasks queued');
+		});
+	});
+
 	it('shows the Match CD tab only for cd jobs', async () => {
 		mockFetchJob.mockResolvedValueOnce({
 			job: createJob({ id: 'job_cd', disc_type: 'cd', status: 'ripped', title: 'Abbey Road' }),

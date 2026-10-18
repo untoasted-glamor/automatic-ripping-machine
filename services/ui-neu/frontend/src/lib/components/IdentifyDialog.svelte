@@ -1,16 +1,24 @@
 <script lang="ts">
-	import { resolveJob, searchMetadata } from '$lib/api/jobs';
+	import { onMount } from 'svelte';
+	import { resolveJob, searchMetadata, startWaitingJob, pauseWaitingJob } from '$lib/api/jobs';
+	import { fetchConfigView } from '$lib/api/config';
 	import type { JobView, MetadataCandidate, ResolveResponse } from '$lib/types/api.gen';
 	import PosterImage from './PosterImage.svelte';
 
 	let {
 		job,
 		onclose,
-		onidentified
+		onidentified,
+		onripstarted,
+		onjobupdated
 	}: {
 		job: JobView;
 		onclose: () => void;
 		onidentified: (resp: ResolveResponse) => void;
+		/** Review gate: Confirm & start rip succeeded (job is now ripping). */
+		onripstarted?: (job: JobView) => void;
+		/** Review gate: the per-job countdown pause was toggled. */
+		onjobupdated?: (job: JobView) => void;
 	} = $props();
 
 	// `isCd` switches the form body between the two-field (title + year)
@@ -26,6 +34,57 @@
 	const isEditMode = $derived(
 		!['awaiting_user_id', 'ripped_awaiting_identify'].includes(job.status)
 	);
+
+	// `awaiting_review` = the disc was identified (automatically, or by a resolve
+	// that the review gate parked) and the rip is held for an explicit confirm.
+	// Save still just edits the identity (status is preserved); the separate
+	// Confirm & start rip button is what releases the rip.
+	const isReview = $derived(job.status === 'awaiting_review');
+
+	// Review-gate controls. Config is a singleton, so one fetch tells whether this
+	// install runs the timed sub-mode (pausable countdown) or the mandatory one
+	// (nothing to pause) - the job itself doesn't carry that distinction.
+	let reviewWaitSeconds = $state<number | null | undefined>(undefined);
+	const isTimedMode = $derived(reviewWaitSeconds != null);
+	let startingRip = $state(false);
+	let pausing = $state(false);
+
+	onMount(() => {
+		if (!isReview) return;
+		fetchConfigView()
+			.then((c) => {
+				reviewWaitSeconds = c.manual_wait_seconds;
+			})
+			.catch(() => {
+				// Best-effort: the pause control simply doesn't render on failure.
+			});
+	});
+
+	async function confirmAndStartRip(): Promise<void> {
+		startingRip = true;
+		error = null;
+		try {
+			const updated = await startWaitingJob(job.id);
+			onripstarted?.(updated);
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to start rip';
+		} finally {
+			startingRip = false;
+		}
+	}
+
+	async function togglePause(): Promise<void> {
+		pausing = true;
+		error = null;
+		try {
+			const updated = await pauseWaitingJob(job.id, !job.manual_pause);
+			onjobupdated?.(updated);
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to update pause state';
+		} finally {
+			pausing = false;
+		}
+	}
 
 	// CD-only: per-track count comes from the preserved scan_result on the
 	// job's metadata_json. If it's absent we skip the per-track inputs and
@@ -183,7 +242,7 @@
 			id="identify-dialog-title"
 			class="text-lg font-semibold text-gray-900 dark:text-white"
 		>
-			{isEditMode ? 'Edit identity' : 'Identify this disc'}
+			{isReview ? 'Review & confirm identity' : isEditMode ? 'Edit identity' : 'Identify this disc'}
 		</h3>
 
 		{#if error}
@@ -192,7 +251,12 @@
 			</p>
 		{/if}
 
-		{#if isEditMode}
+		{#if isReview}
+			<p class="mt-2 text-sm text-gray-600 dark:text-gray-400">
+				This disc was identified automatically. Confirm the details below (or search / override
+				them first) and click <strong>Confirm &amp; start rip</strong> to begin ripping.
+			</p>
+		{:else if isEditMode}
 			<p class="mt-2 text-sm text-gray-600 dark:text-gray-400">
 				Update the title, year, and metadata for this job. Status stays as-is. Existing
 				transcoded files keep their original filenames - re-apply a session if you want new
@@ -462,5 +526,40 @@
 				</button>
 			</div>
 		</form>
+
+		{#if isReview}
+			<div
+				class="mt-4 flex flex-wrap items-center gap-3 border-t border-primary/15 pt-4 dark:border-primary/15"
+				data-testid="review-gate-actions"
+			>
+				<button
+					type="button"
+					data-testid="confirm-start-rip"
+					onclick={confirmAndStartRip}
+					disabled={startingRip || submitting}
+					class="rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-green-500 dark:hover:bg-green-600"
+				>
+					{startingRip ? 'Starting...' : 'Confirm & start rip'}
+				</button>
+				{#if isTimedMode}
+					<button
+						type="button"
+						data-testid="review-pause-toggle"
+						onclick={togglePause}
+						disabled={pausing}
+						class="rounded-lg px-3 py-2 text-sm font-medium text-gray-700 ring-1 ring-primary/25 hover:bg-primary/10 disabled:opacity-50 dark:text-gray-200 dark:ring-primary/30"
+					>
+						{job.manual_pause ? 'Resume countdown' : 'Pause countdown'}
+					</button>
+					{#if job.manual_pause}
+						<span class="text-sm text-gray-500 dark:text-gray-400">Countdown paused</span>
+					{/if}
+				{:else if reviewWaitSeconds === null}
+					<span class="text-sm text-gray-500 dark:text-gray-400" data-testid="review-mandatory-note">
+						This disc won't start until you confirm.
+					</span>
+				{/if}
+			</div>
+		{/if}
 	</div>
 </div>

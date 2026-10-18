@@ -37,7 +37,7 @@
 	let editPosterUrl = $state('');
 
 	const RESOLVABLE_STATUSES = [
-		'awaiting_user_id', 'ripped_awaiting_identify', 'identified', 'ripped', 'ripped_partial'
+		'awaiting_user_id', 'ripped_awaiting_identify', 'identified', 'awaiting_review', 'ripped', 'ripped_partial'
 	];
 	let canResolve = $derived(RESOLVABLE_STATUSES.includes(job.status));
 
