@@ -106,7 +106,8 @@ async def test_scan_disc_reads_the_iso_not_the_drive(monkeypatch, tmp_path: Path
     scan = await scan_makemkv.scan_disc(iso)
 
     assert scan.volume_label == "Sintel_NTSC"
-    assert len(scan.titles) == 5
+    # Every title, including the 1:59 and 1:47 ones under MakeMKV's 120 s default.
+    assert [t.duration_seconds for t in scan.titles] == [898, 897, 119, 365, 216, 107, 3504]
     assert fake.drive_reads == []
 
 
@@ -117,7 +118,9 @@ async def test_scan_disc_reads_the_drive_for_a_block_device(monkeypatch, tmp_pat
     scan = await scan_makemkv.scan_disc("/dev/sr0")
 
     assert scan.volume_label == "ToiletBound HanakoKun D1"
-    assert len(scan.titles) == 8
+    # 7 episodes and the play-all, plus 31 menu reels and single clips (0–80 s).
+    assert len(scan.titles) == 39
+    assert sum(1 for t in scan.titles if (t.duration_seconds or 0) >= 120) == 8
     assert len(fake.drive_reads) == 1
 
 

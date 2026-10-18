@@ -87,8 +87,26 @@ def _apply_custom_filters(titles: list[ScanTitle], filters: TrackFilters) -> lis
     return candidates
 
 
+def _listed_video_titles(scan: ScanResult) -> list[ScanTitle]:
+    """The scan's titles at or above the ripper's baseline minimum length.
+
+    The ripper scans every title (MakeMKV `--minlength=0`, so title ids line
+    up with a rip at any minimum) and records its baseline in
+    `scan.min_length_seconds`. Titles below it (menu clips, bumpers, single
+    `.m2ts` files) get no Track row, as before the scan listed them: under
+    ARCHIVE each would otherwise become a track that FAILs "below
+    minlength". A scan stored before the field existed (None) was already
+    cut at MakeMKV's 120 s default and is used as-is. A title of unknown
+    duration is kept, as everywhere else.
+    """
+    floor = scan.min_length_seconds
+    if floor is None:
+        return scan.titles
+    return [t for t in scan.titles if t.duration_seconds is None or t.duration_seconds >= floor]
+
+
 def _select_video(scan: ScanResult, rip_preset: RipPreset, job_id: str) -> list[Track]:
-    titles = scan.titles
+    titles = _listed_video_titles(scan)
     if not titles:
         return []
     rule = rip_preset.track_selection
@@ -162,7 +180,7 @@ def select_tracks_for_review(job_id: str, scan: ScanResult, rip_preset: RipPrese
     kept_refs = {t.source_ref for t in select_tracks(job_id, scan, rip_preset)}
     is_cd = scan.disc_type == DiscType.CD
     rows: list[Track] = []
-    for title in scan.titles:
+    for title in scan.titles if is_cd else _listed_video_titles(scan):
         track = _audio_track(job_id, title) if is_cd else _video_track(job_id, title)
         track.excluded = str(title.index) not in kept_refs
         rows.append(track)

@@ -423,6 +423,31 @@ async def test_persist_review_tracks_is_idempotent() -> None:
     assert added_refs == {"2"}  # index 1 skipped (already exists), only 2 added
 
 
+async def test_persist_review_tracks_skips_titles_below_the_scan_minimum() -> None:
+    """A scan that lists every title (min_length_seconds set) persists rows
+    only for titles at or above that minimum."""
+    from arm_backend.track_selection import persist_review_tracks as _persist_review_tracks
+    from arm_common import Job as _Job
+    from arm_common.schemas import ScanResult as _ScanResult, ScanTitle as _ScanTitle
+
+    db = FakeSession()
+    db.rows["rip_presets"] = [_movie_preset()]
+    job = _Job(
+        id="job_01JZXR7K3M5Q8N4VWA0000I02", drive_id="drv_x", disc_type=DiscType.DVD, status=JobStatus.AWAITING_REVIEW
+    )
+    scan = _ScanResult(
+        disc_type=DiscType.DVD,
+        titles=[
+            _ScanTitle(index=0, duration_seconds=898),
+            _ScanTitle(index=1, duration_seconds=107),
+            _ScanTitle(index=2, duration_seconds=3504),
+        ],
+        min_length_seconds=120,
+    )
+    await _persist_review_tracks(db, job, scan)
+    assert sorted(t.source_ref for t in db.added if type(t).__name__ == "Track") == ["0", "2"]
+
+
 def test_identify_with_hold_parks_without_preset_seeded() -> None:
     """hold_for_review on but the default rip preset isn't seeded -> still parks in
     AWAITING_REVIEW (review-track persistence is skipped, logged) rather than

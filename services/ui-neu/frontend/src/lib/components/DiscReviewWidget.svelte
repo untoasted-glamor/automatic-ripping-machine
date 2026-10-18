@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import type { JobView, JobDetailView, TrackView, ScanResult, SessionView } from '$lib/types/api.gen';
+	import type { JobView, JobDetailView, TrackView, SessionView } from '$lib/types/api.gen';
 	import { abandonJob, fetchJob, startWaitingJob, pauseWaitingJob, resolveJob } from '$lib/api/jobs';
 	import { fetchSessions } from '$lib/api/sessions';
 	import { readJobMetadata, videoTypeLabel } from '$lib/utils/job-fields';
 	import { reviewPhaseBadge } from '$lib/utils/job-status';
 	import CountdownTimer from './CountdownTimer.svelte';
 	import { discTypeLabel } from '$lib/utils/job-type';
+	import { listedScanTitles } from '$lib/utils/scan-titles';
 	import PosterImage from './PosterImage.svelte';
 	import TitleSearch from './TitleSearch.svelte';
 	import MusicSearch from './MusicSearch.svelte';
@@ -49,9 +50,8 @@
 	let errorMessage = $state<string | null>(null);
 
 	let tracks = $derived<TrackView[]>(data?.tracks ?? []);
-	let scanTitles = $derived(
-		((data?.job?.metadata_json?.scan_result as ScanResult | undefined)?.titles) ?? []
-	);
+	// Same cut as the backend's Track rows: titles under the scan's minimum are hidden.
+	let scanTitles = $derived(listedScanTitles(data?.job?.metadata_json?.scan_result));
 
 	// v3 classifies disc kind via disc_type. cd → music, data → data, the rest
 	// are video.

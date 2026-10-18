@@ -125,6 +125,12 @@ class ScanResult(BaseModel):
     # in future flows. Empty when nothing fingerprintable.
     fingerprints: list[DiscFingerprintInput] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
+    # DVD/BD: the ripper's baseline minimum title length (ARM_MIN_LENGTH_SECONDS).
+    # The scan itself lists every title (MakeMKV `--minlength=0`, so title ids
+    # match a rip at any minimum); titles shorter than this get no Track row.
+    # None on scans stored before the scan listed everything (MakeMKV had
+    # already dropped titles under its 120 s default) and on CD/data scans.
+    min_length_seconds: int | None = None
 
 
 class IdentifyRequest(BaseModel):

@@ -32,7 +32,7 @@ import arm_ripper.rip.makemkv_rip as makemkv_rip_module
 import arm_ripper.scan.makemkv as scan_makemkv_module
 from arm_common import DiscType, DriveMediaStatus
 from arm_common.enums import TrackKind, TrackStatus
-from arm_common.schemas import ScanResult, TrackView
+from arm_common.schemas import ScanResult, ScanTitle, TrackView
 
 from arm_ripper.drive_status import probe_drive_media
 from arm_ripper.rip.dispatcher import rip_all
@@ -991,21 +991,26 @@ async def test_rip_all_logs_makemkv_messages_at_info(monkeypatch, tmp_path, capl
     assert any("Failed to open disc title 1" in m for m in info_text)
 
 
-# --- rip_all against the recorded-output makemkvcon fake (S6) ----------------
+# --- rip_all against the recorded-output makemkvcon fake (S6, S16) -----------
 #
 # `tests._makemkvcon_fake` answers from real recordings: the Hanako-kun BD in
-# /dev/sr0 and the Sintel DVD as an ISO.
+# /dev/sr0 and the Sintel DVD as an ISO. The disc scan lists every title
+# (`--minlength=0`); tracks exist for the titles at or above the ripper's
+# 120 s baseline, as the backend makes them.
+
+_BASELINE = 120
 
 
-def _rip_start_tracks(scan: ScanResult) -> list[TrackView]:
-    """Track rows as rip-start hands them over (`select_tracks`): the scan's
-    duration and size are the *expected* values; `duration_seconds` stays
-    unset until the title is ripped."""
+def _rip_start_tracks(scan: ScanResult, baseline: int = _BASELINE) -> list[TrackView]:
+    """Track rows as rip-start hands them over (`select_tracks` under ARCHIVE):
+    one per title at or above the baseline, with the scan's duration and size
+    as the *expected* values; `duration_seconds` stays unset until ripped."""
     return [
         _track(t.index, duration_seconds=None).model_copy(
             update={"expected_duration_seconds": t.duration_seconds, "expected_size_bytes": t.size_bytes}
         )
         for t in scan.titles
+        if (t.duration_seconds or 0) >= baseline
     ]
 
 
@@ -1014,12 +1019,35 @@ async def _scan(monkeypatch, device: str) -> ScanResult:
     return await scan_makemkv_module.scan_disc(device)
 
 
+async def _rip_with_scan(
+    tracks: list[TrackView], scan: ScanResult, out: Path, *, device: str, min_length_seconds: int
+) -> dict[str, list[RipResult]]:
+    reports: dict[str, list[RipResult]] = {t.id: [] for t in tracks}
+
+    async def on_start(_track: TrackView) -> None:
+        return None
+
+    async def on_done(track: TrackView, result: RipResult) -> None:
+        reports[track.id].append(result)
+
+    await rip_all(
+        disc_type=scan.disc_type,
+        device_path=device,
+        tracks=tracks,
+        scan_titles=scan.titles,
+        output_dir=out,
+        on_track_start=on_start,
+        on_track_done=on_done,
+        min_length_seconds=min_length_seconds,
+    )
+    return reports
+
+
 @pytest.mark.parametrize("source", ["bd-drive", "dvd-iso"])
 async def test_rip_all_full_selection_gives_every_track_its_own_title(monkeypatch, tmp_path, source):
-    """Characterizes today's `mkv all` path (S6.2): every scanned title kept,
-    rip at the scan's minimum. Each track is DONE with the file MakeMKV
-    planned for it (the scan's TINFO 27 name), sized as its own title, and
-    the drive is read by one invocation for the whole rip."""
+    """Today's `mkv all` path (S6.2) with every track kept, ripped at the
+    baseline: each track is DONE with a file sized as its own title, and the
+    drive is read by one invocation for the whole rip."""
     iso = tmp_path / "sintel.iso"
     iso.write_bytes(b"")
     fake = install(monkeypatch, disc=HANAKO_BD, isos={str(iso): SINTEL_ISO})
@@ -1027,15 +1055,91 @@ async def test_rip_all_full_selection_gives_every_track_its_own_title(monkeypatc
     scan = await _scan(monkeypatch, device)
     fake.invocations.clear()
     tracks = _rip_start_tracks(scan)
+    titles = {t.index: t for t in scan.titles}
     out = tmp_path / "job"
 
-    reports = await _rip_tracks(tracks, out, disc_type=scan.disc_type, device=device)
+    reports = await _rip_with_scan(tracks, scan, out, device=device, min_length_seconds=_BASELINE)
 
-    for title in scan.titles:
-        (result,) = reports[f"trk_{title.index}"]
-        assert result.ok is True, (title.index, result.error)
-        assert result.output_path == out / str(title.source_file)
+    for track in tracks:
+        (result,) = reports[track.id]
+        title = titles[track.index]
+        assert result.ok is True, (track.index, result.error)
+        assert result.output_path is not None and result.output_path.parent == out
         assert result.size_bytes == result.output_path.stat().st_size == file_size(title.size_bytes or 0)
         assert result.duration_seconds == title.duration_seconds
-    assert len(list(out.iterdir())) == len(scan.titles)
+    assert len({r[0].output_path for r in reports.values()}) == len(tracks) == len(list(out.iterdir()))
     assert len(fake.drive_reads) == (1 if source == "bd-drive" else 0)
+
+
+async def _sintel_rip(monkeypatch, tmp_path, min_length_seconds: int) -> tuple[ScanResult, dict[str, RipResult], Path]:
+    iso = tmp_path / "sintel.iso"
+    iso.write_bytes(b"")
+    install(monkeypatch, isos={str(iso): SINTEL_ISO})
+    scan = await _scan(monkeypatch, str(iso))
+    tracks = _rip_start_tracks(scan)
+    out = tmp_path / "job"
+    reports = await _rip_with_scan(tracks, scan, out, device=str(iso), min_length_seconds=min_length_seconds)
+    assert all(len(r) == 1 for r in reports.values()), reports
+    return scan, {track_id: r[0] for track_id, r in reports.items()}, out
+
+
+async def test_rip_minimum_below_the_baseline_keeps_files_on_their_own_titles(monkeypatch, tmp_path):
+    """Sintel titles 0–6 (1:59 and 1:47 among them), tracks only for the
+    ≥120 s titles, a 60 s rip minimum: `mkv all` also rips the two short
+    titles, numbering its files over all seven. Each track still gets its
+    own title's file; the short titles' files stay on disk, unclaimed."""
+    scan, final, out = await _sintel_rip(monkeypatch, tmp_path, min_length_seconds=60)
+
+    sizes = {t.index: file_size(t.size_bytes or 0) for t in scan.titles}
+    assert sorted(final) == ["trk_0", "trk_1", "trk_3", "trk_4", "trk_6"]
+    for idx in (0, 1, 3, 4, 6):
+        result = final[f"trk_{idx}"]
+        assert result.ok is True, (idx, result.error)
+        assert result.output_path is not None and result.output_path.name.endswith(f"_t{idx:02d}.mkv")
+        assert result.size_bytes == sizes[idx]
+    claimed = {r.output_path for r in final.values()}
+    unclaimed = sorted(p.name for p in out.iterdir() if p not in claimed)
+    assert unclaimed == ["B5_t05.mkv", "B6_t02.mkv"]
+
+
+async def test_rip_minimum_above_a_kept_title_fails_only_that_title(monkeypatch, tmp_path):
+    """Same disc ripped at 600 s: the 6:05 and 3:36 tracks are FAILED below
+    minlength; the others get their own titles' files."""
+    scan, final, _ = await _sintel_rip(monkeypatch, tmp_path, min_length_seconds=600)
+
+    sizes = {t.index: file_size(t.size_bytes or 0) for t in scan.titles}
+    for idx in (3, 4):
+        assert final[f"trk_{idx}"].ok is False
+        assert "below minlength=600s" in (final[f"trk_{idx}"].error or "")
+    for idx in (0, 1, 6):
+        assert final[f"trk_{idx}"].ok is True
+        assert final[f"trk_{idx}"].size_bytes == sizes[idx]
+
+
+async def test_disc_progress_goes_to_a_track_when_the_first_title_has_none(monkeypatch, tmp_path):
+    """The rip's first title (a short clip, ripped at a 10 s minimum) has no
+    track; the disc progress bar is credited to the first title that has one."""
+    _stub_rip_disc(
+        monkeypatch, RipDiscResult(overall_error=None, titles={}), fire_per_title_start=False, fire_disc_progress=[0.5]
+    )
+    progress: list[str] = []
+
+    async def on_progress(track: TrackView, _fraction: float) -> None:
+        progress.append(track.id)
+
+    async def noop(*_args: Any) -> None:
+        return None
+
+    await rip_all(
+        disc_type=DiscType.BLURAY,
+        device_path="/dev/sr0",
+        tracks=[_track(1, duration_seconds=None)],
+        scan_titles=[ScanTitle(index=0, duration_seconds=30), ScanTitle(index=1, duration_seconds=1800)],
+        output_dir=tmp_path,
+        on_track_start=noop,
+        on_track_done=noop,
+        on_track_progress=on_progress,
+        min_length_seconds=10,
+    )
+
+    assert progress == ["trk_1"]

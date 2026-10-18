@@ -2626,6 +2626,10 @@ export type ScanResult = {
     raw?: {
         [key: string]: unknown;
     };
+    /**
+     * Min Length Seconds
+     */
+    min_length_seconds?: number | null;
 };
 
 /**
