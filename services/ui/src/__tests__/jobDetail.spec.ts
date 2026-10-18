@@ -27,10 +27,15 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
-function detailFor(status: JobStatus, tracks: unknown[] = []): unknown {
+function detailFor(
+  status: JobStatus,
+  tracks: unknown[] = [],
+  extra: Record<string, unknown> = {},
+): unknown {
   return {
     job: { ...baseJob, status },
     tracks,
+    ...extra,
   }
 }
 
@@ -61,7 +66,11 @@ function ndjsonResponse(records: unknown[]): Response {
   })
 }
 
-async function mountWithStatus(status: JobStatus, tracks: unknown[] = []) {
+async function mountWithStatus(
+  status: JobStatus,
+  tracks: unknown[] = [],
+  extra: Record<string, unknown> = {},
+) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -76,7 +85,8 @@ async function mountWithStatus(status: JobStatus, tracks: unknown[] = []) {
   // JobLogsCard fetches /api/logs/:id (ndjson) and subscribes to a WS topic.
   // Stub everything: real WS would blow up under jsdom (no WebSocket).
   const fetchMock = vi.fn().mockImplementation((url: string) => {
-    if (url.includes('/api/jobs/')) return Promise.resolve(jsonResponse(detailFor(status, tracks)))
+    if (url.includes('/api/jobs/'))
+      return Promise.resolve(jsonResponse(detailFor(status, tracks, extra)))
     if (url.includes('/api/transcodes')) return Promise.resolve(jsonResponse([]))
     // ApplySessionDialog loads the session list as soon as it mounts.
     if (url.includes('/api/sessions')) return Promise.resolve(jsonResponse([]))
@@ -211,5 +221,59 @@ describe('JobDetail.vue tracks table', () => {
     ])
     const cells = wrapper.findAll('[data-testid="track-duration"]').map((c) => c.text())
     expect(cells).toEqual(['~24:12', '3:37:58', '—'])
+  })
+})
+
+describe('JobDetail.vue raw backup', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+    localStorage.setItem('arm_token', 'aaa.bbb.ccc')
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  const backup = { raw_backup: { size_bytes: 46_491_465_782, complete: true } }
+
+  it('shows the backup with its size and what it is for', async () => {
+    const wrapper = await mountWithStatus('ripped_partial', [], backup)
+    expect(wrapper.find('[data-testid="raw-backup-size"]').text()).toBe('46.5 GB')
+    expect(wrapper.find('[data-testid="raw-backup-info"]').attributes('title')).toBe(
+      'The raw is an encrypted backup of the disc (an .iso for DVD, a folder for Blu-ray) ' +
+        'saved to the filesystem, used to selectively extract .mkvs before transcoding. It is ' +
+        'automatically deleted when all tracks have been successfully extracted.',
+    )
+    expect(wrapper.find('[data-testid="delete-raw-backup"]').exists()).toBe(true)
+  })
+
+  it('shows nothing when the job has no backup', async () => {
+    const wrapper = await mountWithStatus('ripped', [], { raw_backup: null })
+    expect(wrapper.find('[data-testid="raw-backup"]').exists()).toBe(false)
+  })
+
+  it('offers no delete while the job is ripping', async () => {
+    const wrapper = await mountWithStatus('ripping', [], {
+      raw_backup: { size_bytes: 1_000_000_000, complete: false },
+    })
+    expect(wrapper.find('[data-testid="raw-backup"]').text()).toContain('(incomplete)')
+    expect(wrapper.find('[data-testid="delete-raw-backup"]').exists()).toBe(false)
+  })
+
+  it('deletes the backup after confirming, and stops showing it', async () => {
+    const wrapper = await mountWithStatus('ripped_partial', [], backup)
+    await wrapper.find('[data-testid="delete-raw-backup"]').trigger('click')
+    const fetchMock = vi.mocked(fetch)
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false)
+
+    await wrapper.find('[data-testid="delete-raw-backup-confirm"]').trigger('click')
+    await flushPromises()
+
+    const deletes = fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')
+    expect(deletes.map(([url]) => String(url))).toEqual([
+      expect.stringMatching(/\/api\/jobs\/job_x\/backup$/),
+    ])
+    expect(wrapper.find('[data-testid="raw-backup"]').exists()).toBe(false)
   })
 })
