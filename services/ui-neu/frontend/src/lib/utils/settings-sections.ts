@@ -65,11 +65,6 @@ const SECTIONS: Record<string, SettingsSection[]> = {
 			keys: ['auto_rip_on_insert', 'block_on_miss', 'on_previously_ripped', 'ripping_paused']
 		},
 		{
-			title: 'Review gate',
-			blurb: 'With "Review first", whether a held disc waits for you to confirm it or rips after a countdown.',
-			keys: ['review_requires_confirm']
-		},
-		{
 			title: 'Decryption data',
 			blurb: 'Key material MakeMKV needs for protected discs, refreshed in the background.',
 			keys: ['community_keydb_enabled', 'makemkv_sdf_enabled']

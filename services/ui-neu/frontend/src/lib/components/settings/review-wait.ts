@@ -1,4 +1,5 @@
-// Review-gate sub-mode helpers for the settings form (ReviewWaitField).
+// Review-gate sub-mode helpers for the settings form (DiscHandlingField's
+// "Review first" sub-choice).
 //
 // `review_requires_confirm` picks the sub-mode: true = a held disc waits in
 // awaiting_review until the operator presses Start rip (no countdown); false

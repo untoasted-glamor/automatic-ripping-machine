@@ -5,7 +5,6 @@
 	import RankedListField from './RankedListField.svelte';
 	import MakemkvKeyField from './MakemkvKeyField.svelte';
 	import DiscHandlingField from './DiscHandlingField.svelte';
-	import ReviewWaitField from './ReviewWaitField.svelte';
 
 	// `config` (the live form values, keyed by field key) lets a field type
 	// read a sibling's value - the `ranked` branch below uses it to flag a
@@ -54,8 +53,6 @@
 		<MakemkvKeyField {field} bind:value {onclear} />
 	{:else if field.widget === 'disc_handling' && field.editable}
 		<DiscHandlingField values={config} {context} />
-	{:else if field.widget === 'review_wait' && field.editable}
-		<ReviewWaitField values={config} {context} />
 	{:else if field.type === 'bool'}
 		{#if !field.editable}
 			<!-- Same read-only idiom as the string/enum branch below (a plain

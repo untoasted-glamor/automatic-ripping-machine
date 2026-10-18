@@ -26,8 +26,7 @@ class ConfigFieldMeta(BaseModel):
     setup_order: int | None = None
     # "Get a free key" link for API key fields.
     signup_url: str | None = None
-    # Custom renderer id for ConfigSchemaField ("makemkv_key", "disc_handling",
-    # "review_wait").
+    # Custom renderer id for ConfigSchemaField ("makemkv_key", "disc_handling").
     widget: str | None = None
     # Key of the field whose widget renders this one; forms skip it on its own.
     part_of: str | None = None
@@ -255,7 +254,7 @@ CONFIG_FIELD_META: list[ConfigFieldMeta] = [
         help="A held disc waits until you press Start rip. It never starts on its own.",
         type="bool",
         editable=True,
-        widget="review_wait",
+        part_of="auto_rip_on_insert",
     ),
     ConfigFieldMeta(
         key="manual_wait_seconds",
@@ -265,7 +264,7 @@ CONFIG_FIELD_META: list[ConfigFieldMeta] = [
         help="How long a held disc waits for review before the rip auto-starts.",
         type="int",
         editable=True,
-        part_of="review_requires_confirm",
+        part_of="auto_rip_on_insert",
     ),
     ConfigFieldMeta(
         key="max_parallel_iso_rips",

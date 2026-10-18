@@ -123,17 +123,37 @@ describe('setup step field selection (setup spec 2026-10-01 §7.2)', () => {
 		expect(keys).not.toContain('hold_for_review');
 	});
 
-	it('puts the review_wait widget in the Review gate section, with the countdown inside it', () => {
+	it('renders the review gate inside the disc-handling widget, with no section of its own', () => {
 		const out = sectionFields('Ripping', [
 			f('auto_rip_on_insert', { widget: 'disc_handling' }),
 			f('hold_for_review', { part_of: 'auto_rip_on_insert' }),
-			f('review_requires_confirm', { widget: 'review_wait' }),
-			f('manual_wait_seconds', { type: 'int', part_of: 'review_requires_confirm' })
+			f('review_requires_confirm', { part_of: 'auto_rip_on_insert' }),
+			f('manual_wait_seconds', { type: 'int', part_of: 'auto_rip_on_insert' })
 		]);
-		const gate = out.find((s) => s.title === 'Review gate');
-		expect(gate?.fields.map((x) => x.key)).toEqual(['review_requires_confirm']);
+		expect(out.map((s) => s.title)).toEqual(['On insert']);
 		const keys = out.flatMap((s) => [...s.columns.flat(), ...s.fields, ...s.advanced]).map((x) => x.key);
-		expect(keys).not.toContain('manual_wait_seconds');
+		expect(keys).toEqual(['auto_rip_on_insert']);
+	});
+
+	it('stepFields hands the setup walkthrough the review gate with the disc-handling widget', async () => {
+		const { stepFields } = await import('../settings-sections');
+		const groups = [
+			{
+				name: 'Ripping',
+				fields: [
+					f('auto_rip_on_insert', { setup_step: 'discs', setup_order: 1, widget: 'disc_handling' }),
+					f('hold_for_review', { part_of: 'auto_rip_on_insert' }),
+					f('review_requires_confirm', { part_of: 'auto_rip_on_insert' }),
+					f('manual_wait_seconds', { type: 'int', part_of: 'auto_rip_on_insert' })
+				]
+			}
+		];
+		expect(stepFields(groups, 'discs').map((x) => x.key)).toEqual([
+			'auto_rip_on_insert',
+			'hold_for_review',
+			'review_requires_confirm',
+			'manual_wait_seconds'
+		]);
 	});
 });
 
