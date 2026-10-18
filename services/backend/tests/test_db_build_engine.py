@@ -57,6 +57,13 @@ def test_no_sslmode_no_context(captured_ctx: list[ssl.SSLContext]) -> None:
     assert eng.url.drivername == "postgresql+asyncpg"
 
 
+def test_pool_pre_ping_enabled() -> None:
+    """Stale pooled connections (e.g. after a Postgres restart) must be
+    detected on checkout instead of raising `connection is closed`."""
+    eng = _build_engine("postgresql://u:p@h/db")
+    assert eng.pool._pre_ping is True
+
+
 def test_already_qualified_url_not_rewritten(captured_ctx: list[ssl.SSLContext]) -> None:
     """A `postgresql+asyncpg://` URL doesn't start with `postgresql://`,
     so the rewrite branch is skipped (30->33)."""
