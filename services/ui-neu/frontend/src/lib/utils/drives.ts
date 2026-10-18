@@ -3,6 +3,20 @@ import type { DriveView } from '$lib/types/api.gen';
 export const DETACHED_LABEL = '○ detached: reconnect the drive';
 export const NO_SERIAL_LABEL = 'no serial, identified by port';
 
+// media_status=unavailable: the device node is there but the ripper's open()
+// was refused (EPERM/EACCES), so no disc can be read. A host permission
+// problem, not an unplugged drive, and it needs the operator to act.
+export const UNAVAILABLE_TITLE = "Can't open the drive";
+export const UNAVAILABLE_HINT =
+	"The ripper can see this drive but isn't allowed to open it, so no disc can be read. " +
+	"Check that CDROM_GID in ARM's .env is the drive's group on the host (stat -c %g /dev/sr0); " +
+	'running armctl install again detects it. Then unenroll and enroll the drive to restart its ripper.';
+
+/** The ripper reports the drive's node as present but not openable. */
+export function isMediaUnavailable(d: DriveView): boolean {
+	return d.media_status === 'unavailable';
+}
+
 // Settings > Drives lists optical drives only (spec 7.5); an in-flight ISO
 // rip is a virtual drive and never shows there.
 export function opticalOnly(drives: DriveView[]): DriveView[] {
@@ -70,6 +84,8 @@ export function mediaLabel(d: DriveView): string {
 			return 'Tray open';
 		case 'not_ready':
 			return 'Not ready';
+		case 'unavailable':
+			return "Can't open drive";
 		default:
 			return 'Unknown';
 	}

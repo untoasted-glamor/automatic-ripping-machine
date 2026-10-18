@@ -16,6 +16,7 @@ describe('drive labels', () => {
 		expect(mediaLabel(d({ media_status: 'no_disc' }))).toBe('No disc');
 		expect(mediaLabel(d({ media_status: 'tray_open' }))).toBe('Tray open');
 		expect(mediaLabel(d({ media_status: 'not_ready' }))).toBe('Not ready');
+		expect(mediaLabel(d({ media_status: 'unavailable' }))).toBe("Can't open drive");
 		expect(mediaLabel(d({ media_status: null }))).toBe('Unknown');
 	});
 

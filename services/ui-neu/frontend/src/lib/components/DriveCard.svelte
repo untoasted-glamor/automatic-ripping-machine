@@ -10,10 +10,13 @@
 		driveTitle,
 		hasLiveJob,
 		isRipping,
+		isMediaUnavailable,
 		isScanning,
 		mediaLabel,
 		scanRetryLabel,
-		DETACHED_LABEL
+		DETACHED_LABEL,
+		UNAVAILABLE_HINT,
+		UNAVAILABLE_TITLE
 	} from '$lib/utils/drives';
 	import { elapsedTime } from '$lib/utils/format';
 	import StatusStrip from './StatusStrip.svelte';
@@ -225,6 +228,9 @@
 	let isDetached = $derived(statusText === DETACHED_LABEL);
 	let isError = $derived(drive?.status === 'error');
 	let isOfflinePresent = $derived(!isError && !isDetached && drive?.status === 'offline' && drive?.present === true);
+	// Present but not openable (permissions): an error the operator must fix,
+	// shown as visible text rather than a neutral chip.
+	let isUnavailable = $derived(!!drive && !isError && !isDetached && isMediaUnavailable(drive));
 
 	// The ripper scans the disc (MakeMKV, maybe several not-ready retries)
 	// before identify creates a job, so without this the card reads "Idle"
@@ -411,6 +417,8 @@
 				title="Not connected"
 				detail="Reconnect the drive. It shows Ready once its ripper checks in."
 			/>
+		{:else if isMediaUnavailable(drive)}
+			<StatusStrip tone="danger" title={UNAVAILABLE_TITLE} detail={UNAVAILABLE_HINT} />
 		{:else if isRipping(drive)}
 			<StatusStrip tone="busy" title="Ripping" detail="A disc is being ripped right now." />
 		{:else if scanning}
@@ -477,6 +485,9 @@
 					<span class="flex-shrink-0 drive-card-status-error" title={statusText}>{statusText}</span>
 				{:else if isDetached}
 					<span class="flex-shrink-0 badge badge-warning badge-sm drive-card-status-pill">{statusText}</span>
+				{:else if isUnavailable}
+					<span class="flex-shrink-0 drive-card-status-error" data-testid="drive-status-label">{UNAVAILABLE_TITLE}</span
+					>
 				{:else if isOfflinePresent}
 					<span
 						class="flex-shrink-0 badge badge-warning badge-sm drive-card-status-pill"
@@ -550,7 +561,10 @@
 		<!-- Media status + 4K -->
 		<div class="mb-2 flex flex-wrap items-center gap-1">
 			{#if drive.media_status}
-				<span class="drive-card-chip drive-card-chip-primary">
+				<span
+					class="drive-card-chip {isUnavailable ? 'drive-card-chip-danger' : 'drive-card-chip-primary'}"
+					data-testid="drive-media-status"
+				>
 					{drive.media_status.replace('_', ' ')}
 				</span>
 			{/if}
@@ -569,6 +583,14 @@
 				<Glyph name="info" class="h-3 w-3 drive-card-uhd-info" />
 			</label>
 		</div>
+
+		{#if isUnavailable}
+			<!-- Visible, not tooltip-only: a title is unreachable on touch and to most
+			     screen readers, and this text is how the operator gets the drive back. -->
+			<div class="mb-2" data-testid="drive-media-unavailable">
+				<StatusStrip tone="danger" title={UNAVAILABLE_TITLE} detail={UNAVAILABLE_HINT} />
+			</div>
+		{/if}
 
 		{#if scanning}
 			<!-- Visible text, not tooltip-only. The strip is the live region; the
@@ -839,6 +861,12 @@
 	.drive-card-chip-warning {
 		background: var(--color-warning-soft);
 		color: var(--color-on-warning-soft);
+	}
+	.drive-card-chip-danger {
+		background: var(--color-danger-soft);
+		color: var(--color-on-danger-soft);
+		font-size: 0.625rem;
+		font-weight: 600;
 	}
 	.drive-card-chip-primary {
 		background: var(--color-primary-tint-3);

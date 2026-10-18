@@ -434,6 +434,40 @@ describe('DriveCard', () => {
 		});
 	});
 
+	describe('drive node present but not openable (media_status=unavailable)', () => {
+		it('reads as an error with visible remediation, not a neutral chip', () => {
+			renderDrive({ media_status: 'unavailable' });
+			expect(screen.getByTestId('drive-media-status')).toHaveClass('drive-card-chip-danger');
+			expect(screen.getByTestId('drive-status-label')).toHaveTextContent("Can't open the drive");
+			const hint = screen.getByTestId('drive-media-unavailable');
+			expect(hint).toHaveTextContent(/isn't allowed to open it/);
+			expect(hint).toHaveTextContent(/CDROM_GID/);
+			expect(hint).toHaveTextContent(/unenroll and enroll the drive/);
+		});
+
+		it('keeps the neutral chip and no hint for a healthy media state', () => {
+			renderDrive({ media_status: 'loaded' });
+			expect(screen.getByTestId('drive-media-status')).toHaveClass('drive-card-chip-primary');
+			expect(screen.queryByTestId('drive-media-unavailable')).not.toBeInTheDocument();
+		});
+
+		it('lets a reported ripper error take the header', () => {
+			renderDrive({ media_status: 'unavailable', status: 'error', last_error: 'container exited 125' });
+			expect(screen.queryByTestId('drive-media-unavailable')).not.toBeInTheDocument();
+			expect(screen.getByText('error: container exited 125')).toBeInTheDocument();
+		});
+
+		it('essentials variant says it cannot open the drive instead of Ready', () => {
+			renderComponent(DriveCard, {
+				props: { drive: createDrive({ media_status: 'unavailable' }), variant: 'essentials' }
+			});
+			expect(screen.getByText("Can't open the drive")).toBeInTheDocument();
+			expect(screen.getByText(/CDROM_GID/)).toBeInTheDocument();
+			expect(screen.getByText("Can't open drive")).toBeInTheDocument(); // the media chip
+			expect(screen.queryByText('Ready')).not.toBeInTheDocument();
+		});
+	});
+
 	describe('disc scan in progress', () => {
 		it('says Scanning instead of Idle, with visible elapsed time', () => {
 			const started = new Date(Date.now() - 75_000).toISOString();
