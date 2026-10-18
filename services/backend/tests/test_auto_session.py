@@ -128,6 +128,7 @@ def _seed(db: FakeSession, *, job_status: JobStatus = JobStatus.RIPPED) -> Job:
             source_ref="1",
             expected_duration_seconds=8000,
             status=TrackStatus.DONE,
+            output_path="/raw/job_01JZXR7K3M5Q8N4VWA00000001/title_t01.mkv",
         )
     ]
     db.rows["transcode_tasks"] = []
@@ -508,6 +509,7 @@ async def test_backup_session_on_a_job_ripped_as_titles_is_a_media_mismatch(
                 index=2,
                 source_ref="backup",
                 status=TrackStatus.DONE,
+                output_path="/raw/job_01JZXR7K3M5Q8N4VWA00000001/title_t02.mkv",
                 excluded=True,
             )
         )
@@ -541,6 +543,7 @@ async def test_backup_session_on_a_backed_up_job_fans_out_one_task(tmp_path: Pat
             index=1,
             source_ref="backup",
             status=TrackStatus.DONE,
+            output_path="/raw/job_01JZXR7K3M5Q8N4VWA00000001/title_t01.mkv",
         )
     ]
     hub = CapturingHub()

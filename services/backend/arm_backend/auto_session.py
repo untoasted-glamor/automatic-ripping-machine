@@ -52,6 +52,7 @@ from arm_common import (
     SessionApplicationStatus,
     SessionRoute,
     Track,
+    TrackStatus,
     TranscodePreset,
     TranscodeTask,
     TranscodeTaskStatus,
@@ -68,8 +69,8 @@ logger = logging.getLogger("arm_backend.auto_session")
 
 _NO_TRACKS_DETAIL = "not ripped yet: the application fans out when the rip completes"
 _NO_OUTPUTS_DETAIL = (
-    "tracks exist but none resolved an output for this session (excluded, or none match its "
-    "media_type/track routing); the application stays parked"
+    "tracks exist but none resolved an output for this session (excluded, not ripped, or none match "
+    "its media_type/track routing); the application stays parked"
 )
 _TRANSCODE_DISABLED_DETAIL = (
     "transcoding is disabled (Settings > Transcoding); only passthrough sessions can be applied"
@@ -531,11 +532,19 @@ async def _fan_out_tasks_for_application(
     # track excluded, or none match the session's media_type/track-kind
     # routing); parking as "no_tracks" there would promise a rip-complete
     # fan-out that will never come, because the rip is already done.
-    resolved = compute_outputs(job, tracks, sess, transcode_preset)
+    #
+    # Only tracks the rip produced a file for are fanned out (DONE with an
+    # `output_path`). A FAILED or never-ripped track of a ripped_partial job
+    # has nothing to transcode: transcoder /register refuses its task, and the
+    # dispatcher would respawn it every tick, forever. The filter lives here,
+    # the one place tasks are created, not in compute_outputs, which also
+    # backs the pre-rip naming preview.
+    ripped = [t for t in tracks if t.status == TrackStatus.DONE and t.output_path]
+    resolved = compute_outputs(job, ripped, sess, transcode_preset)
 
     if not resolved:
-        # Tracks exist but none resolved to an output (excluded, or none
-        # match the session's media_type/track-kind routing). This is its
+        # Tracks exist but none resolved to an output (excluded, not ripped,
+        # or none match the session's media_type/track-kind routing). This is its
         # own honest, terminal outcome — never promote an empty QUEUED husk
         # that no drain will ever fill, and never claim "no_tracks" (which
         # promises a rip-complete fan-out that can't happen: the tracks are

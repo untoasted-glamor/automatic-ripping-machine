@@ -402,6 +402,7 @@ async def test_overwrite_mixed_collision_409_reports_full_collision_list(tmp_pat
             source_ref="2",
             expected_duration_seconds=8000,
             status=TrackStatus.DONE,
+            output_path="/raw/job_01JZXR7K3M5Q8N4VWA00000001/title_t02.mkv",
         )
     )
     path_1 = "Iron Man (2008)/Iron Man - 01 - plex-1080p-h-265.mkv"

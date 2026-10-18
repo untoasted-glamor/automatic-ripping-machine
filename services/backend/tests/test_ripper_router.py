@@ -182,6 +182,8 @@ def _track(
         index=index,
         source_ref=str(index),
         status=status,
+        # The ripper's DONE PATCH always carries the rip file.
+        output_path=f"/raw/{job_id}/title_t{index:02d}.mkv" if status == TrackStatus.DONE else None,
         attempts=0,
     )
 
@@ -2056,6 +2058,30 @@ def test_rip_complete_parked_fan_out_honours_review_exclusions(monkeypatch: pyte
     assert r.status_code == 200, r.text
     assert db.rows["session_applications"][0].status == SessionApplicationStatus.QUEUED
     assert [t.source_track_id for t in db.rows["transcode_tasks"]] == ["t1"]
+
+
+def test_rip_complete_parked_session_with_no_ripped_kept_track_queues_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The only kept track FAILED (the one that ripped was dropped in review), so
+    there is no file to transcode: the parked application stays waiting_identify
+    with no task, rather than a task the transcoder refuses at /register on every
+    dispatcher tick."""
+    from arm_backend import config as bcfg
+
+    bcfg.settings.MEDIA_ROOT = str(tmp_path)
+    db = FakeSession()
+    db.rows["jobs"] = [_job(status=JobStatus.RIPPING)]
+    db.rows["drives"] = [_drive()]
+    dropped = _track("t2", status=TrackStatus.DONE, index=2)
+    dropped.excluded = True
+    db.rows["tracks"] = [_track("t1", status=TrackStatus.FAILED), dropped]
+    _seed_parked_session(db)
+    r = _rip_complete(db, _Hub(), monkeypatch)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "ripped_partial"
+    assert db.rows["session_applications"][0].status == SessionApplicationStatus.WAITING_IDENTIFY
+    assert db.rows["transcode_tasks"] == []
 
 
 def test_rip_start_of_a_held_disc_leaves_the_parked_session_for_rip_complete() -> None:

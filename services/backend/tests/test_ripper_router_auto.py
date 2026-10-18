@@ -139,6 +139,7 @@ def _seed(
             source_ref="1",
             expected_duration_seconds=8000,
             status=TrackStatus.DONE,
+            output_path="/raw/job_01JZXR7K3M5Q8N4VWA00000001/title_t01.mkv",
         )
     ]
     db.rows["transcode_tasks"] = []
@@ -326,6 +327,7 @@ async def test_after_rip_drains_session_parked_on_held_disc_exactly_once(tmp_pat
     # rip-complete calls after_rip.
     for track in db.rows["tracks"]:
         track.status = TrackStatus.DONE
+        track.output_path = f"/raw/{track.job_id}/title_t{track.index:02d}.mkv"
     job.status = JobStatus.RIPPED
     outcomes = await after_rip(db, job, hub)  # type: ignore[arg-type]
 
@@ -368,6 +370,7 @@ async def test_after_rip_strict_token_surfaces_as_parked_failure_not_exception(t
 
     for track in db.rows["tracks"]:
         track.status = TrackStatus.DONE
+        track.output_path = f"/raw/{track.job_id}/title_t{track.index:02d}.mkv"
     job.status = JobStatus.RIPPED
     outcomes = await after_rip(db, job, hub)  # type: ignore[arg-type]
 

@@ -393,7 +393,8 @@ class RipStartResponse(BaseModel):
 #
 # "no_tracks" — no Track rows exist yet (pre-rip-start apply); fans out once
 # rip-complete/resolve drains it. "no_outputs" (Fix 75-7) — Track rows DO
-# exist but none qualify for this session's media_type/exclusion, so
+# exist but none qualify for this session's media_type/exclusion (or none
+# has a rip file: a FAILED track of a ripped_partial job), so
 # compute_outputs legitimately resolves zero paths; re-applying after the
 # rip won't change that outcome the way "no_tracks" implies it will.
 # "media_mismatch" — the session's media_type is incompatible with the
