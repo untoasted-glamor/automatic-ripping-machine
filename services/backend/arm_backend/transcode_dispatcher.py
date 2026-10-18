@@ -375,6 +375,8 @@ class TranscodeDispatcher:
         )
         if not stale:
             return 0
+        from arm_backend.passthrough_executor import IN_PROCESS_CLAIMANT
+
         touched = 0
         for task in stale:
             # Per-task wrap so the per-job log view picks up every line emitted
@@ -390,8 +392,20 @@ class TranscodeDispatcher:
                 track_id=task.source_track_id,
                 session_application_id=task.session_application_id,
             ):
-                # Release any GPU this task held; a stale claim cannot be holding
-                # a real container any more.
+                # A stale claim can still have a live container: a transcoder that
+                # only lost touch with the Backend keeps encoding. Remove it before
+                # freeing the slot, or the next spawn runs alongside it past
+                # MAX_PARALLEL_TRANSCODES. If docker can't confirm it's gone, keep
+                # the claim and retry on the next tick. An in-process passthrough
+                # has no container, and with no docker client there is nothing to
+                # remove and nothing can be spawned alongside it.
+                if task.claimed_by != IN_PROCESS_CLAIMANT and self._docker is not None:
+                    try:
+                        await asyncio.to_thread(self._remove_task_containers, task.id)
+                    except Exception as exc:
+                        logger.warning("stale transcoder not removed; keeping its claim task_id=%s: %s", task.id, exc)
+                        continue
+                # Release any GPU this task held; its container is gone now.
                 await release_gpu_for_task(db, task.id)
                 if task.attempts >= self._settings.ARM_TRANSCODE_MAX_ATTEMPTS:
                     task.status = TranscodeTaskStatus.FAILED
@@ -441,6 +455,28 @@ class TranscodeDispatcher:
                 touched += 1
         await db.commit()
         return touched
+
+    def _remove_task_containers(self, task_id: str) -> None:
+        """Force-remove every container labelled with `task_id`, running or not.
+
+        Raises on a docker error, so the caller knows a container may survive.
+        A dead ssh transport is rebuilt first: the stale task still holds its
+        slot, so no spawn would come along to rebuild it and the claim would
+        be kept forever.
+        """
+        from docker.errors import NotFound  # type: ignore[import-untyped]
+
+        containers = self._docker_call(
+            task_id,
+            "stale-container removal",
+            lambda docker: docker.containers.list(all=True, filters={"label": f"{_DOCKER_LABEL_KEY}={task_id}"}),
+        )
+        for container in containers:
+            logger.warning("removing stale transcoder task_id=%s container=%s", task_id, container.name)
+            try:
+                container.remove(force=True)
+            except NotFound:
+                pass  # auto_remove got there first
 
     # --- orphaned application sweep -------------------------------------------
 
@@ -1158,6 +1194,55 @@ class TranscodeDispatcher:
                 )
         return notes
 
+    def _docker_call[T](self, task_id: str, action: str, op: Callable[[Any], T]) -> T:
+        """Run `op(docker_client)`. On a dead docker-over-SSH transport,
+        rebuild the client once and retry; any other error propagates."""
+        try:
+            return op(self._docker)
+        except Exception as exc:
+            if self._docker_factory is None or not _is_transport_death(exc):
+                raise
+            logger.warning(
+                "docker ssh transport dead; rebuilding client and retrying %s task_id=%s: %s",
+                action,
+                task_id,
+                exc,
+            )
+            old_docker = self._docker
+            try:
+                rebuilt = self._docker_factory()
+            except Exception as factory_exc:  # noqa: BLE001 - factory failure must not wedge the dispatcher
+                logger.warning(
+                    "docker client rebuild failed; keeping old client task_id=%s: %s",
+                    task_id,
+                    factory_exc,
+                )
+                raise
+            if rebuilt is None:
+                # _build_docker_client (main.py) returns None on any
+                # failure (dev without the socket, unreachable/
+                # misconfigured remote host). Assigning self._docker =
+                # None here would make every LATER call raise
+                # AttributeError instead of the transport-death path
+                # that can actually recover — permanently wedging the
+                # dispatcher. Keep the old (dead) client instead: this
+                # call still fails via the original exception below, and
+                # the next tick will detect transport death again and
+                # retry the rebuild.
+                logger.warning(
+                    "docker client rebuild returned None; keeping old client task_id=%s",
+                    task_id,
+                )
+                raise
+            self._docker = rebuilt
+            try:
+                old_docker.close()
+            except Exception:  # noqa: BLE001 - best-effort cleanup of the dead client
+                pass
+            # A second failure here propagates to the caller's error
+            # handling — no infinite retry.
+            return op(self._docker)
+
     def _spawn_container(self, task: TranscodeTask, *, assignment: GpuAssignment | None = None) -> Any:
         remote = bool(self._settings.ARM_TRANSCODE_DOCKER_HOST)
         if remote and not self._settings.ARM_TRANSCODE_BACKEND_URL:
@@ -1230,51 +1315,7 @@ class TranscodeDispatcher:
             auto_remove=True,
             **extra_run_kwargs,
         )
-        try:
-            container = self._docker.containers.run(**run_kwargs)
-        except Exception as exc:
-            if self._docker_factory is not None and _is_transport_death(exc):
-                logger.warning(
-                    "docker ssh transport dead; rebuilding client and retrying spawn task_id=%s: %s",
-                    task.id,
-                    exc,
-                )
-                old_docker = self._docker
-                try:
-                    rebuilt = self._docker_factory()
-                except Exception as factory_exc:  # noqa: BLE001 - factory failure must not wedge the dispatcher
-                    logger.warning(
-                        "docker client rebuild failed; keeping old client task_id=%s: %s",
-                        task.id,
-                        factory_exc,
-                    )
-                    raise
-                if rebuilt is None:
-                    # _build_docker_client (main.py) returns None on any
-                    # failure (dev without the socket, unreachable/
-                    # misconfigured remote host). Assigning self._docker =
-                    # None here would make every LATER spawn raise
-                    # AttributeError instead of the transport-death path
-                    # that can actually recover — permanently wedging the
-                    # dispatcher. Keep the old (dead) client instead: this
-                    # tick's spawn still fails via the original exception
-                    # below, and the next tick's spawn attempt will detect
-                    # transport death again and retry the rebuild.
-                    logger.warning(
-                        "docker client rebuild returned None; keeping old client task_id=%s",
-                        task.id,
-                    )
-                    raise
-                self._docker = rebuilt
-                try:
-                    old_docker.close()
-                except Exception:  # noqa: BLE001 - best-effort cleanup of the dead client
-                    pass
-                # A second failure here propagates into the existing
-                # error handling in spawn_pending — no infinite retry.
-                container = self._docker.containers.run(**run_kwargs)
-            else:
-                raise
+        container = self._docker_call(task.id, "spawn", lambda docker: docker.containers.run(**run_kwargs))
         logger.info(
             "transcode spawned task_id=%s container=%s image=%s gpu=%s",
             task.id,
