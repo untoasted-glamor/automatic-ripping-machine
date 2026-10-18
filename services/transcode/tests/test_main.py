@@ -9,7 +9,13 @@ import pytest
 from arm_common import ContainerFormat, MediaType, TranscodeTool
 from arm_common.schemas import TranscodePresetView
 from arm_transcode.heartbeat import ProgressState
-from arm_transcode.main import _MAX_ERROR_CHARS, _clip_error
+from arm_transcode.main import (
+    _MAX_ERROR_CHARS,
+    CancelRequested,
+    ClaimRevoked,
+    _clip_error,
+    _encode_until_stopped,
+)
 
 
 def test_clip_error_passes_short_messages_through() -> None:
@@ -154,7 +160,6 @@ async def test_run_encoder_ffmpeg_vaapi_routes_without_preset_ref(monkeypatch, t
         final_output=tmp_path / "out.mkv",
         duration_seconds=100,
         state=state,
-        cancel_event=asyncio.Event(),
     )
     assert size == 99
     assert state.pct == 100
@@ -185,5 +190,48 @@ async def test_run_encoder_ffmpeg_vaapi_requires_gpu_device(monkeypatch, tmp_pat
             final_output=tmp_path / "out.mkv",
             duration_seconds=100,
             state=state,
-            cancel_event=asyncio.Event(),
         )
+
+
+async def _slow_encode(started: asyncio.Event, outcome: list[str]) -> int:
+    started.set()
+    try:
+        await asyncio.sleep(60)
+    except asyncio.CancelledError:
+        outcome.append("cancelled")
+        raise
+    return 1
+
+
+async def test_encode_until_stopped_returns_the_encoders_size() -> None:
+    async def encode() -> int:
+        return 1234
+
+    size = await _encode_until_stopped(encode(), cancel_event=asyncio.Event(), revoked_event=asyncio.Event())
+    assert size == 1234
+
+
+async def test_encode_until_stopped_propagates_encoder_errors() -> None:
+    async def encode() -> int:
+        raise RuntimeError("HandBrakeCLI exited rc=3")
+
+    with pytest.raises(RuntimeError, match="rc=3"):
+        await _encode_until_stopped(encode(), cancel_event=asyncio.Event(), revoked_event=asyncio.Event())
+
+
+@pytest.mark.parametrize(("which", "expected"), [("cancel", CancelRequested), ("revoke", ClaimRevoked)])
+async def test_encode_until_stopped_cancels_the_encoder(which: str, expected: type[Exception]) -> None:
+    cancel_event, revoked_event = asyncio.Event(), asyncio.Event()
+    started, outcome = asyncio.Event(), []
+
+    async def stop_after_start() -> None:
+        await started.wait()
+        (cancel_event if which == "cancel" else revoked_event).set()
+
+    stopper = asyncio.create_task(stop_after_start())
+    with pytest.raises(expected):
+        await _encode_until_stopped(
+            _slow_encode(started, outcome), cancel_event=cancel_event, revoked_event=revoked_event
+        )
+    await stopper
+    assert outcome == ["cancelled"]

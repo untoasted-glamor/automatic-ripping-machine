@@ -97,6 +97,13 @@ async def transcode_handbrake(
     try:
         await _consume_progress(proc.stdout, progress_callback)
         rc = await proc.wait()
+    except BaseException:
+        # Cancelled (user cancel or a revoked claim): don't leave HandBrakeCLI
+        # encoding on its own.
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        await proc.wait()
+        raise
     finally:
         with contextlib.suppress(asyncio.CancelledError):
             await stderr_task

@@ -233,3 +233,59 @@ async def test_transcode_ffmpeg_vaapi_duration_none_completes_with_no_progress(m
     )
     assert size == 7
     assert called["n"] == 0
+
+
+class _RunningProc:
+    """A subprocess that keeps encoding until it is killed."""
+
+    def __init__(self) -> None:
+        self._killed = asyncio.Event()
+        self.killed = False
+        self.stdout = self
+        self.stderr = self
+
+    async def readline(self) -> bytes:
+        await self._killed.wait()
+        return b""
+
+    async def wait(self) -> int:
+        await self._killed.wait()
+        return -9
+
+    def kill(self) -> None:
+        self.killed = True
+        self._killed.set()
+
+
+async def test_cancelling_the_encode_kills_the_subprocess(monkeypatch, tmp_path) -> None:
+    import arm_transcode.engines.ffmpeg_vaapi as ffmpeg_vaapi
+
+    proc = _RunningProc()
+
+    async def fake_create(*_a: Any, **_kw: Any) -> _RunningProc:
+        return proc
+
+    monkeypatch.setattr(ffmpeg_vaapi.asyncio, "create_subprocess_exec", fake_create)
+
+    async def _noop(*_a: Any) -> None:
+        return None
+
+    encode = asyncio.create_task(
+        transcode_ffmpeg_vaapi(
+            input_path=tmp_path / "in.mkv",
+            output_path=tmp_path / "out.mkv",
+            spec=get_encoder("vaapi_h265"),
+            device="/dev/dri/renderD128",
+            container=ContainerFormat.MKV,
+            extra_args=None,
+            duration_seconds=60,
+            progress_callback=_noop,
+        )
+    )
+    await asyncio.sleep(0.01)
+    encode.cancel()
+    # Unkilled, the encoder never closes its pipes and the cancel never finishes.
+    done, _ = await asyncio.wait([encode], timeout=1.0)
+    assert done, "cancel hung: the encoder subprocess was not killed"
+    assert encode.cancelled()
+    assert proc.killed

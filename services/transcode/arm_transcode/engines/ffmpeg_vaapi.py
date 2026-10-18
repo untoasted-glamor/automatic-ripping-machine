@@ -16,6 +16,7 @@ that is deliberate for this engine.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
 
@@ -107,11 +108,19 @@ async def transcode_ffmpeg_vaapi(
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     stderr_buf: list[str] = []
     assert proc.stdout is not None and proc.stderr is not None
-    await asyncio.gather(
-        consume_progress(proc.stdout, duration_seconds, progress_callback),
-        drain_stderr(proc.stderr, stderr_buf),
-    )
-    rc = await proc.wait()
+    try:
+        await asyncio.gather(
+            consume_progress(proc.stdout, duration_seconds, progress_callback),
+            drain_stderr(proc.stderr, stderr_buf),
+        )
+        rc = await proc.wait()
+    except BaseException:
+        # Cancelled (user cancel or a revoked claim): don't leave ffmpeg
+        # encoding on its own.
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        await proc.wait()
+        raise
     if rc != 0:
         raise RuntimeError(f"ffmpeg_vaapi exited {rc}: {' | '.join(stderr_buf[-30:])}")
     return output_path.stat().st_size

@@ -268,3 +268,55 @@ async def test_transcode_audio_progress_callback_exception_does_not_propagate(mo
         progress_callback=cb,
     )
     assert size == 20
+
+
+class _RunningProc:
+    """A subprocess that keeps encoding until it is killed."""
+
+    def __init__(self) -> None:
+        self._killed = asyncio.Event()
+        self.killed = False
+        self.stdout = self
+        self.stderr = self
+
+    async def readline(self) -> bytes:
+        await self._killed.wait()
+        return b""
+
+    async def wait(self) -> int:
+        await self._killed.wait()
+        return -9
+
+    def kill(self) -> None:
+        self.killed = True
+        self._killed.set()
+
+
+async def test_cancelling_the_encode_kills_the_subprocess(monkeypatch, tmp_path) -> None:
+
+    proc = _RunningProc()
+
+    async def fake_create(*_a, **_kw):
+        return proc
+
+    monkeypatch.setattr(ffmpeg_audio.asyncio, "create_subprocess_exec", fake_create)
+
+    async def _noop(*_a) -> None:
+        return None
+
+    encode = asyncio.create_task(
+        transcode_audio(
+            input_path=tmp_path / "in.wav",
+            output_path=tmp_path / "out.flac",
+            preset_ref="flac",
+            duration_seconds=60,
+            progress_callback=_noop,
+        )
+    )
+    await asyncio.sleep(0.01)
+    encode.cancel()
+    # Unkilled, the encoder never closes its pipes and the cancel never finishes.
+    done, _ = await asyncio.wait([encode], timeout=1.0)
+    assert done, "cancel hung: the encoder subprocess was not killed"
+    assert encode.cancelled()
+    assert proc.killed
