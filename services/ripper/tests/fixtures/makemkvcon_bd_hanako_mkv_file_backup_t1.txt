@@ -1,0 +1,229 @@
+MSG:1005,0,1,"MakeMKV v2.0.0 linux(x64-release) started","%1 started","MakeMKV v2.0.0 linux(x64-release)"
+PRGT:5018,0,"Scanning CD-ROM devices"
+PRGC:5018,0,"Scanning CD-ROM devices"
+PRGV:0,0,65536
+DRV:0,2,999,12,"BD-RE HL-DT-ST BD-RE BU40N 1.03 912HS003567","ToiletBound_HanakoKun_D1","/dev/sr0"
+DRV:1,256,999,0,"","",""
+DRV:2,256,999,0,"","",""
+DRV:3,256,999,0,"","",""
+DRV:4,256,999,0,"","",""
+DRV:5,256,999,0,"","",""
+DRV:6,256,999,0,"","",""
+DRV:7,256,999,0,"","",""
+DRV:8,256,999,0,"","",""
+DRV:9,256,999,0,"","",""
+DRV:10,256,999,0,"","",""
+DRV:11,256,999,0,"","",""
+DRV:12,256,999,0,"","",""
+DRV:13,256,999,0,"","",""
+DRV:14,256,999,0,"","",""
+DRV:15,256,999,0,"","",""
+PRGV:0,0,65536
+MSG:3006,131072,1,"Opening files on harddrive at file:///raw/_spike/bd/bk_enc","Opening files on harddrive at %1","file:///raw/_spike/bd/bk_enc"
+PRGT:3404,0,"Opening Blu-ray disc"
+PRGC:3400,0,"Processing AV clips"
+PRGC:3401,0,"Processing movie playlists"
+PRGC:3402,0,"Decrypting"
+MSG:5085,0,0,"Loaded content hash table, will verify integrity of M2TS files.","Loaded content hash table, will verify integrity of M2TS files."
+PRGC:3406,0,"Processing BD+ code"
+PRGV:0,1851,65536
+PRGC:3103,0,"Processing titles"
+MSG:3307,0,2,"File 00008.mpls was added as title #0","File %1 was added as title #%2","00008.mpls","0"
+MSG:3307,0,2,"File 00013.mpls was added as title #1","File %1 was added as title #%2","00013.mpls","1"
+PRGV:11275,3579,65536
+MSG:3307,16777216,2,"File 00014.mpls was added as title #2","File %1 was added as title #%2","00014.mpls","2"
+MSG:3025,16777216,3,"Title #00043.mpls has length of 21 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00043.mpls","21","120"
+MSG:3025,0,3,"Title #00021.mpls has length of 80 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00021.mpls","80","120"
+MSG:3307,16777216,2,"File 00015.mpls was added as title #3","File %1 was added as title #%2","00015.mpls","3"
+MSG:3307,0,2,"File 00012.mpls was added as title #4","File %1 was added as title #%2","00012.mpls","4"
+PRGV:21140,5553,65536
+MSG:3307,0,2,"File 00011.mpls was added as title #5","File %1 was added as title #%2","00011.mpls","5"
+MSG:3307,0,2,"File 00009.mpls was added as title #6","File %1 was added as title #%2","00009.mpls","6"
+MSG:3307,16777216,2,"File 00010.mpls was added as title #7","File %1 was added as title #%2","00010.mpls","7"
+MSG:3025,16777216,3,"Title #00034.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00034.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00006.m2ts has length of 33 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00006.m2ts","33","120"
+MSG:3025,16777216,3,"Title #00026.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00026.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00036.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00036.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00049.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00049.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00030.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00030.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00041.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00041.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00057.m2ts has length of 11 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00057.m2ts","11","120"
+MSG:3025,16777216,3,"Title #00002.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00002.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00037.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00037.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00031.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00031.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00005.m2ts has length of 8 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00005.m2ts","8","120"
+MSG:3025,16777216,3,"Title #00024.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00024.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00055.m2ts has length of 0 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00055.m2ts","0","120"
+MSG:3025,16777216,3,"Title #00040.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00040.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00027.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00027.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00038.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00038.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00042.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00042.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00044.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00044.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00029.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00029.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00047.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00047.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00032.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00032.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00051.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00051.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00004.m2ts has length of 17 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00004.m2ts","17","120"
+MSG:3025,16777216,3,"Title #00050.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00050.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00003.m2ts has length of 5 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00003.m2ts","5","120"
+MSG:3025,16777216,3,"Title #00035.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00035.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00043.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00043.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00054.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00054.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00053.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00053.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00025.m2ts has length of 0 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00025.m2ts","0","120"
+MSG:3025,16777216,3,"Title #00045.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00045.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00008.m2ts has length of 36 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00008.m2ts","36","120"
+MSG:3025,16777216,3,"Title #00052.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00052.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00033.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00033.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00028.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00028.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00039.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00039.m2ts","10","120"
+MSG:3025,0,3,"Title #00048.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00048.m2ts","10","120"
+PRGV:65536,6664,65536
+MSG:5011,0,0,"Operation successfully completed","Operation successfully completed"
+PRGT:5024,0,"Saving all titles to MKV files"
+MSG:5014,131072,2,"Saving 1 titles into directory file:///raw/_spike/bd/out_enc/t1","Saving %1 titles into directory %2","1","file:///raw/_spike/bd/out_enc/t1"
+PRGC:5057,0,"Analyzing seamless segments"
+PRGV:0,0,65536
+PRGC:5017,0,"Saving to MKV file"
+PRGV:163,163,65536
+PRGV:422,239,65536
+PRGV:761,761,65536
+PRGV:1230,1017,65536
+PRGV:1382,1382,65536
+PRGV:1984,1860,65536
+PRGV:2498,2498,65536
+PRGV:3412,2896,65536
+PRGV:3789,3789,65536
+PRGV:4569,4291,65536
+PRGV:4926,4926,65536
+PRGV:5733,5327,65536
+PRGV:6075,6076,65536
+PRGV:7054,6679,65536
+PRGV:7205,7205,65536
+PRGV:7864,7637,65536
+PRGV:8220,8220,65536
+PRGV:8897,8895,65536
+PRGV:9474,9474,65536
+PRGV:10051,9737,65536
+PRGV:10453,10453,65536
+PRGV:11000,10891,65536
+PRGV:11396,11396,65536
+PRGV:11950,11810,65536
+PRGV:12607,12607,65536
+PRGV:13205,12946,65536
+PRGV:13572,13572,65536
+PRGV:13866,13681,65536
+PRGV:14180,14180,65536
+PRGV:15036,14734,65536
+PRGV:15498,15498,65536
+PRGV:16001,15925,65536
+PRGV:16206,16207,65536
+PRGV:16818,16718,65536
+PRGV:17185,17185,65536
+PRGV:17592,17440,65536
+PRGV:17983,17983,65536
+PRGV:18989,18827,65536
+PRGV:19459,19459,65536
+PRGV:20030,19812,65536
+PRGV:20654,20654,65536
+PRGV:21366,21204,65536
+PRGV:21682,21682,65536
+PRGV:22304,22303,65536
+PRGV:22760,22760,65536
+PRGV:23284,23157,65536
+PRGV:23718,23718,65536
+PRGV:24210,24209,65536
+PRGV:24599,24599,65536
+PRGV:25234,25018,65536
+PRGV:25739,25739,65536
+PRGV:26408,26261,65536
+PRGV:26583,26583,65536
+PRGV:27085,26887,65536
+PRGV:27203,27203,65536
+PRGV:28402,28180,65536
+PRGV:28875,28875,65536
+PRGV:29319,29105,65536
+PRGV:30139,30139,65536
+PRGV:30834,30560,65536
+PRGV:31193,31193,65536
+PRGV:32036,31850,65536
+PRGV:32401,32401,65536
+PRGV:33029,32874,65536
+PRGV:33184,33184,65536
+PRGV:33959,33542,65536
+PRGV:34166,34166,65536
+PRGV:34974,34521,65536
+PRGV:35254,35254,65536
+PRGV:35847,35691,65536
+PRGV:36341,36341,65536
+PRGV:37174,36772,65536
+PRGV:37674,37674,65536
+PRGV:38491,38314,65536
+PRGV:38739,38739,65536
+PRGV:39269,38981,65536
+PRGV:39495,39495,65536
+PRGV:39938,39895,65536
+PRGV:40168,40168,65536
+PRGV:40746,40371,65536
+PRGV:40965,40965,65536
+PRGV:41451,41376,65536
+PRGV:41764,41764,65536
+PRGV:41953,41848,65536
+PRGV:42346,42346,65536
+PRGV:42599,42588,65536
+PRGV:43234,43234,65536
+PRGV:43983,43743,65536
+PRGV:44371,44371,65536
+PRGV:45029,44830,65536
+PRGV:45464,45464,65536
+PRGV:46107,46032,65536
+PRGV:46628,46628,65536
+PRGV:47436,47223,65536
+PRGV:47725,47725,65536
+PRGV:48259,48111,65536
+PRGV:48339,48339,65536
+PRGV:48953,48806,65536
+PRGV:49275,49275,65536
+PRGV:49802,49702,65536
+PRGV:50384,50384,65536
+PRGV:50765,50658,65536
+PRGV:51003,51003,65536
+PRGV:51438,51320,65536
+PRGV:51697,51697,65536
+PRGV:52146,52077,65536
+PRGV:52957,52957,65536
+PRGV:53303,53197,65536
+PRGV:53600,53600,65536
+PRGV:53931,53707,65536
+PRGV:54326,54326,65536
+PRGV:55019,54913,65536
+PRGV:55375,55375,65536
+PRGV:55688,55586,65536
+PRGV:55838,55838,65536
+PRGV:56713,56581,65536
+PRGV:56891,56891,65536
+PRGV:57364,57246,65536
+PRGV:57718,57718,65536
+PRGV:58157,57985,65536
+PRGV:58652,58652,65536
+PRGV:58956,58954,65536
+PRGV:59191,59191,65536
+PRGV:59646,59578,65536
+PRGV:59817,59817,65536
+PRGV:59986,59962,65536
+PRGV:60432,60432,65536
+PRGV:60563,60510,65536
+PRGV:60871,60871,65536
+PRGV:61076,60994,65536
+PRGV:61443,61443,65536
+PRGV:61973,61842,65536
+PRGV:62385,62385,65536
+PRGV:63113,62812,65536
+PRGV:63543,63543,65536
+PRGV:64109,63818,65536
+PRGV:64526,64526,65536
+PRGV:65242,65023,65536
+PRGV:65500,65500,65536
+PRGV:65536,65536,65536
+MSG:5005,128,1,"1 titles saved","%1 titles saved","1"
+MSG:5036,260,1,"Copy complete. 1 titles saved.","Copy complete. %1 titles saved.","1"

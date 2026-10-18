@@ -1,0 +1,346 @@
+MSG:1005,0,1,"MakeMKV v2.0.0 linux(x64-release) started","%1 started","MakeMKV v2.0.0 linux(x64-release)"
+PRGT:5018,0,"Scanning CD-ROM devices"
+PRGC:5018,0,"Scanning CD-ROM devices"
+PRGV:0,0,65536
+MSG:2003,0,3,"Error 'Scsi error - NOT READY:LOGICAL UNIT IS IN PROCESS OF BECOMING READY' occurred while reading 'BD-RE HL-DT-ST BD-RE BU40N 1.03 912HS003567' at offset '24142086144'","Error '%1' occurred while reading '%2' at offset '%3'","Scsi error - NOT READY:LOGICAL UNIT IS IN PROCESS OF BECOMING READY","BD-RE HL-DT-ST BD-RE BU40N 1.03 912HS003567","24142086144"
+MSG:2003,16777216,3,"Error 'Scsi error - NOT READY:LOGICAL UNIT IS IN PROCESS OF BECOMING READY' occurred while reading 'BD-RE HL-DT-ST BD-RE BU40N 1.03 912HS003567' at offset '24142149632'","Error '%1' occurred while reading '%2' at offset '%3'","Scsi error - NOT READY:LOGICAL UNIT IS IN PROCESS OF BECOMING READY","BD-RE HL-DT-ST BD-RE BU40N 1.03 912HS003567","24142149632"
+MSG:1012,0,2,"udf: 	node fe/efe failed!","%1 %2","udf:","	node fe/efe failed!"
+MSG:2003,0,3,"Error 'Scsi error - NOT READY:LOGICAL UNIT IS IN PROCESS OF BECOMING READY' occurred while reading 'BD-RE HL-DT-ST BD-RE BU40N 1.03 912HS003567' at offset '655360'","Error '%1' occurred while reading '%2' at offset '%3'","Scsi error - NOT READY:LOGICAL UNIT IS IN PROCESS OF BECOMING READY","BD-RE HL-DT-ST BD-RE BU40N 1.03 912HS003567","655360"
+MSG:2003,16777216,3,"Error 'Scsi error - NOT READY:LOGICAL UNIT IS IN PROCESS OF BECOMING READY' occurred while reading 'BD-RE HL-DT-ST BD-RE BU40N 1.03 912HS003567' at offset '655360'","Error '%1' occurred while reading '%2' at offset '%3'","Scsi error - NOT READY:LOGICAL UNIT IS IN PROCESS OF BECOMING READY","BD-RE HL-DT-ST BD-RE BU40N 1.03 912HS003567","655360"
+MSG:1012,0,2,"udf: UDF mount: disc not properly formatted or damaged disc (rootdirs failing)","%1 %2","udf:","UDF mount: disc not properly formatted or damaged disc (rootdirs failing)"
+MSG:2003,0,3,"Error 'Scsi error - NOT READY:LOGICAL UNIT IS IN PROCESS OF BECOMING READY' occurred while reading 'BD-RE HL-DT-ST BD-RE BU40N 1.03 912HS003567' at offset '32768'","Error '%1' occurred while reading '%2' at offset '%3'","Scsi error - NOT READY:LOGICAL UNIT IS IN PROCESS OF BECOMING READY","BD-RE HL-DT-ST BD-RE BU40N 1.03 912HS003567","32768"
+DRV:0,2,999,0,"BD-RE HL-DT-ST BD-RE BU40N 1.03 912HS003567","","/dev/sr0"
+DRV:1,256,999,0,"","",""
+DRV:2,256,999,0,"","",""
+DRV:3,256,999,0,"","",""
+DRV:4,256,999,0,"","",""
+DRV:5,256,999,0,"","",""
+DRV:6,256,999,0,"","",""
+DRV:7,256,999,0,"","",""
+DRV:8,256,999,0,"","",""
+DRV:9,256,999,0,"","",""
+DRV:10,256,999,0,"","",""
+DRV:11,256,999,0,"","",""
+DRV:12,256,999,0,"","",""
+DRV:13,256,999,0,"","",""
+DRV:14,256,999,0,"","",""
+DRV:15,256,999,0,"","",""
+DRV:0,0,999,0,"BD-RE HL-DT-ST BD-RE BU40N 1.03 912HS003567","","/dev/sr0"
+MSG:3006,131072,1,"Opening files on harddrive at file:///raw/_spike/bd/bk_enc","Opening files on harddrive at %1","file:///raw/_spike/bd/bk_enc"
+PRGT:3404,0,"Opening Blu-ray disc"
+PRGC:3400,0,"Processing AV clips"
+PRGC:3401,0,"Processing movie playlists"
+PRGC:3402,0,"Decrypting"
+MSG:5085,0,0,"Loaded content hash table, will verify integrity of M2TS files.","Loaded content hash table, will verify integrity of M2TS files."
+PRGC:3406,0,"Processing BD+ code"
+PRGC:3103,0,"Processing titles"
+MSG:3307,0,2,"File 00008.mpls was added as title #0","File %1 was added as title #%2","00008.mpls","0"
+MSG:3307,0,2,"File 00013.mpls was added as title #1","File %1 was added as title #%2","00013.mpls","1"
+MSG:3307,16777216,2,"File 00014.mpls was added as title #2","File %1 was added as title #%2","00014.mpls","2"
+MSG:3025,16777216,3,"Title #00043.mpls has length of 21 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00043.mpls","21","120"
+MSG:3025,0,3,"Title #00021.mpls has length of 80 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00021.mpls","80","120"
+MSG:3307,16777216,2,"File 00015.mpls was added as title #3","File %1 was added as title #%2","00015.mpls","3"
+MSG:3307,0,2,"File 00012.mpls was added as title #4","File %1 was added as title #%2","00012.mpls","4"
+PRGV:21140,5553,65536
+MSG:3307,0,2,"File 00011.mpls was added as title #5","File %1 was added as title #%2","00011.mpls","5"
+MSG:3307,0,2,"File 00009.mpls was added as title #6","File %1 was added as title #%2","00009.mpls","6"
+MSG:3307,16777216,2,"File 00010.mpls was added as title #7","File %1 was added as title #%2","00010.mpls","7"
+MSG:3025,16777216,3,"Title #00034.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00034.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00006.m2ts has length of 33 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00006.m2ts","33","120"
+MSG:3025,16777216,3,"Title #00026.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00026.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00036.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00036.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00049.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00049.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00030.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00030.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00041.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00041.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00057.m2ts has length of 11 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00057.m2ts","11","120"
+MSG:3025,16777216,3,"Title #00002.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00002.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00037.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00037.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00031.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00031.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00005.m2ts has length of 8 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00005.m2ts","8","120"
+MSG:3025,16777216,3,"Title #00024.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00024.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00055.m2ts has length of 0 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00055.m2ts","0","120"
+MSG:3025,16777216,3,"Title #00040.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00040.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00027.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00027.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00038.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00038.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00042.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00042.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00044.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00044.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00029.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00029.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00047.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00047.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00032.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00032.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00051.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00051.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00004.m2ts has length of 17 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00004.m2ts","17","120"
+MSG:3025,16777216,3,"Title #00050.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00050.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00003.m2ts has length of 5 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00003.m2ts","5","120"
+MSG:3025,16777216,3,"Title #00035.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00035.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00043.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00043.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00054.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00054.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00053.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00053.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00025.m2ts has length of 0 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00025.m2ts","0","120"
+MSG:3025,16777216,3,"Title #00045.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00045.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00008.m2ts has length of 36 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00008.m2ts","36","120"
+MSG:3025,16777216,3,"Title #00052.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00052.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00033.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00033.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00028.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00028.m2ts","10","120"
+MSG:3025,16777216,3,"Title #00039.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00039.m2ts","10","120"
+MSG:3025,0,3,"Title #00048.m2ts has length of 10 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","00048.m2ts","10","120"
+MSG:5011,0,0,"Operation successfully completed","Operation successfully completed"
+PRGT:5024,0,"Saving all titles to MKV files"
+MSG:5014,131072,2,"Saving 1 titles into directory file:///raw/_spike/bd/out_enc/t0","Saving %1 titles into directory %2","1","file:///raw/_spike/bd/out_enc/t0"
+PRGC:5057,0,"Analyzing seamless segments"
+PRGC:5017,0,"Saving to MKV file"
+PRGV:57,57,65536
+PRGV:331,331,65536
+PRGV:704,704,65536
+PRGV:1047,1047,65536
+PRGV:1302,1302,65536
+PRGV:1715,1715,65536
+PRGV:2020,2020,65536
+PRGV:2381,2335,65536
+PRGV:2679,2657,65536
+PRGV:3055,3024,65536
+PRGV:3337,3301,65536
+PRGV:3676,3591,65536
+PRGV:4016,3981,65536
+PRGV:4299,4292,65536
+PRGV:4625,4625,65536
+PRGV:4952,4952,65536
+PRGV:5292,5292,65536
+PRGV:5675,5675,65536
+PRGV:5996,5996,65536
+PRGV:6321,6321,65536
+PRGV:6658,6658,65536
+PRGV:6994,6994,65536
+PRGV:7269,7269,65536
+PRGV:7604,7604,65536
+PRGV:7924,7924,65536
+PRGV:8257,8257,65536
+PRGV:8540,8540,65536
+PRGV:8833,8833,65536
+PRGV:9168,9168,65536
+PRGV:9446,9446,65536
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e051b000] No restart header present in substream 1.","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e051b000] No restart header present in substream 1."
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e051b000] channel count mismatch","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e051b000] channel count mismatch"
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e0519e80] No restart header present in substream 0.","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e0519e80] No restart header present in substream 0."
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e0519e80] channel count mismatch","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e0519e80] channel count mismatch"
+PRGV:9672,9672,65536
+PRGV:9922,9922,65536
+PRGV:10246,10246,65536
+PRGV:10546,10546,65536
+PRGV:10867,10867,65536
+PRGV:11184,11184,65536
+PRGV:11573,11573,65536
+PRGV:11877,11877,65536
+PRGV:12240,12241,65536
+PRGV:12585,12585,65536
+PRGV:12859,12859,65536
+PRGV:13157,13157,65536
+PRGV:13407,13407,65536
+PRGV:13676,13676,65536
+PRGV:14045,14045,65536
+PRGV:14339,14339,65536
+PRGV:14564,14564,65536
+PRGV:14926,14926,65536
+PRGV:15296,15296,65536
+PRGV:15564,15564,65536
+PRGV:15845,15845,65536
+PRGV:16109,16109,65536
+PRGV:16415,16415,65536
+PRGV:16669,16669,65536
+PRGV:16959,16959,65536
+PRGV:17288,17262,65536
+PRGV:17636,17615,65536
+PRGV:17923,17876,65536
+PRGV:18259,18243,65536
+PRGV:18564,18543,65536
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e0b6e980] No restart header present in substream 1.","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e0b6e980] No restart header present in substream 1."
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e0b6e980] channel count mismatch","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e0b6e980] channel count mismatch"
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e0149600] No restart header present in substream 0.","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e0149600] No restart header present in substream 0."
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e0149600] channel count mismatch","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e0149600] channel count mismatch"
+PRGV:18861,18859,65536
+PRGV:19075,19043,65536
+PRGV:19396,19381,65536
+PRGV:19714,19628,65536
+PRGV:19995,19968,65536
+PRGV:20367,20330,65536
+PRGV:20643,20609,65536
+PRGV:21030,21000,65536
+PRGV:21317,21302,65536
+PRGV:21683,21656,65536
+PRGV:21990,21967,65536
+PRGV:22333,22305,65536
+PRGV:22644,22595,65536
+PRGV:22923,22884,65536
+PRGV:23167,23120,65536
+PRGV:23432,23418,65536
+PRGV:23752,23723,65536
+PRGV:24094,24053,65536
+PRGV:24402,24336,65536
+PRGV:24732,24691,65536
+PRGV:25058,25028,65536
+PRGV:25371,25350,65536
+PRGV:25660,25638,65536
+PRGV:26022,25982,65536
+PRGV:26277,26238,65536
+PRGV:26608,26570,65536
+PRGV:26919,26898,65536
+PRGV:27251,27232,65536
+PRGV:27588,27544,65536
+PRGV:27859,27834,65536
+PRGV:28183,28118,65536
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e04f25c0] No restart header present in substream 1.","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e04f25c0] No restart header present in substream 1."
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e04f25c0] channel count mismatch","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e04f25c0] channel count mismatch"
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e042a540] No restart header present in substream 0.","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e042a540] No restart header present in substream 0."
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e042a540] channel count mismatch","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e042a540] channel count mismatch"
+PRGV:28362,28341,65536
+PRGV:28685,28608,65536
+PRGV:28967,28917,65536
+PRGV:29207,29183,65536
+PRGV:29525,29487,65536
+PRGV:29852,29828,65536
+PRGV:30178,30151,65536
+PRGV:30511,30490,65536
+PRGV:30843,30795,65536
+PRGV:31180,31148,65536
+PRGV:31530,31491,65536
+PRGV:31779,31743,65536
+PRGV:32082,32060,65536
+PRGV:32400,32360,65536
+PRGV:32696,32640,65536
+PRGV:32968,32935,65536
+PRGV:33297,33275,65536
+PRGV:33596,33558,65536
+PRGV:33966,33933,65536
+PRGV:34289,34260,65536
+PRGV:34619,34561,65536
+PRGV:34963,34941,65536
+PRGV:35274,35246,65536
+PRGV:35476,35476,65536
+PRGV:35759,35759,65536
+PRGV:36090,36090,65536
+PRGV:36423,36423,65536
+PRGV:36730,36730,65536
+PRGV:37026,37026,65536
+PRGV:37367,37367,65536
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e1bf9840] No restart header present in substream 1.","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e1bf9840] No restart header present in substream 1."
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e1bf9840] channel count mismatch","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e1bf9840] channel count mismatch"
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e11c7080] No restart header present in substream 0.","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e11c7080] No restart header present in substream 0."
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e11c7080] channel count mismatch","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e11c7080] channel count mismatch"
+PRGV:37679,37679,65536
+PRGV:37961,37961,65536
+PRGV:38287,38288,65536
+PRGV:38648,38648,65536
+PRGV:38994,38994,65536
+PRGV:39293,39293,65536
+PRGV:39598,39598,65536
+PRGV:39909,39909,65536
+PRGV:40182,40182,65536
+PRGV:40431,40431,65536
+PRGV:40732,40732,65536
+PRGV:41001,41001,65536
+PRGV:41326,41326,65536
+PRGV:41635,41635,65536
+PRGV:41895,41895,65536
+PRGV:42142,42142,65536
+PRGV:42387,42387,65536
+PRGV:42712,42712,65536
+PRGV:43049,43049,65536
+PRGV:43339,43339,65536
+PRGV:43668,43668,65536
+PRGV:43913,43913,65536
+PRGV:44250,44250,65536
+PRGV:44525,44525,65536
+PRGV:44848,44848,65536
+PRGV:45144,45144,65536
+PRGV:45441,45441,65536
+PRGV:45830,45830,65536
+PRGV:46129,46129,65536
+PRGV:46434,46434,65536
+PRGV:46704,46704,65536
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e1d99740] No restart header present in substream 1.","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e1d99740] No restart header present in substream 1."
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e1d99740] channel count mismatch","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e1d99740] channel count mismatch"
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e17f5640] No restart header present in substream 0.","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e17f5640] No restart header present in substream 0."
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e17f5640] channel count mismatch","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e17f5640] channel count mismatch"
+PRGV:47000,47000,65536
+PRGV:47251,47251,65536
+PRGV:47590,47590,65536
+PRGV:47847,47847,65536
+PRGV:48135,48135,65536
+PRGV:48413,48413,65536
+PRGV:48702,48702,65536
+PRGV:48946,48946,65536
+PRGV:49331,49331,65536
+PRGV:49633,49633,65536
+PRGV:49908,49908,65536
+PRGV:50264,50264,65536
+PRGV:50569,50569,65536
+PRGV:50771,50771,65536
+PRGV:51122,51122,65536
+PRGV:51446,51446,65536
+PRGV:51750,51750,65536
+PRGV:52094,52094,65536
+PRGV:52379,52379,65536
+PRGV:52672,52672,65536
+PRGV:53023,53023,65536
+PRGV:53343,53343,65536
+PRGV:53644,53644,65536
+PRGV:53935,53935,65536
+PRGV:54273,54273,65536
+PRGV:54495,54495,65536
+PRGV:54750,54750,65536
+PRGV:54960,54960,65536
+PRGV:55271,55271,65536
+PRGV:55473,55473,65536
+PRGV:55737,55737,65536
+PRGV:56079,56079,65536
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e204b3c0] No restart header present in substream 1.","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e204b3c0] No restart header present in substream 1."
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e204b3c0] channel count mismatch","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e204b3c0] channel count mismatch"
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e034f140] No restart header present in substream 0.","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e034f140] No restart header present in substream 0."
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e034f140] channel count mismatch","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e034f140] channel count mismatch"
+PRGV:56331,56331,65536
+PRGV:56679,56679,65536
+PRGV:56917,56917,65536
+PRGV:57216,57216,65536
+PRGV:57529,57529,65536
+PRGV:57778,57778,65536
+PRGV:58091,58091,65536
+PRGV:58417,58417,65536
+PRGV:58760,58760,65536
+PRGV:59071,59071,65536
+PRGV:59355,59355,65536
+PRGV:59641,59641,65536
+PRGV:59927,59927,65536
+PRGV:60216,60216,65536
+PRGV:60324,60324,65536
+PRGV:60442,60442,65536
+PRGV:60556,60556,65536
+PRGV:60710,60710,65536
+PRGV:60845,60845,65536
+PRGV:60913,60913,65536
+PRGV:61120,61120,65536
+PRGV:61291,61291,65536
+PRGV:61469,61469,65536
+PRGV:61604,61604,65536
+PRGV:61735,61735,65536
+PRGV:61884,61884,65536
+PRGV:62032,62032,65536
+PRGV:62127,62127,65536
+PRGV:62317,62317,65536
+PRGV:62427,62427,65536
+PRGV:62688,62688,65536
+PRGV:63008,63008,65536
+PRGV:63233,63233,65536
+PRGV:63489,63458,65536
+PRGV:63765,63747,65536
+PRGV:64056,64024,65536
+PRGV:64376,64322,65536
+PRGV:64619,64604,65536
+PRGV:64906,64892,65536
+PRGV:65178,65162,65536
+PRGV:65477,65442,65536
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e227c440] No restart header present in substream 1.","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e227c440] No restart header present in substream 1."
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e227c440] channel count mismatch","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e227c440] channel count mismatch"
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e03c9180] No restart header present in substream 0.","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e03c9180] No restart header present in substream 0."
+MSG:4054,8192,1,"FFMPEG_ERROR: FFDEC000: [truehd @ 0x74f7e03c9180] channel count mismatch","FFMPEG_ERROR: %1","FFDEC000: [truehd @ 0x74f7e03c9180] channel count mismatch"
+PRGV:65536,65536,65536
+MSG:5005,128,1,"1 titles saved","%1 titles saved","1"
+MSG:5036,260,1,"Copy complete. 1 titles saved.","Copy complete. %1 titles saved.","1"
