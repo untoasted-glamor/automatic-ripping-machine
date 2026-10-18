@@ -265,6 +265,27 @@ describe('Job detail page (v3)', () => {
 		});
 	});
 
+	it('shows why re-including a track was refused instead of failing silently', async () => {
+		const skipped = {
+			job: createJob({ id: 'job_42', status: 'ripped' }),
+			tracks: [createTrack({ id: 'trk_1', index: 3, excluded: true, output_path: null })],
+			fingerprints: []
+		} as any;
+		// Initial load + the refetch after the failed PATCH.
+		mockFetchJob.mockResolvedValueOnce(skipped).mockResolvedValueOnce(skipped);
+		mockUpdateTrack.mockRejectedValueOnce(
+			new Error('track 3 was skipped at rip time and has no file; re-rip the disc to include it')
+		);
+		renderComponent(Page);
+		const checkbox = (await screen.findByRole('checkbox')) as HTMLInputElement;
+		expect(checkbox.checked).toBe(false);
+		await fireEvent.click(checkbox);
+		expect(await screen.findByTestId('track-error')).toHaveTextContent(/re-rip the disc to include it/);
+		// The refetch restores the server-truth checkbox state.
+		await waitFor(() => expect(mockFetchJob).toHaveBeenCalledTimes(2));
+		expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+	});
+
 	it('renders filename and fingerprints; hides the fallback Tracklist when track rows exist', async () => {
 		mockFetchJob.mockResolvedValue({
 			job: createJob({

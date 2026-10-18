@@ -31,6 +31,7 @@
 	let jobError = $state<Error | null>(null);
 	let activePanel = $state<string | null>(null);
 	let editingTrackId = $state<string | null>(null);
+	let trackError = $state<string | null>(null);
 	let previewItems = $state<NamingPreviewItem[]>([]);
 	let previewByTrack = $derived(new Map(previewItems.map((i) => [i.track_id, i])));
 
@@ -139,9 +140,19 @@
 		loadJob();
 	}
 
-	async function toggleExcluded(trackId: string, excluded: boolean) {
+	async function toggleExcluded(trackId: string, input: HTMLInputElement) {
+		const excluded = !input.checked;
+		trackError = null;
 		try {
 			await updateTrack($page.params.id ?? '', trackId, { excluded });
+		} catch (e) {
+			// e.g. 409: a title skipped at rip time has no file, so it can't be
+			// re-included without re-ripping the disc. Say so instead of silently
+			// snapping the checkbox back.
+			trackError = `Couldn't update the track: ${e instanceof Error ? e.message : 'unknown error'}`;
+			// The refetch below can't restore the box: the server value didn't change,
+			// so nothing re-renders it. Undo the click directly.
+			input.checked = excluded;
 		} finally {
 			// Refetch regardless: on success to pick up new naming/derived state,
 			// on failure to restore the last server-truth value in the checkbox.
@@ -380,6 +391,15 @@
 						Tracks ({tracks.length})
 					</h2>
 				</div>
+				{#if trackError}
+					<p
+						role="alert"
+						data-testid="track-error"
+						class="mb-3 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400"
+					>
+						{trackError}
+					</p>
+				{/if}
 				<div class="overflow-x-auto rounded-lg border border-primary/20 dark:border-primary/20">
 					<table class="responsive-table w-full text-left text-sm">
 						<thead class="bg-page text-gray-600 dark:bg-primary/5 dark:text-gray-400">
@@ -472,7 +492,7 @@
 											<input
 												type="checkbox"
 												checked={!track.excluded}
-												onchange={(e) => toggleExcluded(track.id, !(e.currentTarget as HTMLInputElement).checked)}
+												onchange={(e) => toggleExcluded(track.id, e.currentTarget as HTMLInputElement)}
 												title="Include this track in transcode output (the disc still rips in full)"
 												class="h-4 w-4 rounded border-primary/30 text-primary focus:ring-primary"
 											/>
