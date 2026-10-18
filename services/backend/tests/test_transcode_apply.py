@@ -463,6 +463,66 @@ def test_season_token_falls_back_to_job_season() -> None:
     assert resolved[0].output_path.startswith("Show (2020)/Season 02/Show S02E01 - ")
 
 
+def _builtin_tv_session() -> Session:
+    from arm_backend.seeders import SESSIONS
+
+    seed = next(s for s in SESSIONS if s["id"] == "ses_builtin_tv_plex_1080p")
+    return Session(**seed)
+
+
+def _box_set_job(**columns: object) -> Job:
+    """A ripped TV box-set disc with nothing in metadata_json: season and disc
+    number come only from the job columns the identify dialog writes."""
+    return Job(
+        id="job_box_set",
+        drive_id="drv_x",
+        disc_type=DiscType.DVD,
+        title="ACCA",
+        year=2017,
+        status=JobStatus.RIPPED,
+        media_type=MediaType.TV,
+        **columns,  # type: ignore[arg-type]
+    )
+
+
+def _box_set_track() -> Track:
+    return Track(
+        id="trk_1",
+        job_id="job_box_set",
+        kind=TrackKind.VIDEO_TITLE,
+        index=1,
+        source_ref="1",
+        expected_duration_seconds=1440,
+    )
+
+
+def test_builtin_tv_session_reads_season_and_disc_from_the_job_columns() -> None:
+    """Applying the built-in TV session to a ripped box-set disc must resolve
+    {season} and {disc} from job.season / job.disc_number (zero-padded), not
+    422 with "token {disc} resolved empty" because metadata_json has neither."""
+    job = _box_set_job(season=1, disc_number=2)
+    resolved = compute_outputs(job, [_box_set_track()], _builtin_tv_session(), _tv_preset())
+    assert resolved[0].output_path.startswith("ACCA (2017)/Season 01/ACCA - S01D02T01 (00h24m) - ")
+
+
+def test_builtin_tv_session_job_disc_column_beats_legacy_metadata() -> None:
+    job = _box_set_job(season=3, disc_number=4)
+    job.metadata_json = {"season": "01", "disc": "02"}
+    resolved = compute_outputs(job, [_box_set_track()], _builtin_tv_session(), _tv_preset())
+    assert "/Season 03/ACCA - S03D04T01 " in resolved[0].output_path
+
+
+@pytest.mark.parametrize("token", ["season", "disc"])
+def test_builtin_tv_session_unset_season_or_disc_still_422s(token: str) -> None:
+    """Season and disc are operator input: unset, the required token fails
+    with a hint at the way out (mark it optional)."""
+    filled = {"season": {"disc_number": 1}, "disc": {"season": 1}}[token]
+    with pytest.raises(TemplateValidationError) as exc:
+        compute_outputs(_box_set_job(**filled), [_box_set_track()], _builtin_tv_session(), _tv_preset())
+    assert f"token {{{token}}} resolved empty" in str(exc.value)
+    assert f"mark it optional as {{{token}?}}" in str(exc.value)
+
+
 # ── two-episode {episode} range + role-aware episode-token checks ──
 
 
