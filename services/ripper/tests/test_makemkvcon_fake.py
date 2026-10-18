@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._makemkvcon_fake import FIXTURES, HANAKO_BD, SINTEL_ISO, file_size, install
+from tests._makemkvcon_fake import ACCA_DVD, FIXTURES, HANAKO_BD, SINTEL_ISO, file_size, install
 
 
 async def _run(*argv: str) -> tuple[list[str], str, int]:
@@ -77,6 +77,75 @@ async def test_backup_reads_back_with_its_own_numbering(monkeypatch, tmp_path):
         assert rc == 0
         assert _table(info) == _recorded_table(recording)
     assert [inv.command for inv in fake.drive_reads] == ["backup"]
+
+
+async def test_dvd_backup_is_one_iso_image_read_back_with_iso(monkeypatch, tmp_path):
+    """Recorded on ACCA_CS_D1: `backup disc:0 <path>` writes one image file at
+    `<path>`; `iso:` reads it with the disc's own tables, at 0 s and 120 s."""
+    fake = install(monkeypatch, disc=ACCA_DVD)
+    image = tmp_path / "bk" / "disc.iso"
+
+    lines, _, rc = await _run("makemkvcon", "-r", "--progress=-stdout", "backup", "disc:0", str(image))
+
+    assert rc == 0
+    assert lines[-2:] == [
+        'MSG:5070,128,0,"Backup done","Backup done"',
+        'MSG:5081,260,0,"Backup done.","Backup done."',
+    ]
+    assert any(f'\\"file://{image}\\"' in line for line in lines if line.startswith("MSG:5072,"))
+    assert image.is_file() and image.stat().st_size > 0
+    for flags, recording in (
+        (["--minlength=0"], "makemkvcon_dvd_acca_info_iso_backup_minlength0_noscan_tray_open.txt"),
+        ([], "makemkvcon_dvd_acca_info_iso_backup_noscan_tray_open.txt"),
+    ):
+        info, _, rc = await _run("makemkvcon", "-r", "--noscan", *flags, "info", f"iso:{image}")
+        assert rc == 0
+        assert _table(info) == _recorded_table(recording)
+    assert [inv.command for inv in fake.drive_reads] == ["backup"]
+
+
+async def test_a_file_read_of_a_dvd_image_fails_silently(monkeypatch, tmp_path):
+    """Recorded: rc 10, no MSG after the start-up line, nothing on stderr."""
+    install(monkeypatch, disc=ACCA_DVD)
+    image = tmp_path / "disc.iso"
+    await _run("makemkvcon", "-r", "backup", "disc:0", str(image))
+
+    lines, stderr, rc = await _run("makemkvcon", "-r", "--noscan", "--minlength=0", "info", f"file:{image}")
+
+    assert rc == 10
+    assert stderr == ""
+    assert [line for line in lines if line.startswith("MSG:")] == [lines[0]]
+    assert lines[0].startswith("MSG:1005,")
+    assert _table(lines) == []
+
+
+async def test_dvd_remux_from_the_image_replays_the_recording(monkeypatch, tmp_path):
+    """Recorded: `--noscan --minlength=0 mkv iso:<image> 3` → B1_t03.mkv (2:49:02)."""
+    fake = install(monkeypatch, disc=ACCA_DVD)
+    image, out = tmp_path / "disc.iso", tmp_path / "out"
+    await _run("makemkvcon", "-r", "backup", "disc:0", str(image))
+
+    lines, _, rc = await _run(
+        "makemkvcon", "-r", "--progress=-stdout", "--noscan", "--minlength=0", "mkv", f"iso:{image}", "3", str(out)
+    )
+
+    recorded = (FIXTURES / "makemkvcon_dvd_acca_mkv_iso_backup_minlength0_t3_orig11.txt").read_text().splitlines()
+    assert rc == 0
+    assert [p.name for p in out.iterdir()] == ["B1_t03.mkv"]
+    assert (out / "B1_t03.mkv").stat().st_size == file_size(8_090_341_376)
+    assert [line for line in lines if not line.startswith("MSG:5014,")] == [
+        line for line in recorded if not line.startswith("MSG:5014,")
+    ]
+    assert any(f"file://{out}" in line for line in lines if line.startswith("MSG:5014,"))
+    assert fake.invocations[-1].probes_drive is False
+
+
+async def test_a_drive_index_lookup_reads_no_disc(monkeypatch):
+    fake = install(monkeypatch, disc=HANAKO_BD)
+
+    await _run("makemkvcon", "-r", "--cache=1", "info", "disc:9999")
+
+    assert fake.drive_reads == []
 
 
 async def test_backup_refuses_a_dev_source(monkeypatch, tmp_path):

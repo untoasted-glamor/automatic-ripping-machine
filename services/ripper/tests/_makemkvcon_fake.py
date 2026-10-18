@@ -15,30 +15,39 @@ What is modelled, and where it comes from (S0 "Spike results"):
   (TINFO 27, `<prefix>_tNN.mkv`) is renumbered with it.
 - **`info <src>`** replays that table.
 - **`mkv <src> <id|all> <dir>`** writes `<TINFO 27 name>` per saved title into
-  `<dir>` and streams the save phase (`PRGT:5024`, `MSG:5014`, one
+  `<dir>`. A single-title `mkv` that was recorded (`Recording.remuxes`: same
+  source, `--minlength` and id) replays that recording; anything else streams
+  a save phase built from the recorded shape (`PRGT:5024`, `MSG:5014`, one
   `PRGC:5017,<position>` per title, `PRGV`, `MSG:5005`/`5036`, or `MSG:5037`
   when a title failed). An id with no title exits 12 and writes nothing, with
   no error message (recorded). `mkv all` itself was never recorded; its save
   phase is the recorded single-title shape repeated.
-- **`backup disc:<N> <dir>`** replays the recorded BD backup stream, writes the
-  recorded folder layout (empty files) and makes `<dir>` readable as
-  `file:<dir>`, with the backup's own title numbering when the source has a
-  backup recording (on the Hanako-kun BD every id differs from the disc's).
-  `N` must be the index of the `DRV:` line for the device. `backup dev:…`
-  exits 10 (recorded). A `--decrypt` BD backup is written, but every later
-  `file:` read of it exits 139 (recorded segfault).
+- **`backup disc:<N> <path>`** replays the recorded backup stream of that disc
+  type and writes what the real tool wrote:
+  - Blu-ray: a folder at `<path>` with the recorded layout (empty files),
+    read back as `file:<path>`.
+  - DVD: one ISO image file at `<path>` (sparse), read back as `iso:<path>`.
+    A `file:` read of the image exits 10 with nothing but the drive list
+    (recorded on ACCA_CS_D1).
+
+  Read back, a backup has its own title numbering when the source has a
+  backup recording (on the Hanako-kun BD every id differs from the disc's;
+  on the ACCA DVD they match). `N` must be the index of the `DRV:` line for
+  the device. `backup dev:…` exits 10 (recorded). A `--decrypt` BD backup is
+  written, but every later `file:` read of it exits 139 (recorded segfault).
 - **Drive lines.** Every invocation lists the drives first. The configured
   device gets a `DRV:` line at `drive_index`, with the seated disc's label,
   unless `--noscan` is passed: then the drive is listed but its disc isn't
   read (recorded).
-- **Invocations** are recorded with `reads_drive` (handed a `dev:` or `disc:`
-  source: the drive-access contract, testing rule 5) and `probes_drive`
-  (started without `--noscan` while a drive is attached).
+- **Invocations** are recorded with `reads_drive` (handed the drive itself,
+  `dev:<device>` or `disc:<its index>`: the drive-access contract, testing
+  rule 5; a `disc:9999` lookup reads nothing) and `probes_drive` (started
+  without `--noscan` while a drive is attached).
 
 Not recorded, so guessed and marked as such: a source that can't be opened
-(`MSG:5010`, exit 1), a DVD backup (the BD stream with a `VIDEO_TS/` layout,
-read back with the disc's own numbering), and how a single title fails to save
-(`MSG:5003`, no file, exit 0 unless the test says otherwise).
+(`MSG:5010`, exit 1), `iso:` on a Blu-ray backup folder (treated the same),
+and how a single title fails to save (`MSG:5003`, no file, exit 0 unless the
+test says otherwise).
 
 `.mkv` files are sparse and `TINFO 11 // SIZE_DIVISOR` bytes long, so each
 title's file has a size of its own and the suite never writes gigabytes.
@@ -82,18 +91,48 @@ _KNOWN_OPTION_PREFIXES = ("--progress=", "--minlength=", "--cache=", "--messages
 class Recording:
     """A source as `makemkvcon -r info` described it at `--minlength=0`.
 
-    `backup` is how a `backup` of it reads back via `file:`; None means
-    "with the same numbering as the source" (assumed, not recorded).
+    `backup` is how a `backup` of it reads back; None means "with the same
+    numbering as the source" (assumed, not recorded). `remuxes` are recorded
+    single-title `mkv` runs of this source, as `(minlength, id, fixture)`.
     """
 
     info_min0: str
     backup: Recording | None = None
+    remuxes: tuple[tuple[int, int, str], ...] = ()
 
 
-SINTEL_ISO = Recording("makemkvcon_iso_sintel_info_minlength0.txt")
+SINTEL_ISO = Recording(
+    "makemkvcon_iso_sintel_info_minlength0.txt",
+    remuxes=(
+        (120, 0, "makemkvcon_iso_sintel_mkv_t0.txt"),
+        (120, 1, "makemkvcon_iso_sintel_mkv_t1.txt"),
+        (120, 3, "makemkvcon_iso_sintel_mkv_noscan_t3_drive_seated.txt"),
+        (600, 2, "makemkvcon_iso_sintel_mkv_minlength600_t2.txt"),
+    ),
+)
 HANAKO_BD = Recording(
     "makemkvcon_bd_hanako_info_minlength0.txt",
-    backup=Recording("makemkvcon_bd_hanako_info_file_backup_minlength0.txt"),
+    backup=Recording(
+        "makemkvcon_bd_hanako_info_file_backup_minlength0.txt",
+        remuxes=(
+            (120, 0, "makemkvcon_bd_hanako_mkv_file_backup_t0_playall_drive_not_ready.txt"),
+            (120, 1, "makemkvcon_bd_hanako_mkv_file_backup_t1.txt"),
+            (120, 7, "makemkvcon_bd_hanako_mkv_file_backup_t7_no_drive.txt"),
+            (600, 1, "makemkvcon_bd_hanako_mkv_file_backup_minlength600_t1.txt"),
+        ),
+    ),
+)
+# ACCA_CS_D1: one 2:49:02 title plus three short clips at minlength 0. Its
+# backup is an ISO image whose tables are byte-identical to the disc's.
+ACCA_DVD = Recording(
+    "makemkvcon_dvd_acca_info_minlength0.txt",
+    backup=Recording(
+        "makemkvcon_dvd_acca_info_iso_backup_minlength0_noscan_tray_open.txt",
+        remuxes=(
+            (0, 2, "makemkvcon_dvd_acca_mkv_iso_backup_minlength0_t2_orig04.txt"),
+            (0, 3, "makemkvcon_dvd_acca_mkv_iso_backup_minlength0_t3_orig11.txt"),
+        ),
+    ),
 )
 
 
@@ -203,12 +242,10 @@ class Invocation:
     noscan: bool
     decrypt: bool
     drive_attached: bool
+    # Handed the optical drive itself as its source (`dev:<device>` or
+    # `disc:<its DRV index>`).
+    reads_drive: bool = False
     returncode: int | None = None
-
-    @property
-    def reads_drive(self) -> bool:
-        """Handed the optical drive itself as its source."""
-        return self.source.startswith(("dev:", "disc:"))
 
     @property
     def probes_drive(self) -> bool:
@@ -303,6 +340,15 @@ class _Backup:
     blu_ray: bool
     decrypted: bool
 
+    @property
+    def image(self) -> bool:
+        """A DVD backup is one ISO image file; a Blu-ray backup a folder."""
+        return not self.blu_ray
+
+
+# Recorded paths the replayed streams name, swapped for the test's own.
+_RECORDED_URL_RE = re.compile(r'file://(?:/raw/_spike|/raw/_fixtures|/spike|/tmp)[^\\"]*')
+
 
 @dataclass
 class FakeMakemkvcon:
@@ -361,14 +407,16 @@ class FakeMakemkvcon:
         for flag in flags:
             if flag.startswith("--minlength="):
                 minlength = int(flag.split("=", 1)[1])
+        source = positionals[1]
         inv = Invocation(
             argv=tuple(argv),
             command=command,
-            source=positionals[1],
+            source=source,
             minlength=minlength,
             noscan="--noscan" in flags,
             decrypt="--decrypt" in flags,
             drive_attached=self.device is not None,
+            reads_drive=self.device is not None and source in (f"dev:{self.device}", f"disc:{self.drive_index}"),
         )
         self.invocations.append(inv)
         stdout, stderr, returncode = self._run(inv, positionals[2:])
@@ -401,8 +449,9 @@ class FakeMakemkvcon:
             out.append(line)
         return out
 
-    def _open(self, source: str) -> tuple[Recording, bool] | None:
-        """(recording, is a decrypted BD backup) for a source, or None."""
+    def _open(self, source: str) -> tuple[Recording, bool] | _Backup | None:
+        """(recording, is a decrypted BD backup) for a source that opens, the
+        backup for a `file:` read of a DVD image (fails silently), or None."""
         scheme, _, rest = source.partition(":")
         if scheme == "dev" and self.disc is not None and rest == self.device:
             return self.disc, False
@@ -410,10 +459,13 @@ class FakeMakemkvcon:
             return self.disc, False
         if scheme == "iso" and rest in self.isos:
             return self.isos[rest], False
+        backup = self._backups.get(Path(rest).resolve()) if scheme in ("file", "iso") else None
+        if backup is None:
+            return None
+        if backup.image:
+            return (backup.recording, False) if scheme == "iso" else backup
         if scheme == "file":
-            backup = self._backups.get(Path(rest).resolve())
-            if backup is not None:
-                return backup.recording, backup.decrypted and backup.blu_ray
+            return backup.recording, backup.decrypted
         return None
 
     def _failure(self, inv: Invocation, *, title: str | None = None) -> _Failure | None:
@@ -429,6 +481,11 @@ class FakeMakemkvcon:
             text = f"Failed to open disc {inv.source} (fake: no such source)"
             msg = f'MSG:5010,0,0,"{text}","{text}"'
             return [_STARTED_MSG, *self._drv_block(inv.noscan), msg], [text], 1
+        if isinstance(opened, _Backup):
+            # Recorded: `file:` on a DVD backup image exits 10 after listing
+            # the drives, with no MSG and nothing on stderr.
+            recorded = _fixture_lines("makemkvcon_dvd_acca_info_file_on_iso_backup_rc10_noscan_after_backup.txt")
+            return list(self._with_drives(recorded, inv.noscan)), [], 10
         recording, segfaults = opened
         table = _load(recording.info_min0)
         header = self._with_drives(table.header, inv.noscan)
@@ -448,7 +505,7 @@ class FakeMakemkvcon:
             return self._info(table, header, inv.minlength), [], 0
         if inv.command == "backup":
             return self._backup(recording, table, Path(args[0]), inv), [], 0
-        return self._mkv(table, header, inv, title_arg=args[0], out_dir=Path(args[1]))
+        return self._mkv(recording, table, header, inv, title_arg=args[0], out_dir=Path(args[1]))
 
     def _kept(self, table: _Table, minlength: int) -> list[_Title]:
         return [t for t in table.titles if t.duration >= minlength]
@@ -460,40 +517,64 @@ class FakeMakemkvcon:
             lines.extend(_renumber(title, new))
         return lines
 
-    def _backup(self, recording: Recording, table: _Table, out_dir: Path, inv: Invocation) -> list[_Step]:
-        name = (
-            "makemkvcon_bd_hanako_backup_decrypt_prgv_thinned.txt"
-            if inv.decrypt
-            else "makemkvcon_bd_hanako_backup_encrypted_prgv_thinned.txt"
-        )
-        recorded_dir = re.compile(r"file:///raw/_spike/bd/bk\w*")
+    def _backup(self, recording: Recording, table: _Table, out_path: Path, inv: Invocation) -> list[_Step]:
+        if not table.blu_ray:
+            name = "makemkvcon_dvd_acca_backup_iso_image_prgv_thinned.txt"
+        elif inv.decrypt:
+            name = "makemkvcon_bd_hanako_backup_decrypt_prgv_thinned.txt"
+        else:
+            name = "makemkvcon_bd_hanako_backup_encrypted_prgv_thinned.txt"
         lines: list[_Step] = []
         for line in self._with_drives(_fixture_lines(name), inv.noscan):
             if line.startswith("MSG:5070,"):
-                lines.append(functools.partial(self._write_backup, recording, table, out_dir, inv.decrypt))
-            lines.append(recorded_dir.sub(f"file://{out_dir}", line))
+                lines.append(functools.partial(self._write_backup, recording, table, out_path, inv.decrypt))
+            lines.append(_RECORDED_URL_RE.sub(f"file://{out_path}", line))
         return lines
 
-    def _write_backup(self, recording: Recording, table: _Table, out_dir: Path, decrypted: bool) -> None:
-        out_dir.mkdir(parents=True, exist_ok=True)
+    def _write_backup(self, recording: Recording, table: _Table, out_path: Path, decrypted: bool) -> None:
         if table.blu_ray:
+            out_path.mkdir(parents=True, exist_ok=True)
             layout = _fixture_lines("makemkvcon_bd_hanako_backup_encrypted_layout.txt")
             paths = [p.removeprefix("./") for p in layout if p not in (".", "")]
             dirs = {str(Path(p).parent) for p in paths}
             for rel in paths:
-                target = out_dir / rel
+                target = out_path / rel
                 if rel in dirs:
                     target.mkdir(parents=True, exist_ok=True)
                 else:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.touch()
         else:
-            (out_dir / "VIDEO_TS").mkdir(exist_ok=True)
-            (out_dir / "VIDEO_TS" / "VIDEO_TS.IFO").touch()
-        self._backups[out_dir.resolve()] = _Backup(recording.backup or recording, table.blu_ray, decrypted)
+            # Recorded on ACCA_CS_D1: one ISO image at exactly <path>, about
+            # the size of the disc's used space.
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_sparse(out_path, file_size(sum(t.size_bytes for t in table.titles)))
+        self._backups[out_path.resolve()] = _Backup(recording.backup or recording, table.blu_ray, decrypted)
+
+    def _replay_remux(
+        self, recording: Recording, inv: Invocation, *, wanted: int, title: _Title, out_dir: Path
+    ) -> list[_Step] | None:
+        """The recorded stream of this exact single-title `mkv`, if there is one."""
+        fixture = next((f for m, i, f in recording.remuxes if (m, i) == (inv.minlength, wanted)), None)
+        if fixture is None or any(f.command == "mkv" for f in self._failures):
+            return None
+        lines: list[_Step] = []
+        for line in self._with_drives(_fixture_lines(fixture), inv.noscan):
+            if not inv.probes_drive and line.startswith(("MSG:2003,", "MSG:1012,")):
+                continue  # the drive's disc is only read (and only errors) when probed
+            if line.startswith("MSG:5014,"):
+                line = _RECORDED_URL_RE.sub(f"file://{out_dir}", line)
+            elif line.startswith("MSG:3006,"):
+                line = _RECORDED_URL_RE.sub(f"file://{inv.source.partition(':')[2]}", line)
+            elif line.startswith("MSG:5005,"):
+                lines.append(
+                    functools.partial(_write_sparse, out_dir / output_name(title, wanted), file_size(title.size_bytes))
+                )
+            lines.append(line)
+        return lines
 
     def _mkv(
-        self, table: _Table, header: list[str], inv: Invocation, *, title_arg: str, out_dir: Path
+        self, recording: Recording, table: _Table, header: list[str], inv: Invocation, *, title_arg: str, out_dir: Path
     ) -> tuple[list[_Step], list[str], int]:
         kept = self._kept(table, inv.minlength)
         numbered = list(enumerate(kept))
@@ -503,6 +584,10 @@ class FakeMakemkvcon:
                 # Recorded: exit 12, no MSG error, no save phase, no file.
                 return list(header), [], 12
             numbered = [(wanted, kept[wanted])]
+            replayed = self._replay_remux(recording, inv, wanted=wanted, title=kept[wanted], out_dir=out_dir)
+            if replayed is not None:
+                out_dir.mkdir(parents=True, exist_ok=True)
+                return replayed, [], 0
 
         out_dir.mkdir(parents=True, exist_ok=True)
         url = f"file://{out_dir}"
