@@ -236,14 +236,15 @@ async def _rip_optical(
     # sorted ascending. MakeMKV's `mkv all` output files carry an
     # output-position suffix (`_t00`, `_t01`, ...) rather than the
     # source title index; file `_tNN` belongs to the NN-th entry of this
-    # list, which is how attribution gets back to tracks. Tracks with no
-    # `duration_seconds` (rare — scan didn't find one) are treated as
-    # eligible to avoid dropping them silently; if MakeMKV skips them,
-    # they fall through to "produced no .mkv" downstream.
+    # list, which is how attribution gets back to tracks. The duration is
+    # the scan's (`_title_duration`): a fresh rip's tracks have no measured
+    # one yet. A track with no duration at all (rare: the scan didn't find
+    # one) is treated as eligible to avoid dropping it silently; if MakeMKV
+    # skips it, it falls through to "produced no .mkv" downstream.
     eligible_source_indexes = sorted(
         idx
         for idx, t in track_by_index.items()
-        if t.duration_seconds is None or t.duration_seconds >= min_length_seconds
+        if (duration := _title_duration(t)) is None or duration >= min_length_seconds
     )
 
     # Titles an earlier pass of this job already settled (a resume after the
@@ -462,7 +463,7 @@ async def _rip_optical(
             await _ensure_started(title_idx, track)
             result = disc_result.titles.get(title_idx)
             if result is None:
-                duration = track.duration_seconds
+                duration = _title_duration(track)
                 if duration is not None and duration < min_length_seconds:
                     err = f"track duration {duration}s below minlength={min_length_seconds}s; makemkvcon skipped it"
                 else:
@@ -499,6 +500,17 @@ async def _rip_optical(
         # hashing files that are about to be wiped.
         hasher.cancel()
         raise
+
+
+def _title_duration(track: TrackView) -> int | None:
+    """The title's length as far as `--minlength` is concerned: the measured
+    duration once a rip has set it, else the scan's estimate. At rip-start
+    `duration_seconds` is null (it's the post-rip actual), so judging by it
+    alone counted every title eligible, and one MakeMKV left out for being
+    short shifted every later `_tNN` file onto the wrong track."""
+    if track.duration_seconds is not None:
+        return track.duration_seconds
+    return track.expected_duration_seconds
 
 
 def _delete_skipped_outputs(output_dir: Path, eligible_source_indexes: list[int], skipped: set[int]) -> None:

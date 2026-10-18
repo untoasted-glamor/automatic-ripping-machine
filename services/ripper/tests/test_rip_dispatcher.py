@@ -1449,3 +1449,60 @@ async def test_rip_all_logs_makemkv_messages_at_info(monkeypatch, tmp_path, capl
 
     info_text = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
     assert any("Failed to open disc title 1" in m for m in info_text)
+
+
+def _scanned_track(idx: int, expected_duration_seconds: int | None) -> TrackView:
+    """A track as rip-start sends it: no measured duration yet, only the
+    scan's estimate."""
+    return TrackView(
+        id=f"trk_{idx}",
+        job_id="job_test",
+        kind=TrackKind.VIDEO_TITLE,
+        index=idx,
+        source_ref=str(idx),
+        status=TrackStatus.QUEUED,
+        output_path=None,
+        size_bytes=None,
+        duration_seconds=None,
+        expected_duration_seconds=expected_duration_seconds,
+        attempts=0,
+        last_error=None,
+    )
+
+
+async def test_rip_all_judges_minlength_by_the_scan_estimate_at_rip_start(monkeypatch, tmp_path):
+    """At rip-start no track has a measured duration. Title 1 is scanned at
+    60s, below the 120s minlength, so makemkvcon leaves it out and numbers
+    title 2's file `_t01`: title 1 must not count as eligible, or title 2
+    would look for `_t02` and fail."""
+    _fake_makemkvcon(monkeypatch, _mkv_all_script([0, 1], [0, 1]))
+    tracks = [_scanned_track(0, 1800), _scanned_track(1, 60), _scanned_track(2, 1800)]
+
+    reports, _ = await _rip_tracks(tracks, tmp_path)
+
+    (t0,) = reports["trk_0"]
+    (t1,) = reports["trk_1"]
+    (t2,) = reports["trk_2"]
+    assert t0.ok is True and t0.output_path == tmp_path / "ACCA_CS_D2_t00.mkv"
+    assert t2.ok is True and t2.output_path == tmp_path / "ACCA_CS_D2_t01.mkv"
+    assert t1.ok is False and "track duration 60s below minlength=120s" in (t1.error or "")
+
+
+async def test_rip_all_counts_a_title_with_no_known_duration_as_eligible(monkeypatch, tmp_path):
+    captured: dict[str, Any] = {}
+    _stub_rip_disc(monkeypatch, RipDiscResult(overall_error=None, titles={}), captured=captured)
+
+    async def noop(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    await rip_all(
+        disc_type=DiscType.DVD,
+        device_path="/dev/sr0",
+        tracks=[_scanned_track(0, None), _scanned_track(1, 30), _scanned_track(2, 600)],
+        output_dir=tmp_path,
+        on_track_start=noop,
+        on_track_done=noop,
+        min_length_seconds=120,
+    )
+
+    assert captured["eligible_source_indexes"] == [0, 2]
