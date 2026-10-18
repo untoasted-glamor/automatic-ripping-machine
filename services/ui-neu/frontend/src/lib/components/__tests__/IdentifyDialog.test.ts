@@ -56,6 +56,83 @@ describe('IdentifyDialog', () => {
 		});
 	});
 
+	describe('season and disc position', () => {
+		it('seeds season / disc # / disc total from the job and omits them when unchanged', async () => {
+			resolveJobMock.mockResolvedValue(makeResp());
+			const job = createJob({
+				id: 'job_tv',
+				disc_type: 'dvd',
+				status: 'ripped',
+				title: 'Show',
+				year: 2020,
+				season: 2,
+				disc_number: 1,
+				disc_total: 3
+			});
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+
+			expect((screen.getByTestId('identify-season') as HTMLInputElement).value).toBe('2');
+			expect((screen.getByTestId('identify-disc-number') as HTMLInputElement).value).toBe('1');
+			expect((screen.getByTestId('identify-disc-total') as HTMLInputElement).value).toBe('3');
+			await fireEvent.click(screen.getByTestId('identify-submit'));
+
+			await waitFor(() => {
+				expect(resolveJobMock).toHaveBeenCalledWith('job_tv', { title: 'Show', year: 2020, music: undefined });
+			});
+		});
+
+		it('sends a changed season and disc number, and an emptied disc total as null', async () => {
+			resolveJobMock.mockResolvedValue(makeResp());
+			const job = createJob({
+				id: 'job_tv',
+				disc_type: 'bluray',
+				status: 'awaiting_user_id',
+				title: 'Show',
+				year: null,
+				season: null,
+				disc_number: null,
+				disc_total: 4
+			});
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+
+			await fireEvent.input(screen.getByTestId('identify-season'), { target: { value: '1' } });
+			await fireEvent.input(screen.getByTestId('identify-disc-number'), { target: { value: '2' } });
+			await fireEvent.input(screen.getByTestId('identify-disc-total'), { target: { value: '' } });
+			await fireEvent.click(screen.getByTestId('identify-submit'));
+
+			await waitFor(() => {
+				expect(resolveJobMock).toHaveBeenCalledWith('job_tv', {
+					title: 'Show',
+					year: null,
+					music: undefined,
+					season: 1,
+					disc_number: 2,
+					disc_total: null
+				});
+			});
+		});
+
+		it('offers disc # / disc total but no season for a CD', async () => {
+			resolveJobMock.mockResolvedValue(makeResp());
+			const job = createJob({ id: 'job_cd', disc_type: 'cd', status: 'awaiting_user_id', title: 'Album' });
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+
+			expect(screen.queryByTestId('identify-season')).not.toBeInTheDocument();
+			await fireEvent.input(screen.getByTestId('identify-artist'), { target: { value: 'Band' } });
+			await fireEvent.input(screen.getByTestId('identify-disc-number'), { target: { value: '2' } });
+			await fireEvent.input(screen.getByTestId('identify-disc-total'), { target: { value: '2' } });
+			await fireEvent.click(screen.getByTestId('identify-submit'));
+
+			await waitFor(() => {
+				expect(resolveJobMock).toHaveBeenCalledWith(
+					'job_cd',
+					expect.objectContaining({ title: 'Album', disc_number: 2, disc_total: 2 })
+				);
+			});
+			expect(resolveJobMock.mock.calls[0][1]).not.toHaveProperty('season');
+		});
+	});
+
 	describe('music job', () => {
 		it('renders album + artist + per-track inputs and submits the music shape', async () => {
 			resolveJobMock.mockResolvedValue(makeResp());
