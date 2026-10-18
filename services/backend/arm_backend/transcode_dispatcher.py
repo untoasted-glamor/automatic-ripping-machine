@@ -153,8 +153,21 @@ class TranscodeDispatcher:
                 track_id=task.source_track_id,
                 session_application_id=task.session_application_id,
             ):
-                # Release any GPU this task held; a stale claim cannot be holding
-                # a real container any more.
+                # A stale claim can still have a live container: a transcoder that
+                # only lost touch with the Backend keeps encoding. Remove it before
+                # freeing the slot, or the next spawn runs alongside it past
+                # MAX_PARALLEL_TRANSCODES. If docker can't confirm it's gone, keep
+                # the claim and retry on the next tick.
+                try:
+                    await asyncio.to_thread(self._remove_task_containers, task.id)
+                except Exception as exc:
+                    logger.warning(
+                        "stale transcoder not removed; keeping its claim task_id=%s: %s",
+                        task.id,
+                        exc,
+                    )
+                    continue
+                # Release any GPU this task held; its container is gone now.
                 await release_gpu_for_task(db, task.id)
                 if task.attempts >= self._settings.ARM_TRANSCODE_MAX_ATTEMPTS:
                     task.status = TranscodeTaskStatus.FAILED
@@ -204,6 +217,20 @@ class TranscodeDispatcher:
                 touched += 1
         await db.commit()
         return touched
+
+    def _remove_task_containers(self, task_id: str) -> None:
+        """Force-remove every container labelled with `task_id`, running or not.
+
+        Raises on a docker error, so the caller knows a container may survive.
+        """
+        from docker.errors import NotFound  # type: ignore[import-untyped]
+
+        for container in self._docker.containers.list(all=True, filters={"label": f"{_DOCKER_LABEL_KEY}={task_id}"}):
+            logger.warning("removing stale transcoder task_id=%s container=%s", task_id, container.name)
+            try:
+                container.remove(force=True)
+            except NotFound:
+                pass  # auto_remove got there first
 
     async def _emit_task_failed(self, db: AsyncSession, task: TranscodeTask) -> None:
         application = (

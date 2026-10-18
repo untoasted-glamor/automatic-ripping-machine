@@ -360,6 +360,61 @@ async def test_stale_sweep_no_op_when_heartbeat_recent() -> None:
     assert touched == 0
 
 
+def _stale_task_db() -> FakeSession:
+    return _app_with_one_task(
+        TranscodeTaskStatus.IN_PROGRESS,
+        claimed_by="arm-transcode-x",
+        claim_heartbeat_at=datetime.now(UTC) - timedelta(seconds=200),
+        attempts=1,
+    )
+
+
+async def test_stale_sweep_removes_the_tasks_container_before_requeue() -> None:
+    db = _stale_task_db()
+    docker = MagicMock()
+    container = MagicMock()
+    docker.containers.list.return_value = [container]
+    disp = TranscodeDispatcher(_settings(), _db_factory(db), docker, WSHub())
+
+    touched = await disp.sweep_stale_claims(db)
+
+    assert touched == 1
+    docker.containers.list.assert_called_once_with(all=True, filters={"label": "arm.task_id=txt_1"})
+    container.remove.assert_called_once_with(force=True)
+    assert db.rows["transcode_tasks"][0].status == TranscodeTaskStatus.QUEUED
+
+
+async def test_stale_sweep_keeps_the_claim_when_docker_is_unreachable() -> None:
+    # A container that may still be encoding must keep holding its slot.
+    db = _stale_task_db()
+    docker = MagicMock()
+    docker.containers.list.side_effect = RuntimeError("docker socket read timed out")
+    disp = TranscodeDispatcher(_settings(), _db_factory(db), docker, WSHub())
+
+    touched = await disp.sweep_stale_claims(db)
+
+    assert touched == 0
+    task = db.rows["transcode_tasks"][0]
+    assert task.status == TranscodeTaskStatus.IN_PROGRESS
+    assert task.claimed_by == "arm-transcode-x"
+
+
+async def test_stale_sweep_tolerates_a_container_already_auto_removed() -> None:
+    from docker.errors import NotFound  # type: ignore[import-untyped]
+
+    db = _stale_task_db()
+    docker = MagicMock()
+    container = MagicMock()
+    container.remove.side_effect = NotFound("gone")
+    docker.containers.list.return_value = [container]
+    disp = TranscodeDispatcher(_settings(), _db_factory(db), docker, WSHub())
+
+    touched = await disp.sweep_stale_claims(db)
+
+    assert touched == 1
+    assert db.rows["transcode_tasks"][0].status == TranscodeTaskStatus.QUEUED
+
+
 # ---- .arm-inprogress sweep ---------------------------------------------------
 
 
