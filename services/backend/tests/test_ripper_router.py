@@ -226,7 +226,19 @@ def test_get_config_returns_flag() -> None:
         "makemkv_sdf_enabled": True,
         "ripping_paused": False,
         "manual_wait_seconds": 60,
+        "review_requires_confirm": False,
     }
+
+
+def test_get_config_reflects_review_requires_confirm() -> None:
+    db = FakeSession()
+    cfg = _config(hold_for_review=True)
+    cfg.review_requires_confirm = True
+    db.rows["config"] = [cfg]
+    with TestClient(_make_app(db)) as client:
+        r = client.get("/api/ripper/config", headers=_SERVICE_AUTH)
+    assert r.status_code == 200
+    assert r.json()["review_requires_confirm"] is True
 
 
 def test_get_config_reflects_community_keydb_disabled() -> None:
@@ -525,7 +537,7 @@ def test_identify_hold_with_pending_session_uses_routed_preset() -> None:
     """Fix 75-1 regression: a manual trigger (explicit session_id) with
     hold_for_review on must persist review tracks chosen by the ROUTED
     session's rip preset, not the drive/disc-type default. Before the fix,
-    pending_session_id was assigned AFTER _persist_review_tracks ran, so
+    pending_session_id was assigned AFTER persist_review_tracks ran, so
     resolve_rip_preset_for_job always fell back to the disc-type default
     (ALL_TRACKS here) instead of the routed session's MAIN_FEATURE preset —
     the held and unattended track sets diverged.
@@ -587,7 +599,7 @@ def test_identify_hold_with_pending_session_uses_routed_preset() -> None:
 async def test_persist_review_tracks_is_idempotent() -> None:
     """Idempotency (audit M1): a title whose Track row already exists (ripper
     re-POSTed identify on the same held disc) is NOT re-inserted."""
-    from arm_backend.routers.ripper import _persist_review_tracks
+    from arm_backend.routers.ripper import persist_review_tracks
     from arm_common import Job as _Job, Track as _Track, TrackKind as _TrackKind
     from arm_common.schemas import ScanResult as _ScanResult, ScanTitle as _ScanTitle
 
@@ -602,7 +614,7 @@ async def test_persist_review_tracks_is_idempotent() -> None:
         disc_type=DiscType.DVD,
         titles=[_ScanTitle(index=1, duration_seconds=4200), _ScanTitle(index=2, duration_seconds=3600)],
     )
-    await _persist_review_tracks(db, job, scan)
+    await persist_review_tracks(db, job, scan)
     added_refs = {t.source_ref for t in db.added if type(t).__name__ == "Track"}
     assert added_refs == {"2"}  # index 1 skipped (already exists), only 2 added
 
@@ -610,7 +622,7 @@ async def test_persist_review_tracks_is_idempotent() -> None:
 async def test_persist_review_tracks_no_new_titles_records_no_preset_claim() -> None:
     """Every title already has a Track row (a full re-POST idempotency case):
     no rows are added, so no preset proposal is recorded either."""
-    from arm_backend.routers.ripper import _persist_review_tracks
+    from arm_backend.routers.ripper import persist_review_tracks
     from arm_common import Job as _Job, Track as _Track, TrackKind as _TrackKind
     from arm_common.schemas import ScanResult as _ScanResult, ScanTitle as _ScanTitle
 
@@ -621,7 +633,7 @@ async def test_persist_review_tracks_no_new_titles_records_no_preset_claim() -> 
     )
     db.rows["tracks"] = [_Track(id="trk_pre", job_id=job.id, kind=_TrackKind.VIDEO_TITLE, index=1, source_ref="1")]
     scan = _ScanResult(disc_type=DiscType.DVD, titles=[_ScanTitle(index=1, duration_seconds=4200)])
-    await _persist_review_tracks(db, job, scan)
+    await persist_review_tracks(db, job, scan)
     assert [t for t in db.added if type(t).__name__ == "Track"] == []
     assert "identity_claims" not in (job.metadata_json or {})
 
@@ -713,7 +725,7 @@ def test_identify_repost_on_held_disc_leaves_tracks_and_claims_alone(monkeypatch
     def _must_not_run(*_a: Any, **_k: Any) -> None:
         raise AssertionError("the reuse path must not touch tracks or claims")
 
-    monkeypatch.setattr(ripper_router, "_persist_review_tracks", _must_not_run)
+    monkeypatch.setattr(ripper_router, "persist_review_tracks", _must_not_run)
     monkeypatch.setattr(ripper_router, "record_preset", _must_not_run)
     monkeypatch.setattr(ripper_router, "resolve_job", _must_not_run)
     db = FakeSession()
@@ -1284,6 +1296,21 @@ def test_held_job_paused_flag_from_per_job_manual_pause() -> None:
     held = _job("job_01JZXR7K3M5Q8N4VWA0000H07", status=JobStatus.AWAITING_REVIEW)
     held.manual_pause = True
     db.rows["jobs"] = [held]
+    with TestClient(_make_app(db)) as client:
+        r = client.get("/api/ripper/drives/drv_x/held-job", headers=_SERVICE_AUTH)
+    assert r.status_code == 200
+    assert r.json()["paused"] is True
+
+
+def test_held_job_paused_flag_from_mandatory_confirm() -> None:
+    """Mandatory-confirm mode has no countdown to restart: a held disc survives
+    a ripper reboot as a hold (re-park), not an abandon + fresh re-scan."""
+    db = FakeSession()
+    db.rows["drives"] = [_drive()]
+    cfg = _config(ripping_paused=False, hold_for_review=True)
+    cfg.review_requires_confirm = True
+    db.rows["config"] = [cfg]
+    db.rows["jobs"] = [_job("job_01JZXR7K3M5Q8N4VWA0000H08", status=JobStatus.AWAITING_REVIEW)]
     with TestClient(_make_app(db)) as client:
         r = client.get("/api/ripper/drives/drv_x/held-job", headers=_SERVICE_AUTH)
     assert r.status_code == 200
@@ -2790,7 +2817,7 @@ def test_rip_start_bd_backup_of_a_dvd_is_422() -> None:
 
 
 async def test_persist_review_tracks_skips_a_dvd_under_the_backup_session() -> None:
-    from arm_backend.routers.ripper import _persist_review_tracks
+    from arm_backend.routers.ripper import persist_review_tracks
     from arm_common import Job as _Job
     from arm_common.schemas import ScanResult as _ScanResult, ScanTitle as _ScanTitle
 
@@ -2803,7 +2830,7 @@ async def test_persist_review_tracks_skips_a_dvd_under_the_backup_session() -> N
     )
     job.pending_session_id = "ses_builtin_bd_backup"
     scan = _ScanResult(disc_type=DiscType.DVD, titles=[_ScanTitle(index=1, duration_seconds=4200)])
-    await _persist_review_tracks(db, job, scan)
+    await persist_review_tracks(db, job, scan)
     assert [t for t in db.added if type(t).__name__ == "Track"] == []
 
 

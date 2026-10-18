@@ -176,6 +176,49 @@ def test_unpause_resets_held_review_countdowns(signing_key):
     assert held.wait_start_time > datetime(2025, 1, 1, tzinfo=timezone.utc)
 
 
+def test_leaving_mandatory_confirm_starts_held_countdowns(signing_key):
+    """review_requires_confirm ON -> OFF gives held discs a FRESH countdown, the
+    same as un-pause, so a disc that waited for a confirm doesn't auto-rip the
+    moment the mode flips to timed."""
+    db = FakeSession()
+    _seed(db, hold_for_review=True, review_requires_confirm=True)
+    held = _held_job("job_01JZXR7K3M5Q8N4VWA0000U03")
+    db.rows["jobs"] = [held]
+    app, token = _make_app(signing_key, db)
+    with TestClient(app) as c:
+        r = c.patch("/api/config", json={"review_requires_confirm": False}, headers=_auth(token))
+    assert r.status_code == 200, r.text
+    assert r.json()["review_requires_confirm"] is False
+    assert db.rows["config"][0].review_requires_confirm is False
+    assert held.wait_start_time > datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+
+def test_entering_mandatory_confirm_leaves_countdowns(signing_key):
+    """Turning mandatory confirm ON needs no anchor change: the ripper stops
+    honouring the countdown while the mode is on."""
+    db = FakeSession()
+    _seed(db, hold_for_review=True, review_requires_confirm=False)
+    held = _held_job("job_01JZXR7K3M5Q8N4VWA0000U04")
+    original = held.wait_start_time
+    db.rows["jobs"] = [held]
+    app, token = _make_app(signing_key, db)
+    with TestClient(app) as c:
+        r = c.patch("/api/config", json={"review_requires_confirm": True}, headers=_auth(token))
+    assert r.status_code == 200, r.text
+    assert r.json()["review_requires_confirm"] is True
+    assert held.wait_start_time == original
+
+
+def test_review_requires_confirm_refuses_null(signing_key):
+    db = FakeSession()
+    _seed(db, hold_for_review=True)
+    app, token = _make_app(signing_key, db)
+    with TestClient(app) as c:
+        r = c.patch("/api/config", json={"review_requires_confirm": None}, headers=_auth(token))
+    assert r.status_code == 400
+    assert "review_requires_confirm" in r.json()["detail"]
+
+
 def test_pause_does_not_touch_countdowns(signing_key):
     """Pausing (OFF -> ON), or any non-unpause PATCH, leaves wait_start_time alone."""
     db = FakeSession()

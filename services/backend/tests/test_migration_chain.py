@@ -17,6 +17,7 @@ from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 from alembic.script import ScriptDirectory  # noqa: E402
 
+from arm_common import Config as ArmConfig  # noqa: E402
 from arm_common import User  # noqa: E402
 
 _BACKEND_DIR = Path(__file__).parent.parent
@@ -42,6 +43,15 @@ def test_single_linear_head() -> None:
     script = _script_directory()
     heads = script.get_heads()
     assert len(heads) == 1, f"expected one migration head, found {heads}"
+
+
+def test_revision_ids_fit_the_version_table() -> None:
+    """``alembic_version.version_num`` is VARCHAR(32). A longer revision id
+    bumps the version row *after* the DDL has already run, so the migration
+    rolls back and the backend crash-loops on every boot."""
+    script = _script_directory()
+    too_long = {rev.revision: len(rev.revision) for rev in script.walk_revisions() if len(rev.revision) > 32}
+    assert not too_long, f"revision ids exceed alembic_version.version_num VARCHAR(32): {too_long}"
 
 
 def _render_sql(from_rev: str, to_rev: str, *, downgrade: bool = False) -> str:
@@ -102,3 +112,16 @@ def test_0028_matches_the_user_model() -> None:
         assert f"ADD COLUMN {name} " in sql, f"0028 does not add users.{name}"
         assert not column.nullable, f"User.{name} is nullable but 0028 declares NOT NULL"
         assert column.server_default is not None, f"User.{name} has no server_default to match 0028's"
+
+
+def test_0045_adds_review_requires_confirm() -> None:
+    sql = _render_sql("0044_previously_ripped", "0045_review_requires_confirm")
+    assert "ALTER TABLE config ADD COLUMN review_requires_confirm BOOLEAN DEFAULT 'false' NOT NULL" in sql
+    column = ArmConfig.__table__.columns["review_requires_confirm"]
+    assert not column.nullable
+    assert column.server_default is not None
+
+
+def test_0045_downgrade_drops_review_requires_confirm() -> None:
+    sql = _render_sql("0045_review_requires_confirm", "0044_previously_ripped", downgrade=True)
+    assert "ALTER TABLE config DROP COLUMN review_requires_confirm" in sql

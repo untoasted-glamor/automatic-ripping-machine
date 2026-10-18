@@ -10754,6 +10754,17 @@
             ],
             "title": "Manual Wait Seconds"
           },
+          "review_requires_confirm": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Requires Confirm"
+          },
           "on_previously_ripped": {
             "anyOf": [
               {
@@ -10933,6 +10944,10 @@
             "type": "integer",
             "title": "Manual Wait Seconds"
           },
+          "review_requires_confirm": {
+            "type": "boolean",
+            "title": "Review Requires Confirm"
+          },
           "on_previously_ripped": {
             "$ref": "#/components/schemas/PreviouslyRippedAction"
           },
@@ -11050,6 +11065,7 @@
           "ripping_paused",
           "hold_for_review",
           "manual_wait_seconds",
+          "review_requires_confirm",
           "on_previously_ripped",
           "default_retention_policy",
           "notification_apprise_urls",
@@ -16898,6 +16914,11 @@
             "type": "integer",
             "title": "Manual Wait Seconds",
             "default": 60
+          },
+          "review_requires_confirm": {
+            "type": "boolean",
+            "title": "Review Requires Confirm",
+            "default": false
           }
         },
         "type": "object",

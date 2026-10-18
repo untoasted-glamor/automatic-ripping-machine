@@ -677,6 +677,10 @@ export type ConfigUpdateRequest = {
      * Manual Wait Seconds
      */
     manual_wait_seconds?: number | null;
+    /**
+     * Review Requires Confirm
+     */
+    review_requires_confirm?: boolean | null;
     on_previously_ripped?: PreviouslyRippedAction | null;
     /**
      * Notifications Enabled
@@ -794,6 +798,10 @@ export type ConfigView = {
      * Manual Wait Seconds
      */
     manual_wait_seconds: number;
+    /**
+     * Review Requires Confirm
+     */
+    review_requires_confirm: boolean;
     on_previously_ripped: PreviouslyRippedAction;
     default_retention_policy: RetentionPolicy;
     /**
@@ -3987,6 +3995,10 @@ export type RipperConfigView = {
      * Manual Wait Seconds
      */
     manual_wait_seconds?: number;
+    /**
+     * Review Requires Confirm
+     */
+    review_requires_confirm?: boolean;
 };
 
 /**

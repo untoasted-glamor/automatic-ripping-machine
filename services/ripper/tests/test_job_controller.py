@@ -80,6 +80,7 @@ class FakeClient:
         self.community_keydb_enabled: bool = True
         self.ripping_paused: bool = False
         self.manual_wait_seconds: int = 60
+        self.review_requires_confirm: bool = False
         self.keydb_reports: list = []
         self.sdf_reports: list = []
         self.makemkv_sdf_enabled: bool = True
@@ -135,6 +136,7 @@ class FakeClient:
             community_keydb_enabled=self.community_keydb_enabled,
             ripping_paused=self.ripping_paused,
             manual_wait_seconds=self.manual_wait_seconds,
+            review_requires_confirm=self.review_requires_confirm,
             makemkv_sdf_enabled=self.makemkv_sdf_enabled,
         )
 
@@ -357,6 +359,68 @@ async def test_review_gate_per_job_pause_does_not_auto_start(stub_scan, stub_eje
     # The held views carry manual_pause=True -> countdown stays frozen.
     client.get_job_responses.extend(
         [_view(JobStatus.AWAITING_REVIEW, wait_start_time=past, manual_pause=True) for _ in range(6)]
+    )
+    controller = JobController(client, "drv_test")
+
+    await asyncio.wait_for(controller.handle_disc_inserted("/dev/sr0"), timeout=2.0)
+
+    assert client.rip_start_calls == []
+    assert client.rip_complete_calls == []
+
+
+async def test_review_gate_mandatory_confirm_never_auto_starts(stub_scan, stub_eject, monkeypatch):
+    """Mandatory-confirm mode (review_requires_confirm): the countdown has long
+    elapsed and nothing is paused, yet the ripper keeps waiting for Start."""
+    monkeypatch.setattr(jc_module, "RESOLUTION_WAIT_TIMEOUT_SECONDS", 0.05)
+    client = FakeClient()
+    client.manual_wait_seconds = 1
+    client.review_requires_confirm = True
+    past = datetime.now(timezone.utc) - timedelta(seconds=10)
+    client.identify_responses.append(_job(JobStatus.AWAITING_REVIEW, title="Held Movie"))
+    client.get_job_responses.extend([_view(JobStatus.AWAITING_REVIEW, wait_start_time=past) for _ in range(6)])
+    controller = JobController(client, "drv_test")
+
+    await asyncio.wait_for(controller.handle_disc_inserted("/dev/sr0"), timeout=2.0)
+
+    assert client.rip_start_calls == []
+    assert client.rip_complete_calls == []
+    assert client.get_ripper_config_calls > 0  # it did check the mode
+
+
+async def test_resolve_into_review_gate_waits_for_start(stub_scan, stub_eject):
+    """With hold_for_review on, resolving an awaiting_user_id disc lands it in
+    awaiting_review, not identified. The identify wait must treat that as
+    success and fall through into the review gate (not abandon, not rip
+    straight away); the rip runs once the operator Starts."""
+    client = FakeClient()
+    client.review_requires_confirm = True
+    client.identify_responses.append(_job(JobStatus.AWAITING_USER_ID))
+    client.get_job_responses.extend(
+        [
+            _view(JobStatus.AWAITING_REVIEW, title="Resolved"),  # identify gate: resolve parked it
+            _view(JobStatus.AWAITING_REVIEW, title="Resolved"),  # review gate: still held
+            _view(JobStatus.RIPPING, title="Resolved"),  # operator pressed Start
+        ]
+    )
+    controller = JobController(client, "drv_test")
+
+    await asyncio.wait_for(controller.handle_disc_inserted("/dev/sr0"), timeout=2.0)
+
+    assert client.rip_start_calls == ["job_test"]
+    assert client.rip_complete_calls == ["job_test"]
+    assert len(client.get_job_calls) == 3
+
+
+async def test_resolve_into_mandatory_review_gate_does_not_rip(stub_scan, stub_eject, monkeypatch):
+    """The resolve-promoted disc stays held in mandatory mode: no Start, no rip."""
+    monkeypatch.setattr(jc_module, "RESOLUTION_WAIT_TIMEOUT_SECONDS", 0.05)
+    client = FakeClient()
+    client.manual_wait_seconds = 0
+    client.review_requires_confirm = True
+    past = datetime.now(timezone.utc) - timedelta(seconds=10)
+    client.identify_responses.append(_job(JobStatus.AWAITING_USER_ID))
+    client.get_job_responses.extend(
+        [_view(JobStatus.AWAITING_REVIEW, title="Resolved", wait_start_time=past) for _ in range(8)]
     )
     controller = JobController(client, "drv_test")
 

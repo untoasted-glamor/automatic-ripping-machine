@@ -155,6 +155,9 @@ def test_widgets_and_part_of() -> None:
     assert meta["makemkv_key"].widget == "makemkv_key"
     assert meta["auto_rip_on_insert"].widget == "disc_handling"
     assert meta["hold_for_review"].part_of == "auto_rip_on_insert"
+    # The review-gate sub-mode widget owns the countdown box.
+    assert meta["review_requires_confirm"].widget == "review_wait"
+    assert meta["manual_wait_seconds"].part_of == "review_requires_confirm"
     for m in CONFIG_FIELD_META:
         if m.part_of is not None:
             assert m.part_of in meta, m.key

@@ -77,6 +77,9 @@ class ConfigView(BaseModel):
     ripping_paused: bool
     hold_for_review: bool
     manual_wait_seconds: int
+    # Review-gate sub-mode: true = a held disc waits for the operator's confirm
+    # (no countdown); false = it auto-starts after manual_wait_seconds.
+    review_requires_confirm: bool
     on_previously_ripped: PreviouslyRippedAction
     default_retention_policy: RetentionPolicy
     notification_apprise_urls: list[str]
@@ -116,6 +119,7 @@ class ConfigUpdateRequest(BaseModel):
     ripping_paused: bool | None = None
     hold_for_review: bool | None = None
     manual_wait_seconds: int | None = None
+    review_requires_confirm: bool | None = None
     on_previously_ripped: PreviouslyRippedAction | None = None
     notifications_enabled: bool | None = None
     metadata_provider: str | None = None

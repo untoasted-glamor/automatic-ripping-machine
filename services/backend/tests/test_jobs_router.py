@@ -926,6 +926,136 @@ def test_resolve_accepts_ripped_awaiting_identify(signing_key: bytes) -> None:
     assert body["fan_out"] == []
 
 
+_GATE_SCAN = {
+    "disc_type": "dvd",
+    "volume_label": "MY_DISC",
+    "titles": [{"index": 1, "duration_seconds": 4200}, {"index": 2, "duration_seconds": 3600}],
+    "fingerprints": [],
+    "raw": {},
+}
+
+
+def _gate_config(*, hold_for_review: bool, review_requires_confirm: bool = False) -> Any:
+    from arm_common import Config, RetentionPolicy
+
+    return Config(
+        id=1,
+        hold_for_review=hold_for_review,
+        review_requires_confirm=review_requires_confirm,
+        manual_wait_seconds=60,
+        default_retention_policy=RetentionPolicy.PRUNE_AFTER_SESSION,
+    )
+
+
+def _gate_preset() -> Any:
+    from arm_common import IdentificationMode, MediaType, OutputMode, RipPreset, TrackSelection
+
+    return RipPreset(
+        id="rpr_builtin_movie_archive",
+        name="Movie archive",
+        media_type=MediaType.MOVIE,
+        is_builtin=True,
+        track_selection=TrackSelection.ALL_TRACKS,
+        identification_mode=IdentificationMode.SKIP,
+        output_mode=OutputMode.TRACKS,
+    )
+
+
+@pytest.mark.parametrize("requires_confirm", [False, True])
+def test_resolve_awaiting_user_id_enters_review_gate(signing_key: bytes, requires_confirm: bool) -> None:
+    """With hold_for_review on, resolving a disc that auto-identify missed parks
+    it in awaiting_review (countdown anchor + review tracks), the same gate an
+    auto-identified disc goes through, instead of unblocking the rip at once.
+    Both sub-modes park the same way; the ripper decides whether a countdown
+    runs."""
+    db = FakeSession()
+    hub = _Hub()
+    app, token = _make_app(signing_key, db, hub)
+    db.rows["config"] = [_gate_config(hold_for_review=True, review_requires_confirm=requires_confirm)]
+    db.rows["rip_presets"] = [_gate_preset()]
+    db.rows["tracks"] = []
+    db.rows["jobs"] = [_job(status=JobStatus.AWAITING_USER_ID, meta={"scan_result": _GATE_SCAN})]
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/resolve",
+            json={"title": "Solaris", "year": 1972},
+            headers=_auth(token),
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["job"]["status"] == "awaiting_review"
+    job = db.rows["jobs"][0]
+    assert job.status == JobStatus.AWAITING_REVIEW
+    assert job.wait_start_time is not None
+    # FakeSession.added logs every add(); the resolver re-adds the rows it touches.
+    review_tracks = {id(t): t for t in db.added if isinstance(t, Track)}.values()
+    assert sorted(t.source_ref for t in review_tracks) == ["1", "2"]
+    # The parked ripper is still told the identify gate cleared.
+    assert any(e["event_type"] == "identify.resolved" for e in hub.events)
+
+
+@pytest.mark.parametrize(
+    "config_rows",
+    [[], "hold_off"],
+    ids=["no_config_row", "hold_for_review_off"],
+)
+def test_resolve_awaiting_user_id_without_gate_identifies(signing_key: bytes, config_rows: Any) -> None:
+    db = FakeSession()
+    app, token = _make_app(signing_key, db)
+    db.rows["config"] = [_gate_config(hold_for_review=False)] if config_rows == "hold_off" else []
+    db.rows["rip_presets"] = [_gate_preset()]
+    db.rows["tracks"] = []
+    db.rows["jobs"] = [_job(status=JobStatus.AWAITING_USER_ID, meta={"scan_result": _GATE_SCAN})]
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/resolve",
+            json={"title": "Solaris"},
+            headers=_auth(token),
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["job"]["status"] == "identified"
+    assert db.rows["jobs"][0].wait_start_time is None
+    assert not [t for t in db.added if isinstance(t, Track)]
+
+
+def test_resolve_awaiting_user_id_without_scan_skips_review_gate(signing_key: bytes) -> None:
+    """No scan on the job means no review tracks to show: promote to identified."""
+    db = FakeSession()
+    app, token = _make_app(signing_key, db)
+    db.rows["config"] = [_gate_config(hold_for_review=True)]
+    db.rows["jobs"] = [_job(status=JobStatus.AWAITING_USER_ID, meta={})]
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/resolve",
+            json={"title": "Solaris"},
+            headers=_auth(token),
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["job"]["status"] == "identified"
+
+
+def test_resolve_ripped_awaiting_identify_skips_review_gate(signing_key: bytes) -> None:
+    """A disc that has ALREADY ripped never enters the pre-rip review gate, even
+    with hold_for_review on and a scan_result on the job (identify always
+    attaches one). Parking it would offer Start on a finished job and let the
+    timed sub-mode rip it again."""
+    db = FakeSession()
+    app, token = _make_app(signing_key, db)
+    db.rows["config"] = [_gate_config(hold_for_review=True)]
+    db.rows["rip_presets"] = [_gate_preset()]
+    db.rows["tracks"] = []
+    db.rows["jobs"] = [_job(status=JobStatus.RIPPED_AWAITING_IDENTIFY, meta={"scan_result": _GATE_SCAN})]
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/resolve",
+            json={"title": "Home Movie", "year": 2020},
+            headers=_auth(token),
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["job"]["status"] == "ripped"
+    assert db.rows["jobs"][0].wait_start_time is None
+    assert not [t for t in db.added if isinstance(t, Track)]
+
+
 def test_resolve_success_without_preserved_scan(signing_key: bytes) -> None:
     """job.metadata_json starts empty and the caller sends no typed sections —
     the round-tripped bag stays free of scan_result / music / identity."""

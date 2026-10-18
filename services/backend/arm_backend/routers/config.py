@@ -93,6 +93,7 @@ def _to_view(cfg: Config) -> ConfigView:
         # server_default only) for rows/fixtures predating these columns.
         hold_for_review=bool(cfg.hold_for_review),
         manual_wait_seconds=int(cfg.manual_wait_seconds) if cfg.manual_wait_seconds is not None else 60,
+        review_requires_confirm=bool(cfg.review_requires_confirm),
         on_previously_ripped=cfg.on_previously_ripped or PreviouslyRippedAction.HOLD,
         drive_scan_interval_seconds=int(cfg.drive_scan_interval_seconds or 30),
         drive_detected_prune_days=int(cfg.drive_detected_prune_days or 7),
@@ -220,6 +221,10 @@ async def update_config(
             )
     if "episode_auto_apply" in fields and fields["episode_auto_apply"] is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="episode_auto_apply must be true or false")
+    if "review_requires_confirm" in fields and fields["review_requires_confirm"] is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="review_requires_confirm must be true or false"
+        )
     if fields.get("transcode_enabled") is True and not effective_transcode_capable(settings):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -231,6 +236,10 @@ async def update_config(
     # expired one (which would auto-rip the instant ripping resumes — surprising
     # to an operator who paused to deal with it later). timed-review-gate spec §6.3.
     unpausing = bool(cfg.ripping_paused) and fields.get("ripping_paused") is False
+    # Leaving mandatory-confirm mode (review_requires_confirm ON -> OFF) starts
+    # the countdown for discs already held; same fresh anchor as un-pause, so a
+    # disc that waited for a confirm doesn't auto-rip the moment the mode flips.
+    leaving_confirm = bool(cfg.review_requires_confirm) and fields.get("review_requires_confirm") is False
     # Detect transcoding re-enable (OFF -> ON). A NULL column reads as enabled,
     # so only an explicit False counts as "was off". Encode applications that
     # reached the parked-application drain while the toggle was off stayed
@@ -255,7 +264,7 @@ async def update_config(
     cfg.updated_by_user_id = user.id
     cfg.updated_at = datetime.now(timezone.utc)
 
-    if unpausing:
+    if unpausing or leaving_confirm:
         now = datetime.now(timezone.utc)
         held = (await session.execute(select(Job).where(col(Job.status) == JobStatus.AWAITING_REVIEW))).scalars().all()
         for job in held:

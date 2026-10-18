@@ -32,6 +32,7 @@ from arm_backend.job_abandon import abandon_job_transition
 from arm_backend.path_template import TemplateValidationError
 from arm_backend.routers._params import JobIdParam
 from arm_backend.routers.logs import per_job_log_path
+from arm_backend.routers.ripper import persist_review_tracks
 from arm_backend.seeders import CONFIG_SINGLETON_ID
 from arm_backend.ws import WSHub
 from arm_common import (
@@ -71,6 +72,7 @@ from arm_common.schemas import (
     ResolveRequest,
     ResolveResponse,
     RipProgressSummary,
+    ScanResult,
     SessionApplicationView,
     TrackView,
     TranscodeProgressSummary,
@@ -1112,7 +1114,11 @@ async def update_job(
 
 # Two reasons a user may resolve identity:
 #   1. Auto-identify failed and the job parked at AWAITING_USER_ID / RIPPED_AWAITING_IDENTIFY.
-#      Resolving promotes it to IDENTIFIED and fan-out kicks any WAITING_IDENTIFY apps.
+#      Resolving promotes it to IDENTIFIED (RIPPED for the ripped placeholder) and fan-out
+#      kicks any WAITING_IDENTIFY apps. With config.hold_for_review on, an AWAITING_USER_ID
+#      disc goes to AWAITING_REVIEW instead, so a manually identified disc passes the same
+#      review gate (countdown or mandatory confirm) as an auto-identified one. A ripped
+#      placeholder never enters the gate: its rip is already done.
 #   2. Auto-identify "succeeded" but landed wrong metadata (MakeMKV volume-label fallback,
 #      stale TMDB entry, etc.) and the user wants to correct title/year/metadata after the
 #      fact — possibly post-rip. The status MUST NOT change in this case; fan-out is a no-op
@@ -1224,10 +1230,18 @@ async def resolve(
     new_metadata.pop("unidentified", None)
     if isinstance(new_metadata.get("flags"), dict):
         new_metadata["flags"] = {k: v for k, v in new_metadata["flags"].items() if k != "unidentified"}
+    enters_review_gate = False
     if job.status in RESOLVABLE_PROMOTE_JOB_STATUSES:
         # A placeholder whose rip already finished becomes RIPPED, not
         # IDENTIFIED — its rip is done (G-09).
         job.status = JobStatus.RIPPED if was_ripped_placeholder else JobStatus.IDENTIFIED
+        # Only a pre-rip disc may enter the review gate, and only with the scan
+        # identify attached (the review tracks are built from it).
+        if not was_ripped_placeholder and new_metadata.get("scan_result"):
+            cfg = (
+                await session.execute(select(Config).where(col(Config.id) == CONFIG_SINGLETON_ID))
+            ).scalar_one_or_none()
+            enters_review_gate = cfg is not None and bool(cfg.hold_for_review)
     job.metadata_json = new_metadata
     if show_changed:
         # R2: the stored episode entries were matched against the previous
@@ -1251,6 +1265,14 @@ async def resolve(
             manual_job[name] = getattr(req, name)
     if manual_job:
         record_manual_job(job, manual_job)
+    if enters_review_gate:
+        # Park it like identify parks an auto-identified disc: countdown anchor
+        # plus the scan's titles as review Track rows (identify's miss path
+        # never persisted them). After the metadata writes above, since
+        # persisting records the rip preset into metadata_json.
+        job.status = JobStatus.AWAITING_REVIEW
+        job.wait_start_time = datetime.now(timezone.utc)
+        await persist_review_tracks(session, job, ScanResult.model_validate(new_metadata["scan_result"]))
     await resolve_job(session, job)
     session.add(job)
 
@@ -1277,8 +1299,9 @@ async def resolve(
         fan_out_outcomes = await fan_out_waiting_identify_applications(session, job=job, hub=hub)
 
     logger.info(
-        "resolve job_id=%s -> identified title=%s fan_out=%d",
+        "resolve job_id=%s -> %s title=%s fan_out=%d",
         job.id,
+        job.status.value,
         job.title,
         len(fan_out_outcomes),
     )

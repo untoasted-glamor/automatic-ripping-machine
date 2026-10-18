@@ -245,7 +245,7 @@ async def _resolve_min_length_override(db: AsyncSession, job: Job) -> int | None
     return _min_length_override_from_session(sess)
 
 
-async def _persist_review_tracks(db: AsyncSession, job: Job, scan: ScanResult) -> None:
+async def persist_review_tracks(db: AsyncSession, job: Job, scan: ScanResult) -> None:
     """Persist the scan's titles as Track rows for the timed review gate (§4.3).
 
     Uses the default rip preset for the disc type to compute keep/drop defaults
@@ -322,6 +322,7 @@ async def get_ripper_config(
         makemkv_sdf_enabled=bool(cfg.makemkv_sdf_enabled),
         ripping_paused=bool(cfg.ripping_paused),
         manual_wait_seconds=int(cfg.manual_wait_seconds) if cfg.manual_wait_seconds is not None else 60,
+        review_requires_confirm=bool(cfg.review_requires_confirm),
     )
 
 
@@ -701,7 +702,7 @@ async def identify(
                 thediscdb_match = None
 
     # Fix 75-1: pending_session_id must land BEFORE anything below that resolves
-    # the job's rip preset — _persist_review_tracks (hold_for_review branch)
+    # the job's rip preset — persist_review_tracks (hold_for_review branch)
     # resolves via resolve_rip_preset_for_job -> resolve_routed_session_id, which
     # reads this column. Assigning it after (as before) meant a manual-trigger
     # rip with an explicit session and hold_for_review on would persist review
@@ -783,7 +784,7 @@ async def identify(
             if cfg.hold_for_review:
                 job.status = JobStatus.AWAITING_REVIEW
                 job.wait_start_time = datetime.now(timezone.utc)
-                await _persist_review_tracks(session, job, scan)
+                await persist_review_tracks(session, job, scan)
             else:
                 job.status = JobStatus.IDENTIFIED
         else:
@@ -805,7 +806,7 @@ async def identify(
             # waits for Rip again or Discard. No countdown (wait_start_time
             # stays unset), so the ripper never auto-starts it.
             if job.status != JobStatus.AWAITING_REVIEW:
-                await _persist_review_tracks(session, job, scan)
+                await persist_review_tracks(session, job, scan)
             job.status = JobStatus.AWAITING_REVIEW
             job.wait_start_time = None
             job.metadata_json = {**(job.metadata_json or {}), "previously_ripped": {"job_id": previous.id}}
@@ -915,7 +916,7 @@ async def rip_start(
 
     # IDENTIFIED is the normal pre-rip state; AWAITING_REVIEW reaches here only
     # when the timed review gate auto-started (countdown elapsed) a held disc
-    # whose scan yielded NO persistable titles — _persist_review_tracks then
+    # whose scan yielded NO persistable titles — persist_review_tracks then
     # added nothing, so `existing` above was empty. Fall through and select
     # tracks now, exactly as for a never-parked disc; without this the disc
     # 409s and the ripper (4xx = non-retryable) abandons it permanently.
@@ -1169,8 +1170,15 @@ async def get_held_job(drive_id: str, session: AsyncSession = Depends(get_sessio
     # paused = the hold survives a reboot: global ripping_paused OR this disc's
     # per-job manual_pause. Either means the operator deliberately held it.
     global_paused = bool(cfg.ripping_paused) if cfg is not None else False
+    # Mandatory-confirm mode: no countdown to restart, the disc waits for Start.
+    confirm_only = bool(cfg.review_requires_confirm) if cfg is not None else False
     # A previously-ripped hold waits for the operator however it got there.
-    paused = global_paused or bool(rows[0].manual_pause) or previously_ripped_job_id(rows[0].metadata_json) is not None
+    paused = (
+        global_paused
+        or confirm_only
+        or bool(rows[0].manual_pause)
+        or previously_ripped_job_id(rows[0].metadata_json) is not None
+    )
     return HeldJobView(job=JobView.model_validate(rows[0]), paused=paused)
 
 

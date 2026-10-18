@@ -81,11 +81,16 @@ class Config(SQLModel, table=True):
     auto_rip_on_insert: bool = Field(sa_column=Column(Boolean, nullable=False, server_default="true"))
     block_on_miss: bool = Field(sa_column=Column(Boolean, nullable=False, server_default="true"))
     ripping_paused: bool = Field(sa_column=Column(Boolean, nullable=False, server_default="false"))
-    # Timed pre-rip review gate: when on, an inserted disc scans + identifies then
-    # parks in AWAITING_REVIEW for `manual_wait_seconds` before auto-starting the
-    # rip (suppressed while `ripping_paused`). Off = today's auto-rip behavior.
+    # Pre-rip review gate: when on, an inserted disc scans + identifies then
+    # parks in AWAITING_REVIEW. Two sub-modes: timed (the default) auto-starts
+    # the rip after `manual_wait_seconds` (suppressed while `ripping_paused`);
+    # `review_requires_confirm` makes the held disc wait until the operator
+    # confirms, with no countdown. Off = today's auto-rip behavior.
     hold_for_review: bool = Field(sa_column=Column(Boolean, nullable=False, server_default="false"))
     manual_wait_seconds: int = Field(sa_column=Column(Integer, nullable=False, server_default="60"))
+    review_requires_confirm: bool = Field(
+        default=False, sa_column=Column(Boolean, nullable=False, server_default="false")
+    )
     # A disc whose fingerprint matches an earlier rip (on any drive): hold it
     # for the operator, reject (eject) it, or rip it again. VARCHAR, validated
     # app-side by PreviouslyRippedAction.

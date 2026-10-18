@@ -26,7 +26,8 @@ class ConfigFieldMeta(BaseModel):
     setup_order: int | None = None
     # "Get a free key" link for API key fields.
     signup_url: str | None = None
-    # Custom renderer id for ConfigSchemaField ("makemkv_key", "disc_handling").
+    # Custom renderer id for ConfigSchemaField ("makemkv_key", "disc_handling",
+    # "review_wait").
     widget: str | None = None
     # Key of the field whose widget renders this one; forms skip it on its own.
     part_of: str | None = None
@@ -238,12 +239,23 @@ CONFIG_FIELD_META: list[ConfigFieldMeta] = [
         group="Ripping",
         tier="operator",
         label="Hold discs for review",
-        help="Hold each inserted disc in a timed review state after scan + "
-        "identify, so you can correct it before the rip starts. The rip "
-        "auto-starts when the countdown ends (unless rips are paused).",
+        help="Hold each inserted disc for review after scan + identify, so you "
+        "can correct it before the rip starts. The rip either auto-starts when "
+        "the countdown ends (unless rips are paused) or waits for you to "
+        "confirm, per the review gate setting.",
         type="bool",
         editable=True,
         part_of="auto_rip_on_insert",
+    ),
+    ConfigFieldMeta(
+        key="review_requires_confirm",
+        group="Ripping",
+        tier="operator",
+        label="Require manual confirm (no auto-start)",
+        help="A held disc waits until you press Start rip. It never starts on its own.",
+        type="bool",
+        editable=True,
+        widget="review_wait",
     ),
     ConfigFieldMeta(
         key="manual_wait_seconds",
@@ -253,6 +265,7 @@ CONFIG_FIELD_META: list[ConfigFieldMeta] = [
         help="How long a held disc waits for review before the rip auto-starts.",
         type="int",
         editable=True,
+        part_of="review_requires_confirm",
     ),
     ConfigFieldMeta(
         key="max_parallel_iso_rips",

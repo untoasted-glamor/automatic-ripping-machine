@@ -61,7 +61,14 @@ class _WaitSpec:
     `timed` enables the review-gate countdown: while parked, the loop computes a
     deadline from `wait_start_time + manual_wait_seconds` and, on expiry while NOT
     paused (global `ripping_paused` OR per-job pause), self-starts the rip. Pause
-    suspends the countdown; the deadline is only honoured while unpaused."""
+    suspends the countdown; the deadline is only honoured while unpaused. In
+    mandatory-confirm mode (`review_requires_confirm`) the countdown never
+    expires, so only the operator's Start proceeds.
+
+    Every wait still gives up after RESOLUTION_WAIT_TIMEOUT_SECONDS and drops
+    the drive lock. A disc still waiting for a confirm is not lost: Start flips
+    the job to RIPPING backend-side, and `maybe_reacquire_current_job` picks a
+    RIPPING job back up on the next heartbeat."""
 
     parked: JobStatus
     success: frozenset[JobStatus]
@@ -70,14 +77,19 @@ class _WaitSpec:
 
 
 # Identify gate: disc couldn't auto-ID; wait for the operator to resolve identity.
+# With hold_for_review on, resolve promotes the disc to AWAITING_REVIEW rather
+# than IDENTIFIED (backend routers/jobs.py resolve()), so that is a success too:
+# the pipeline then falls through into the review gate below instead of
+# abandoning or ripping straight away.
 _IDENTIFY_WAIT = _WaitSpec(
     parked=JobStatus.AWAITING_USER_ID,
-    success=frozenset({JobStatus.IDENTIFIED}),
+    success=frozenset({JobStatus.IDENTIFIED, JobStatus.AWAITING_REVIEW}),
     label="awaiting_user_id",
 )
-# Review gate (timed): disc identified but held for review; wait for Start (which
-# transitions to ripping), the auto-start countdown (ripper self-starts → ripping),
-# or the operator otherwise leaving the gate.
+# Review gate: disc identified but held for review; wait for Start (which
+# transitions to ripping), the auto-start countdown in timed mode (ripper
+# self-starts → ripping; never fires in mandatory-confirm mode), or the
+# operator otherwise leaving the gate.
 _REVIEW_WAIT = _WaitSpec(
     parked=JobStatus.AWAITING_REVIEW,
     success=frozenset({JobStatus.IDENTIFIED, JobStatus.RIPPING}),
@@ -633,13 +645,15 @@ class JobController:
         """True when a held disc's auto-start countdown has elapsed AND it is not
         paused. Paused — global `ripping_paused` OR this disc's per-job
         `manual_pause` — keeps the countdown suspended, so it returns False and the
-        wait continues. The job view + config are re-read each poll so a mid-wait
-        pause / resume / duration change applies on the next cycle.
+        wait continues. Mandatory-confirm mode (`review_requires_confirm`) has no
+        countdown at all: always False, only the operator's Start proceeds. The
+        job view + config are re-read each poll so a mid-wait pause / resume /
+        duration / mode change applies on the next cycle.
         """
         if view.manual_pause:
             return False
         cfg = await self._safe_get_ripper_config()
-        if cfg is None or cfg.ripping_paused:
+        if cfg is None or cfg.ripping_paused or cfg.review_requires_confirm:
             return False
         if view.wait_start_time is None:
             return False
@@ -654,9 +668,10 @@ class JobController:
             return None
 
     async def _safe_get_ripper_config(self) -> RipperConfigView | None:
-        """Ripper config (ripping_paused + manual_wait_seconds) for the review
-        countdown. None on transport error → the caller treats it as 'can't tell;
-        keep waiting' (fail-safe: never auto-rip on a config blip)."""
+        """Ripper config (ripping_paused, manual_wait_seconds,
+        review_requires_confirm) for the review countdown. None on transport
+        error → the caller treats it as 'can't tell; keep waiting' (fail-safe:
+        never auto-rip on a config blip)."""
         try:
             return await self._client.get_ripper_config()
         except httpx.HTTPError as e:
