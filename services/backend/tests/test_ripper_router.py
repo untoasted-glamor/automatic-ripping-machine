@@ -1804,6 +1804,44 @@ def test_rip_complete_no_done_failed(monkeypatch: pytest.MonkeyPatch) -> None:
     assert any(e["event_type"] == "rip.failed" for e in hub.events)
 
 
+def _kept_and_skipped(kept_statuses: list[TrackStatus]) -> list[Track]:
+    """Kept tracks with the given outcomes, plus one excluded track left queued."""
+    tracks = [_track(f"t{i}", status=st, index=i) for i, st in enumerate(kept_statuses)]
+    skipped = _track("t_skip", status=TrackStatus.QUEUED, index=len(kept_statuses))
+    skipped.excluded = True
+    return [*tracks, skipped]
+
+
+@pytest.mark.parametrize(
+    ("kept_statuses", "job_status", "event_type", "counts"),
+    [
+        ([TrackStatus.DONE] * 9, "ripped", "rip.completed", (9, 0, 9)),
+        ([TrackStatus.DONE] * 8 + [TrackStatus.FAILED], "ripped_partial", "rip.partial", (8, 1, 9)),
+    ],
+)
+def test_rip_complete_counts_kept_tracks_and_reports_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+    kept_statuses: list[TrackStatus],
+    job_status: str,
+    event_type: str,
+    counts: tuple[int, int, int],
+) -> None:
+    """An excluded track is skipped, not missing: the rip.* counts cover kept
+    tracks only, so a clean rip reads 9/9 rather than 9/10."""
+    db = FakeSession()
+    db.rows["jobs"] = [_job(status=JobStatus.RIPPING)]
+    db.rows["drives"] = [_drive()]
+    db.rows["tracks"] = _kept_and_skipped(kept_statuses)
+    hub = _Hub()
+    r = _rip_complete(db, hub, monkeypatch)
+    assert r.status_code == 200
+    assert r.json()["status"] == job_status
+    (payload,) = [e["payload"] for e in hub.events if e["event_type"] == event_type]
+    done, failed, total = counts
+    assert (payload["tracks_done"], payload["tracks_failed"], payload["tracks_total"]) == (done, failed, total)
+    assert payload["tracks_skipped"] == 1
+
+
 def test_rip_complete_zero_tracks_failed(monkeypatch: pytest.MonkeyPatch) -> None:
     db = FakeSession()
     db.rows["jobs"] = [_job(status=JobStatus.RIPPING)]

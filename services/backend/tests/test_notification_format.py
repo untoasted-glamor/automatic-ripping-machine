@@ -58,6 +58,27 @@ def test_rip_partial_lists_failed_count() -> None:
     assert "2/3" in body and "1 failed" in body
 
 
+def test_rip_completed_mentions_skipped_tracks() -> None:
+    event = _event(
+        "rip.completed",
+        {"drive_id": "drv_x", "tracks_done": 9, "tracks_failed": 0, "tracks_total": 9, "tracks_skipped": 1},
+    )
+    _, body = format_event(event, _job())
+    assert "(9/9 tracks, 1 skipped)" in body
+
+
+def test_rip_completed_without_skipped_tracks_says_nothing_about_skipping() -> None:
+    # tracks_skipped=0, and an event stored before the field existed.
+    for extra in ({"tracks_skipped": 0}, {}):
+        event = _event(
+            "rip.completed",
+            {"drive_id": "drv_x", "tracks_done": 3, "tracks_failed": 0, "tracks_total": 3, **extra},
+        )
+        _, body = format_event(event, _job())
+        assert "(3/3 tracks)" in body
+        assert "skipped" not in body
+
+
 def test_session_completed_includes_session_id_and_status() -> None:
     event = _event(
         "session.completed",

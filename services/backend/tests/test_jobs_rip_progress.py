@@ -119,6 +119,35 @@ def test_ripping_job_with_in_progress_track_returns_summary(signing_key: bytes) 
     }
 
 
+def test_ripping_job_counts_kept_tracks_only(signing_key: bytes) -> None:
+    """Excluded tracks are skipped, so they're left out of the totals and of the
+    in-progress track's position: excluded 0 and 2 → index 3 is the 2nd kept."""
+    job_id = "job_01JZXR7K3M5Q8N4VWA00000002"
+    db = FakeSession()
+    _seed_admin(db)
+    db.rows["jobs"] = [_make_job(job_id, status=JobStatus.RIPPING)]
+    db.rows["tracks"] = [
+        _make_track("trk_0", job_id=job_id, index=0, status=TrackStatus.QUEUED),
+        _make_track("trk_1", job_id=job_id, index=1, status=TrackStatus.DONE),
+        _make_track("trk_2", job_id=job_id, index=2, status=TrackStatus.DONE),
+        _make_track("trk_3", job_id=job_id, index=3, status=TrackStatus.IN_PROGRESS),
+        _make_track("trk_4", job_id=job_id, index=4, status=TrackStatus.QUEUED),
+    ]
+    db.rows["tracks"][0].excluded = True
+    db.rows["tracks"][2].excluded = True
+    app, token = _make_app(signing_key, db)
+    with TestClient(app) as client:
+        r = client.get("/api/jobs", headers=_auth(token))
+    assert r.status_code == 200
+    assert r.json()[0]["rip_progress"] == {
+        "tracks_total": 3,
+        "tracks_done": 1,
+        "tracks_failed": 0,
+        "current_track_id": "trk_3",
+        "current_track_index": 2,
+    }
+
+
 def test_ripping_job_without_in_progress_track_returns_null_current(signing_key: bytes) -> None:
     db = FakeSession()
     _seed_admin(db)

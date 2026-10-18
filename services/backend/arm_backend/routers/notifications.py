@@ -447,6 +447,8 @@ _SAMPLE_VALUES: dict[str, str] = {
     "tracks_done": "3",
     "tracks_total": "3",
     "tracks_failed": "0",
+    "tracks_skipped": "1",
+    "tracks_skipped_note": ", 1 skipped",
     "status": "ripped",
     "job_id": "job_example",
     "job_year": "2024",

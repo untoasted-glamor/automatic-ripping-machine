@@ -1330,6 +1330,13 @@ async def rip_complete(
     done = sum(1 for t in tracks if t.status == TrackStatus.DONE)
     failed = sum(1 for t in tracks if t.status == TrackStatus.FAILED)
     total = len(tracks)
+    # What the operator is told counts kept tracks only: an excluded track is
+    # skipped, not missing, so "9/10 tracks" for a clean rip would read like a
+    # failure. The job status below still comes from every track's outcome.
+    kept = [t for t in tracks if not t.excluded]
+    kept_done = sum(1 for t in kept if t.status == TrackStatus.DONE)
+    kept_failed = sum(1 for t in kept if t.status == TrackStatus.FAILED)
+    skipped = total - len(kept)
 
     if total == 0 or done == 0:
         job.status = JobStatus.FAILED
@@ -1353,12 +1360,13 @@ async def rip_complete(
     await session.commit()
     await session.refresh(job)
     logger.info(
-        "rip-complete job_id=%s status=%s done=%d failed=%d total=%d",
+        "rip-complete job_id=%s status=%s done=%d failed=%d total=%d skipped=%d",
         job.id,
         job.status.value,
-        done,
-        failed,
-        total,
+        kept_done,
+        kept_failed,
+        len(kept),
+        skipped,
     )
 
     event_type = {
@@ -1374,9 +1382,10 @@ async def rip_complete(
             "job_id": job.id,
             "drive_id": job.drive_id,
             "status": job.status.value,
-            "tracks_done": done,
-            "tracks_failed": failed,
-            "tracks_total": total,
+            "tracks_done": kept_done,
+            "tracks_failed": kept_failed,
+            "tracks_total": len(kept),
+            "tracks_skipped": skipped,
         },
         job_id=job.id,
         session=session,
