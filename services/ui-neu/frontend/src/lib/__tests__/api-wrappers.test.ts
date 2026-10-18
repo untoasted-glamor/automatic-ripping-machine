@@ -20,11 +20,11 @@ beforeEach(() => {
 // behaviour is covered by dashboard-store.test.ts. Only setRippingEnabled still
 // routes through the client helper, so that's all this block asserts.
 describe('dashboard API', () => {
-	it('setRippingEnabled PATCHes /api/config with ripping_paused=false, hold_for_review=false when enabled', async () => {
+	it('setRippingEnabled (Resume) PATCHes only ripping_paused=false and leaves hold_for_review alone', async () => {
 		await setRippingEnabled(true);
 		expect(mockApiFetch).toHaveBeenCalledWith('/api/config', {
 			method: 'PATCH',
-			body: JSON.stringify({ ripping_paused: false, hold_for_review: false })
+			body: JSON.stringify({ ripping_paused: false })
 		});
 	});
 

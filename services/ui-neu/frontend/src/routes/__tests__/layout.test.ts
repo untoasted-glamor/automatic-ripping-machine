@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { renderComponent, screen, cleanup } from '$lib/test-utils';
+import { renderComponent, screen, cleanup, fireEvent, within } from '$lib/test-utils';
 import Layout from '../+layout.svelte';
 import { createRawSnippet } from 'svelte';
+import { get } from 'svelte/store';
 
 vi.mock('$app/stores', async () => {
 	const { readable } = await import('svelte/store');
@@ -224,5 +225,59 @@ describe('Layout', () => {
 		const rippingBadges = screen.getAllByText(/ripping/i);
 		const rippingBadge = rippingBadges.find((el) => el.textContent?.match(/^\d+ ripping$/));
 		expect(rippingBadge?.textContent).toBe('1 ripping');
+	});
+
+	describe('Pause / Resume toggle', () => {
+		async function setDashboard(over: Record<string, unknown>) {
+			const { dashboard } = await import('$lib/stores/dashboard');
+			dashboard.update((d) => ({ ...d, active_jobs: [], ...over }) as never);
+		}
+
+		it('says exactly what Paused means while ripping is paused', async () => {
+			await setDashboard({ ripping_enabled: false, hold_for_review: true });
+			renderComponent(Layout, { props: { children: childSnippet() } });
+			expect(screen.getByRole('switch')).toHaveTextContent('Paused: All new rips paused until you resume');
+		});
+
+		it('tells an operator who had Hold for review off that Pause turned it on', async () => {
+			const { setRippingEnabled } = await import('$lib/api/dashboard');
+			await setDashboard({ ripping_enabled: true, hold_for_review: false });
+			renderComponent(Layout, { props: { children: childSnippet() } });
+			await fireEvent.click(screen.getByRole('switch'));
+			expect(setRippingEnabled).toHaveBeenCalledWith(false);
+			const notice = await screen.findByTestId('hold-turned-on-notice');
+			expect(notice).toHaveTextContent('Hold for review is now on');
+			expect(within(notice).getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings#Ripping');
+			expect(screen.getByRole('switch')).toHaveTextContent('Paused: All new rips paused until you resume');
+
+			await fireEvent.click(within(notice).getByRole('button', { name: 'Dismiss notice' }));
+			expect(screen.queryByTestId('hold-turned-on-notice')).not.toBeInTheDocument();
+		});
+
+		it('shows no notice when Hold for review was already on, and Resume leaves it on', async () => {
+			const { setRippingEnabled } = await import('$lib/api/dashboard');
+			const { dashboard } = await import('$lib/stores/dashboard');
+			await setDashboard({ ripping_enabled: true, hold_for_review: true });
+			renderComponent(Layout, { props: { children: childSnippet() } });
+			await fireEvent.click(screen.getByRole('switch'));
+			await vi.waitFor(() => expect(setRippingEnabled).toHaveBeenCalledWith(false));
+			expect(screen.queryByTestId('hold-turned-on-notice')).not.toBeInTheDocument();
+
+			await fireEvent.click(screen.getByRole('switch'));
+			await vi.waitFor(() => expect(setRippingEnabled).toHaveBeenLastCalledWith(true));
+			expect(get(dashboard)).toMatchObject({ ripping_enabled: true, hold_for_review: true });
+			expect(screen.getByRole('switch')).toHaveTextContent('Auto-Start');
+		});
+
+		it('reverts the toggle and Hold for review when Pause fails, with no notice', async () => {
+			const { setRippingEnabled } = await import('$lib/api/dashboard');
+			const { dashboard } = await import('$lib/stores/dashboard');
+			vi.mocked(setRippingEnabled).mockRejectedValueOnce(new Error('down'));
+			await setDashboard({ ripping_enabled: true, hold_for_review: false });
+			renderComponent(Layout, { props: { children: childSnippet() } });
+			await fireEvent.click(screen.getByRole('switch'));
+			await vi.waitFor(() => expect(get(dashboard)).toMatchObject({ ripping_enabled: true, hold_for_review: false }));
+			expect(screen.queryByTestId('hold-turned-on-notice')).not.toBeInTheDocument();
+		});
 	});
 });

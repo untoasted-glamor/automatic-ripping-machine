@@ -30,6 +30,7 @@ const STICKY_FIELDS = [
 	'iso_source_kinds',
 	'notification_count',
 	'ripping_enabled',
+	'hold_for_review',
 	'review_requires_confirm',
 	'manual_wait_seconds'
 ] as const satisfies readonly (keyof DashboardData)[];

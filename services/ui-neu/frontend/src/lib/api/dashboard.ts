@@ -54,6 +54,9 @@ export interface DashboardData {
 	preparing: IsoPreparing[];
 	notification_count: number;
 	ripping_enabled: boolean;
+	// Hold for review (config), so Pause can tell the operator it just turned
+	// it on. Absent until the config read succeeds once.
+	hold_for_review?: boolean;
 	// Review gate (config): mandatory confirm vs the countdown's length, for
 	// the held-disc cards. Absent until the config read succeeds once.
 	review_requires_confirm?: boolean;
@@ -148,6 +151,7 @@ export async function fetchDashboard(): Promise<DashboardData> {
 		preparing,
 		notification_count: notifications?.unseen ?? 0,
 		ripping_enabled: config ? !config.ripping_paused : true,
+		hold_for_review: config?.hold_for_review,
 		review_requires_confirm: config?.review_requires_confirm,
 		manual_wait_seconds: config?.manual_wait_seconds,
 		makemkv_key_valid: config?.makemkv_key_valid ?? null,
@@ -163,12 +167,13 @@ export async function fetchDashboard(): Promise<DashboardData> {
 // The Pause toggle means "hold discs for review": pausing lets discs scan +
 // identify and then parks each in AWAITING_REVIEW indefinitely. The backend
 // only PARKS (rather than rejecting with 409) when BOTH ripping_paused AND
-// hold_for_review are set — see ripper.py identify(). Un-pausing clears both
-// and resumes straight-through ripping; config.py gives held discs a fresh
-// countdown on the ripping_paused ON->OFF transition so they don't stampede.
+// hold_for_review are set (ripper.py identify, iso_rips.py), so Pause turns
+// hold_for_review on too. Resume sends only ripping_paused=false and leaves
+// hold_for_review as it is: the operator's disc-handling choice (Settings)
+// stays theirs, and a Pause that turned it on says so (the layout's notice).
+// config.py gives held discs a fresh countdown on the ripping_paused ON->OFF
+// transition so they don't stampede.
 export function setRippingEnabled(enabled: boolean): Promise<ConfigView> {
-	return apiFetch<ConfigView>('/api/config', {
-		method: 'PATCH',
-		body: JSON.stringify({ ripping_paused: !enabled, hold_for_review: !enabled })
-	});
+	const body = enabled ? { ripping_paused: false } : { ripping_paused: true, hold_for_review: true };
+	return apiFetch<ConfigView>('/api/config', { method: 'PATCH', body: JSON.stringify(body) });
 }

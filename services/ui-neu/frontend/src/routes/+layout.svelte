@@ -10,6 +10,8 @@
 	import { isoPickerMode, showIsoPicker } from '$lib/stores/isoPicker';
 	import IsoPicker from '$lib/components/IsoPicker.svelte';
 	import Glyph from '$lib/components/Glyph.svelte';
+	import CloseButton from '$lib/components/CloseButton.svelte';
+	import { PAUSED_LABEL } from '$lib/utils/pause';
 	import Flyout from '$lib/components/Flyout.svelte';
 	import FlyoutItem from '$lib/components/FlyoutItem.svelte';
 	import FlyoutDivider from '$lib/components/FlyoutDivider.svelte';
@@ -36,6 +38,10 @@
 		sidebarOpen = true;
 	}
 	let togglingPause = $state(false);
+	// Pause also turns Hold for review on (see setRippingEnabled), and Resume
+	// leaves it on. Shown once, when a Pause turned it on for an operator who
+	// had it off, so the changed disc-handling choice isn't a surprise.
+	let holdTurnedOnNotice = $state(false);
 	// Guards the 401 handler against firing redundant goto('/login') calls when
 	// multiple in-flight requests 401 at once. Reset once the user is back on a
 	// real (non-auth) page, so a future session expiry can redirect again.
@@ -88,12 +94,15 @@
 		if (togglingPause) return;
 		togglingPause = true;
 		const newValue = !$dashboard.ripping_enabled;
-		dashboard.update((d) => ({ ...d, ripping_enabled: newValue }));
+		const holdBefore = $dashboard.hold_for_review;
+		const turnsHoldOn = !newValue && holdBefore === false;
+		dashboard.update((d) => ({ ...d, ripping_enabled: newValue, ...(newValue ? {} : { hold_for_review: true }) }));
 		try {
 			await setRippingEnabled(newValue);
+			if (turnsHoldOn) holdTurnedOnNotice = true;
 		} catch {
 			// Revert on failure — next poll will also reconcile
-			dashboard.update((d) => ({ ...d, ripping_enabled: !newValue }));
+			dashboard.update((d) => ({ ...d, ripping_enabled: !newValue, hold_for_review: holdBefore }));
 		} finally {
 			togglingPause = false;
 		}
@@ -334,7 +343,7 @@
 							<span class="toggle" aria-hidden="true">
 								<span class="toggle-thumb"></span>
 							</span>
-							{$dashboard.ripping_enabled ? 'Auto-Start' : 'Paused'}
+							{$dashboard.ripping_enabled ? 'Auto-Start' : PAUSED_LABEL}
 						</button>
 					{/if}
 					<!-- Quick actions menu -->
@@ -510,6 +519,18 @@
 			<!-- Page content -->
 			<main class="flex-1 overflow-y-auto p-4 lg:p-6">
 				<LiveUpdatesBanner />
+				{#if holdTurnedOnNotice}
+					<div class="alert alert-info layout-hold-notice" role="status" data-testid="hold-turned-on-notice">
+						<div class="flex-1">
+							<div class="alert-title">Hold for review is now on</div>
+							<div class="alert-body">
+								Pausing holds each new disc for review, and it stays on after you resume. You can change it in
+								<a href="/settings#Ripping" class="layout-hold-notice-link">Settings</a>.
+							</div>
+						</div>
+						<CloseButton onclick={() => (holdTurnedOnNotice = false)} label="Dismiss notice" />
+					</div>
+				{/if}
 				{@render children()}
 			</main>
 		</div>
@@ -662,6 +683,16 @@
 	   role="switch" aria-checked). */
 	.layout-autostart[aria-checked='false'] .toggle {
 		background: var(--color-warning);
+	}
+
+	.layout-hold-notice {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.75rem;
+		margin-bottom: 1rem;
+	}
+	.layout-hold-notice-link {
+		text-decoration: underline;
 	}
 
 	/* Mobile drawer */
