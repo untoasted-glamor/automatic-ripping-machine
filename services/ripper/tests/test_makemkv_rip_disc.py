@@ -28,6 +28,7 @@ import pytest
 
 import arm_ripper.rip.makemkv_rip as makemkv_rip
 from arm_ripper.rip.makemkv_rip import rip_disc
+from tests._makemkvcon_fake import SINTEL_ISO, install
 
 
 class _FakeStream:
@@ -655,28 +656,30 @@ async def test_rip_disc_returns_unavailable_when_makemkvcon_missing(monkeypatch,
     assert result.titles == {}
 
 
-@pytest.mark.asyncio
-async def test_rip_disc_passes_minlength_to_makemkvcon(monkeypatch, tmp_path):
-    """The CLI flag must be `--minlength=<int>` exactly — MakeMKV is
-    strict about the equals form."""
-    captured: dict[str, Any] = {}
+@pytest.mark.parametrize(
+    ("minlength", "files"),
+    [(900, {6: "B1_t00.mkv"}), (300, {0: "C1_t00.mkv", 1: "A1_t01.mkv", 3: "B3_t02.mkv", 6: "B1_t03.mkv"})],
+)
+async def test_rip_disc_rips_the_titles_at_its_minimum_length(monkeypatch, tmp_path, minlength, files):
+    """Against the recorded Sintel DVD (titles 14:58, 14:57, 1:59, 6:05,
+    3:36, 1:47, 58:24): MakeMKV rips only the titles at or above the
+    minimum it was given, and each lands on its own source title."""
+    iso = tmp_path / "sintel.iso"
+    iso.write_bytes(b"")
+    install(monkeypatch, isos={str(iso): SINTEL_ISO})
+    out = tmp_path / "out"
 
-    encoded = [b'MSG:5036,0,2,"done","%1 %2","0","titles"\n']
-    fake = _FakeProc(encoded)
+    result = await rip_disc(
+        device_path=str(iso),
+        output_dir=out,
+        minlength_seconds=minlength,
+        eligible_source_indexes=sorted(files),
+    )
 
-    async def fake_create_subprocess_exec(*args: Any, **_kwargs: Any) -> _FakeProc:
-        captured["argv"] = args
-        return fake
-
-    monkeypatch.setattr(makemkv_rip.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-
-    await rip_disc(device_path="/dev/sr0", output_dir=tmp_path, minlength_seconds=900)
-
-    assert "--minlength=900" in captured["argv"]
-    assert "all" in captured["argv"]
-    # The output dir is the last positional after `all`.
-    argv = list(captured["argv"])
-    assert argv[argv.index("all") + 1] == str(tmp_path)
+    assert result.overall_error is None
+    assert sorted(p.name for p in out.iterdir()) == sorted(files.values())
+    assert {idx: r.output_path.name for idx, r in result.titles.items() if r.output_path} == files
+    assert all(r.ok for r in result.titles.values())
 
 
 @pytest.mark.asyncio

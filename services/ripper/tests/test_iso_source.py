@@ -3,8 +3,8 @@
 Covers the five code paths the iso-source helper flips:
 
   - source.is_iso_source / source.makemkv_source_url helpers
-  - scan_disc: makemkvcon info source URL becomes `iso:<file>`
-  - rip_disc: makemkvcon mkv source URL becomes `iso:<file>`
+  - scan_disc: makemkvcon info reads the `.iso`, not the drive
+  - rip_disc: makemkvcon mkv rips the `.iso`, not the drive
   - _eject_with_retry: skipped for ISO sources
   - heartbeat_loop: probe_drive_media is bypassed for ISO sources
 """
@@ -32,70 +32,7 @@ import arm_ripper.scan.disc_probe as disc_probe  # noqa: E402
 import arm_ripper.scan.makemkv as scan_makemkv  # noqa: E402
 from arm_common import DriveMediaStatus  # noqa: E402
 from arm_ripper.source import is_iso_source, makemkv_source_url  # noqa: E402
-
-
-# --- helpers ---------------------------------------------------------------
-
-
-class _FakeStream:
-    """Implements both `readline()` (rip_disc) and `async for` (scan_disc)
-    over the same line list, so a single fake serves both call sites."""
-
-    def __init__(self, lines: list[bytes]) -> None:
-        self._lines = list(lines)
-
-    async def readline(self) -> bytes:
-        if not self._lines:
-            return b""
-        return self._lines.pop(0)
-
-    async def read(self) -> bytes:
-        return b""
-
-    def __aiter__(self) -> "_FakeStream":
-        return self
-
-    async def __anext__(self) -> bytes:
-        if not self._lines:
-            raise StopAsyncIteration
-        return self._lines.pop(0)
-
-
-class _FakeProc:
-    def __init__(self, stdout: bytes = b"", stderr: bytes = b"", returncode: int = 0) -> None:
-        self._final_returncode = returncode
-        self.returncode: int | None = None
-        # `stdout` arg may be a flat bytes blob (legacy) or already-split
-        # newline-terminated lines. Split here so both `async for` (scan)
-        # and `readline` (rip) yield one line at a time.
-        stdout_lines = [chunk + b"\n" for chunk in stdout.split(b"\n") if chunk] if stdout else []
-        stderr_lines = [chunk + b"\n" for chunk in stderr.split(b"\n") if chunk] if stderr else []
-        self.stdout = _FakeStream(stdout_lines)
-        self.stderr = _FakeStream(stderr_lines)
-
-    async def wait(self) -> int:
-        await asyncio.sleep(0)
-        self.returncode = self._final_returncode
-        return self.returncode
-
-    def kill(self) -> None:
-        self.returncode = -9
-
-
-def _capture_subprocess(monkeypatch, module: Any, *, returncode: int = 0, stdout: bytes = b"") -> list[tuple[Any, ...]]:
-    """Replace `module.asyncio.create_subprocess_exec` with a recorder.
-
-    Returns a list that accumulates the positional args of every call —
-    asserts can inspect `calls[0][...]` to find the source URL.
-    """
-    calls: list[tuple[Any, ...]] = []
-
-    async def fake_create(*args: Any, **_kwargs: Any) -> _FakeProc:
-        calls.append(args)
-        return _FakeProc(stdout=stdout, returncode=returncode)
-
-    monkeypatch.setattr(module.asyncio, "create_subprocess_exec", fake_create)
-    return calls
+from tests._makemkvcon_fake import HANAKO_BD, SINTEL_ISO, install  # noqa: E402
 
 
 # --- source helpers --------------------------------------------------------
@@ -142,98 +79,78 @@ def test_makemkv_source_url_dev_for_device() -> None:
     assert makemkv_source_url("/dev/sr0") == "dev:/dev/sr0"
 
 
-# --- scan_disc command-line ------------------------------------------------
+# --- scan_disc / rip_disc read the right source ----------------------------
+#
+# Against the recorded-output makemkvcon fake, with the Hanako-kun BD seated
+# in /dev/sr0 and the Sintel DVD as the ISO: what comes back says which
+# source was read, and the fake records whether the drive was.
 
 
-@pytest.mark.asyncio
-async def test_scan_disc_uses_iso_source_url_for_iso_path(monkeypatch, tmp_path: Path) -> None:
+def _fake_with_both(monkeypatch, tmp_path: Path) -> tuple[Any, str]:
     iso = tmp_path / "sintel.iso"
     iso.write_bytes(b"")
-    # Empty stdout → parse_makemkvcon_info returns empty titles. probe_disc
-    # is best-effort and never raises. We only care about the cmd shape.
-    calls = _capture_subprocess(monkeypatch, scan_makemkv, returncode=0, stdout=b"")
+    fake = install(monkeypatch, disc=HANAKO_BD, isos={str(iso): SINTEL_ISO})
     # Skip the real probe_disc — it would read the disc device.
     monkeypatch.setattr(
         scan_makemkv,
         "probe_disc",
         AsyncMock(return_value=disc_probe.DiscProbe(crc64=None)),
     )
-
-    await scan_makemkv.scan_disc(str(iso))
-
-    assert calls, "create_subprocess_exec was never called"
-    argv = calls[0]
-    assert argv[0] == "makemkvcon"
-    assert f"iso:{iso}" in argv
-    assert not any(str(a).startswith("dev:") for a in argv), argv
+    return fake, str(iso)
 
 
 @pytest.mark.asyncio
-async def test_scan_disc_keeps_dev_source_url_for_block_device(monkeypatch) -> None:
-    calls = _capture_subprocess(monkeypatch, scan_makemkv, returncode=0, stdout=b"")
-    monkeypatch.setattr(
-        scan_makemkv,
-        "probe_disc",
-        AsyncMock(return_value=disc_probe.DiscProbe(crc64=None)),
-    )
+async def test_scan_disc_reads_the_iso_not_the_drive(monkeypatch, tmp_path: Path) -> None:
+    fake, iso = _fake_with_both(monkeypatch, tmp_path)
 
-    await scan_makemkv.scan_disc("/dev/sr0")
+    scan = await scan_makemkv.scan_disc(iso)
 
-    argv = calls[0]
-    assert "dev:/dev/sr0" in argv
-    assert not any(str(a).startswith("iso:") for a in argv), argv
-
-
-# --- rip_disc command-line -------------------------------------------------
+    assert scan.volume_label == "Sintel_NTSC"
+    assert len(scan.titles) == 5
+    assert fake.drive_reads == []
 
 
 @pytest.mark.asyncio
-async def test_rip_disc_uses_iso_source_url_for_iso_path(monkeypatch, tmp_path: Path) -> None:
-    iso = tmp_path / "sintel.iso"
-    iso.write_bytes(b"")
+async def test_scan_disc_reads_the_drive_for_a_block_device(monkeypatch, tmp_path: Path) -> None:
+    fake, _ = _fake_with_both(monkeypatch, tmp_path)
+
+    scan = await scan_makemkv.scan_disc("/dev/sr0")
+
+    assert scan.volume_label == "ToiletBound HanakoKun D1"
+    assert len(scan.titles) == 8
+    assert len(fake.drive_reads) == 1
+
+
+@pytest.mark.asyncio
+async def test_rip_disc_rips_the_iso_not_the_drive(monkeypatch, tmp_path: Path) -> None:
+    fake, iso = _fake_with_both(monkeypatch, tmp_path)
     output_dir = tmp_path / "out"
-    calls: list[tuple[Any, ...]] = []
-
-    async def fake_create(*args: Any, **_kwargs: Any) -> _FakeProc:
-        calls.append(args)
-        return _FakeProc(returncode=0)
-
-    monkeypatch.setattr(makemkv_rip.asyncio, "create_subprocess_exec", fake_create)
 
     await makemkv_rip.rip_disc(
-        device_path=str(iso),
+        device_path=iso,
         output_dir=output_dir,
         minlength_seconds=600,
         eligible_source_indexes=[],
     )
 
-    assert calls, "create_subprocess_exec was never called"
-    argv = calls[0]
-    assert argv[0] == "makemkvcon"
-    assert f"iso:{iso}" in argv
-    assert not any(str(a).startswith("dev:") for a in argv), argv
+    assert sorted(p.name for p in output_dir.iterdir()) == ["A1_t01.mkv", "B1_t02.mkv", "C1_t00.mkv"]
+    assert fake.drive_reads == []
 
 
 @pytest.mark.asyncio
-async def test_rip_disc_keeps_dev_source_url_for_block_device(monkeypatch, tmp_path: Path) -> None:
-    calls: list[tuple[Any, ...]] = []
-
-    async def fake_create(*args: Any, **_kwargs: Any) -> _FakeProc:
-        calls.append(args)
-        return _FakeProc(returncode=0)
-
-    monkeypatch.setattr(makemkv_rip.asyncio, "create_subprocess_exec", fake_create)
+async def test_rip_disc_rips_the_drive_for_a_block_device(monkeypatch, tmp_path: Path) -> None:
+    fake, _ = _fake_with_both(monkeypatch, tmp_path)
+    output_dir = tmp_path / "out"
 
     await makemkv_rip.rip_disc(
         device_path="/dev/sr0",
-        output_dir=tmp_path / "out",
+        output_dir=output_dir,
         minlength_seconds=600,
         eligible_source_indexes=[],
     )
 
-    argv = calls[0]
-    assert "dev:/dev/sr0" in argv
-    assert not any(str(a).startswith("iso:") for a in argv), argv
+    assert len(list(output_dir.glob("ToiletBound HanakoKun D1_t*.mkv"))) == 8
+    assert len(fake.drive_reads) == 1
 
 
 # --- eject skip ------------------------------------------------------------
