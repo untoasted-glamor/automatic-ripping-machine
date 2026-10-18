@@ -38,7 +38,7 @@ from arm_ripper.drive_status import probe_drive_media
 from arm_ripper.rip.dispatcher import rip_all
 from arm_ripper.rip.makemkv_rip import RipDiscResult, RipResult
 from arm_ripper.scan.disc_probe import DiscProbe
-from tests._makemkvcon_fake import HANAKO_BD, SINTEL_ISO, file_size, install
+from tests._makemkvcon_fake import ACCA_DVD, HANAKO_BD, SINTEL_ISO, FakeMakemkvcon, file_size, install
 
 
 def _track(idx: int, source_ref: str | None = None, duration_seconds: int | None = 1800) -> TrackView:
@@ -1085,9 +1085,10 @@ async def _sintel_rip(monkeypatch, tmp_path, min_length_seconds: int) -> tuple[S
 
 async def test_rip_minimum_below_the_baseline_keeps_files_on_their_own_titles(monkeypatch, tmp_path):
     """Sintel titles 0–6 (1:59 and 1:47 among them), tracks only for the
-    ≥120 s titles, a 60 s rip minimum: `mkv all` also rips the two short
-    titles, numbering its files over all seven. Each track still gets its
-    own title's file; the short titles' files stay on disk, unclaimed."""
+    ≥120 s titles, a 60 s rip minimum: `mkv all` would also rip the two
+    short titles, which have no track, so the kept titles are remuxed one
+    by one from the ISO (S7). Each track gets its own title's file and
+    nothing else is written."""
     scan, final, out = await _sintel_rip(monkeypatch, tmp_path, min_length_seconds=60)
 
     sizes = {t.index: file_size(t.size_bytes or 0) for t in scan.titles}
@@ -1097,9 +1098,7 @@ async def test_rip_minimum_below_the_baseline_keeps_files_on_their_own_titles(mo
         assert result.ok is True, (idx, result.error)
         assert result.output_path is not None and result.output_path.name.endswith(f"_t{idx:02d}.mkv")
         assert result.size_bytes == sizes[idx]
-    claimed = {r.output_path for r in final.values()}
-    unclaimed = sorted(p.name for p in out.iterdir() if p not in claimed)
-    assert unclaimed == ["B5_t05.mkv", "B6_t02.mkv"]
+    assert sorted(p for p in out.iterdir()) == sorted(r.output_path for r in final.values())
 
 
 async def test_rip_minimum_above_a_kept_title_fails_only_that_title(monkeypatch, tmp_path):
@@ -1116,30 +1115,306 @@ async def test_rip_minimum_above_a_kept_title_fails_only_that_title(monkeypatch,
         assert final[f"trk_{idx}"].size_bytes == sizes[idx]
 
 
-async def test_disc_progress_goes_to_a_track_when_the_first_title_has_none(monkeypatch, tmp_path):
-    """The rip's first title (a short clip, ripped at a 10 s minimum) has no
-    track; the disc progress bar is credited to the first title that has one."""
-    _stub_rip_disc(
-        monkeypatch, RipDiscResult(overall_error=None, titles={}), fire_per_title_start=False, fire_disc_progress=[0.5]
-    )
-    progress: list[str] = []
+# --- rip_all with titles excluded: backup-then-remux (S7) ---------------------
+#
+# A title that isn't kept is never ripped: the disc is read once by `backup`,
+# then each kept title is remuxed from disk (an `.iso` is remuxed directly).
+# On the Hanako-kun BD every backup id differs from the disc's (backup 0 is the
+# play-all, disc 7), so a file sized as its own title proves the mapping.
 
-    async def on_progress(track: TrackView, _fraction: float) -> None:
-        progress.append(track.id)
+_HANAKO_PLAY_ALL = "00008.mpls"
+_HANAKO_LABEL = "ToiletBound HanakoKun D1"
 
-    async def noop(*_args: Any) -> None:
-        return None
+
+class _Run:
+    """What the backend would have been told: starts, results, progress."""
+
+    def __init__(self) -> None:
+        self.starts: list[str] = []
+        self.done: dict[str, list[RipResult]] = {}
+        self.progress: list[tuple[str, float]] = []
+
+    def final(self, track: TrackView) -> RipResult:
+        (result,) = self.done[track.id]
+        return result
+
+
+async def _rip_recorded(
+    tracks: list[TrackView],
+    scan: ScanResult,
+    out: Path,
+    *,
+    device: str,
+    min_length_seconds: int = _BASELINE,
+    scan_titles: list[ScanTitle] | None | str = "scan",
+    backup_full_selections: bool = False,
+) -> _Run:
+    run = _Run()
+
+    async def on_start(track: TrackView) -> None:
+        run.starts.append(track.id)
+
+    async def on_done(track: TrackView, result: RipResult) -> None:
+        assert track.id in run.starts, f"{track.id} finished without starting"
+        run.done.setdefault(track.id, []).append(result)
+
+    async def on_progress(track: TrackView, fraction: float) -> None:
+        run.progress.append((track.id, fraction))
 
     await rip_all(
-        disc_type=DiscType.BLURAY,
-        device_path="/dev/sr0",
-        tracks=[_track(1, duration_seconds=None)],
-        scan_titles=[ScanTitle(index=0, duration_seconds=30), ScanTitle(index=1, duration_seconds=1800)],
-        output_dir=tmp_path,
-        on_track_start=noop,
-        on_track_done=noop,
+        disc_type=scan.disc_type,
+        device_path=device,
+        tracks=tracks,
+        scan_titles=scan.titles if scan_titles == "scan" else scan_titles,  # type: ignore[arg-type]
+        output_dir=out,
+        on_track_start=on_start,
+        on_track_done=on_done,
         on_track_progress=on_progress,
-        min_length_seconds=10,
+        min_length_seconds=min_length_seconds,
+        backup_full_selections=backup_full_selections,
     )
+    return run
 
-    assert progress == ["trk_1"]
+
+def _exclude(tracks: list[TrackView], *indexes: int) -> list[TrackView]:
+    return [t.model_copy(update={"excluded": True}) if t.index in indexes else t for t in tracks]
+
+
+async def _hanako(monkeypatch) -> tuple[FakeMakemkvcon, ScanResult]:
+    fake = install(monkeypatch, disc=HANAKO_BD)
+    scan = await _scan(monkeypatch, "/dev/sr0")
+    fake.invocations.clear()
+    return fake, scan
+
+
+def _assert_own_files(run: _Run, tracks: list[TrackView], scan: ScanResult, out: Path, prefix: str) -> None:
+    """Each kept track is DONE with `<prefix>_t<its index>.mkv`, sized as its own title."""
+    titles = {t.index: t for t in scan.titles}
+    for track in tracks:
+        if track.excluded:
+            continue
+        result = run.final(track)
+        assert result.ok is True, (track.index, result.error)
+        assert result.output_path == out / f"{prefix}_t{track.index:02d}.mkv"
+        assert result.size_bytes == result.output_path.stat().st_size == file_size(titles[track.index].size_bytes or 0)
+        assert result.duration_seconds == titles[track.index].duration_seconds
+
+
+@pytest.mark.parametrize("excluded_playlist", [_HANAKO_PLAY_ALL, "00009.mpls"], ids=["play-all", "title-0"])
+async def test_an_excluded_blu_ray_title_is_not_ripped(monkeypatch, tmp_path, excluded_playlist):
+    """Hanako-kun BD, one title excluded: the play-all (disc 7, backup 0), or
+    disc title 0 (the D2 trap: title 1 must still get title 1's file). The
+    drive is read once, by the backup; every remux is `--noscan`; the
+    excluded title gets no report and no file. Every kept title remuxed, so
+    the backup and the remux scratch space are both gone."""
+    fake, scan = await _hanako(monkeypatch)
+    (skip,) = [t.index for t in scan.titles if t.source_playlist == excluded_playlist]
+    tracks = _exclude(_rip_start_tracks(scan), skip)
+    out = tmp_path / "job"
+
+    run = await _rip_recorded(tracks, scan, out, device="/dev/sr0")
+
+    _assert_own_files(run, tracks, scan, out, _HANAKO_LABEL)
+    assert f"trk_{skip}" not in run.starts and f"trk_{skip}" not in run.done
+    kept = [t for t in tracks if not t.excluded]
+    assert sorted(p.name for p in out.glob("*.mkv")) == sorted(f"{_HANAKO_LABEL}_t{t.index:02d}.mkv" for t in kept)
+    assert [inv.command for inv in fake.drive_reads] == ["backup"]
+    assert [inv.command for inv in fake.invocations if inv.probes_drive] == ["info", "backup"]
+    assert all(inv.source.startswith("file:") for inv in fake.invocations if inv.command == "mkv")
+    assert {inv.source for inv in fake.invocations if inv.command == "mkv"} == {f"file:{out / '.backup' / 'disc'}"}
+    assert not (out / ".backup").exists()
+    assert not (out / ".remux").exists()
+
+
+async def test_an_excluded_dvd_title_is_remuxed_around_from_the_iso_image_backup(monkeypatch, tmp_path):
+    """ACCA_CS_D1 ripped at a 0 s minimum (four titles), the 0:17 clip
+    excluded: the DVD backup is one ISO image, read back with `iso:` (a
+    `file:` read of it would fail), and the recorded remuxes of its titles
+    2 and 3 come back as those tracks' files."""
+    fake = install(monkeypatch, disc=ACCA_DVD)
+    scan = await _scan(monkeypatch, "/dev/sr0")
+    fake.invocations.clear()
+    tracks = _exclude(_rip_start_tracks(scan, baseline=0), 1)
+    out = tmp_path / "job"
+
+    run = await _rip_recorded(tracks, scan, out, device="/dev/sr0", min_length_seconds=0)
+
+    titles = {t.index: t for t in scan.titles}
+    for track in tracks[0], tracks[2], tracks[3]:
+        result = run.final(track)
+        assert result.ok is True, (track.index, result.error)
+        assert result.output_path is not None and result.output_path.parent == out
+        assert result.output_path.name.endswith(f"_t{track.index:02d}.mkv")
+        assert result.size_bytes == file_size(titles[track.index].size_bytes or 0)
+    assert sorted(p.name for p in out.glob("*.mkv")) == ["A1_t00.mkv", "A1_t02.mkv", "B1_t03.mkv"]
+    assert "trk_1" not in run.done
+    assert not (out / ".backup").exists()
+    assert {inv.source for inv in fake.invocations if inv.command == "mkv"} == {f"iso:{out / '.backup' / 'disc.iso'}"}
+    assert [inv.command for inv in fake.drive_reads] == ["backup"]
+
+
+async def test_an_iso_source_remuxes_kept_titles_without_a_backup(monkeypatch, tmp_path):
+    """Sintel ISO at a 600 s minimum with title 0 excluded: titles 1 and 6
+    are remuxed straight from the ISO, the kept 6:05 and 3:36 titles fail
+    below minlength as on the `mkv all` path, and nothing reads a drive or
+    writes a backup."""
+    iso = tmp_path / "sintel.iso"
+    iso.write_bytes(b"")
+    fake = install(monkeypatch, isos={str(iso): SINTEL_ISO})
+    scan = await _scan(monkeypatch, str(iso))
+    tracks = _exclude(_rip_start_tracks(scan), 0)
+    out = tmp_path / "job"
+
+    run = await _rip_recorded(tracks, scan, out, device=str(iso), min_length_seconds=600)
+
+    sizes = {t.index: file_size(t.size_bytes or 0) for t in scan.titles}
+    by_index = {t.index: t for t in tracks}
+    assert sorted(run.done) == ["trk_1", "trk_3", "trk_4", "trk_6"]
+    for idx in (1, 6):
+        assert run.final(by_index[idx]).size_bytes == sizes[idx]
+    for idx in (3, 4):
+        assert run.final(by_index[idx]).ok is False
+        assert "below minlength=600s" in (run.final(by_index[idx]).error or "")
+    assert sorted(p.name for p in out.iterdir()) == ["A1_t01.mkv", "B1_t06.mkv"]
+    assert fake.drive_reads == []
+    assert not any(inv.command == "backup" for inv in fake.invocations)
+
+
+async def test_a_failed_backup_fails_every_kept_track(monkeypatch, tmp_path):
+    fake, scan = await _hanako(monkeypatch)
+    fake.fail("backup", message="drive fell over mid-read")
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    out = tmp_path / "job"
+
+    run = await _rip_recorded(tracks, scan, out, device="/dev/sr0")
+
+    assert sorted(run.done) == [f"trk_{i}" for i in range(7)]
+    for track in tracks[:7]:
+        assert run.final(track).ok is False
+        assert "drive fell over mid-read" in (run.final(track).error or "")
+    assert "trk_7" not in run.starts
+    assert not (out / ".backup").exists()
+    assert not any(inv.command == "mkv" for inv in fake.invocations)
+
+
+async def test_a_drive_makemkv_does_not_list_fails_the_kept_tracks(monkeypatch, tmp_path):
+    install(monkeypatch, disc=HANAKO_BD, device="/dev/sr1")
+    scan = ScanResult(
+        disc_type=DiscType.BLURAY,
+        titles=[ScanTitle(index=0, duration_seconds=1447), ScanTitle(index=1, duration_seconds=1447)],
+    )
+    tracks = _exclude([_track(0, duration_seconds=None), _track(1, duration_seconds=None)], 1)
+
+    run = await _rip_recorded(tracks, scan, tmp_path / "job", device="/dev/sr0")
+
+    assert "lists no drive at /dev/sr0" in (run.final(tracks[0]).error or "")
+
+
+async def test_one_failed_remux_fails_only_its_track(monkeypatch, tmp_path):
+    fake, scan = await _hanako(monkeypatch)
+    fake.fail("mkv", title="00010.mpls")
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    out = tmp_path / "job"
+
+    run = await _rip_recorded(tracks, scan, out, device="/dev/sr0")
+
+    assert run.final(tracks[1]).ok is False
+    assert "produced no .mkv for title" in (run.final(tracks[1]).error or "")
+    _assert_own_files(run, [t for t in tracks if t.index != 1], scan, out, _HANAKO_LABEL)
+    # Kept so the failed title can be retried without the disc.
+    assert (out / ".backup" / ".complete").read_text().strip() == f"file:{out / '.backup' / 'disc'}"
+    assert (out / ".backup" / "disc" / "BDMV").is_dir()
+    assert not (out / ".remux").exists()
+
+
+async def test_a_kept_title_missing_from_the_backup_fails_only_its_track(monkeypatch, tmp_path):
+    """Title 3's playlist (as the stored scan has it) isn't in the backup."""
+    fake, scan = await _hanako(monkeypatch)
+    scan = scan.model_copy(
+        update={
+            "titles": [
+                t.model_copy(update={"source_playlist": "09999.mpls"}) if t.index == 3 else t for t in scan.titles
+            ]
+        }
+    )
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    out = tmp_path / "job"
+
+    run = await _rip_recorded(tracks, scan, out, device="/dev/sr0")
+
+    assert run.final(tracks[3]).ok is False
+    assert run.final(tracks[3]).error == "could not map title 3 to the backup"
+    _assert_own_files(run, [t for t in tracks if t.index != 3], scan, out, _HANAKO_LABEL)
+    assert (out / ".backup" / ".complete").is_file()
+
+
+async def test_an_unreadable_backup_fails_every_kept_track(monkeypatch, tmp_path):
+    """The backup is written, but listing its titles fails."""
+    fake, scan = await _hanako(monkeypatch)
+    fake.fail("info", message="cannot parse the backup")
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+
+    run = await _rip_recorded(tracks, scan, tmp_path / "job", device="/dev/sr0")
+
+    for track in tracks[:7]:
+        assert "could not list the titles of the backup" in (run.final(track).error or "")
+        assert "cannot parse the backup" in (run.final(track).error or "")
+    assert (tmp_path / "job" / ".backup" / ".complete").is_file()
+
+
+async def test_backup_path_progress_is_one_bar_for_the_job(monkeypatch, tmp_path):
+    """Credited to the first kept track throughout: the backup fills it to
+    0.9, the remuxes from there to 1.0, never going backwards."""
+    _, scan = await _hanako(monkeypatch)
+    tracks = _exclude(_rip_start_tracks(scan), 0)
+
+    run = await _rip_recorded(tracks, scan, tmp_path / "job", device="/dev/sr0")
+
+    assert {track_id for track_id, _ in run.progress} == {"trk_1"}
+    fractions = [f for _, f in run.progress]
+    assert all(b >= a - 1e-9 for a, b in zip(fractions, fractions[1:], strict=False))
+    assert max(f for f in fractions if f <= 0.9 + 1e-9) == pytest.approx(0.9, abs=0.01)
+    assert fractions[-1] == pytest.approx(1.0)
+
+
+async def test_full_selection_takes_the_backup_path_when_switched_on(monkeypatch, tmp_path):
+    """ARM_BACKUP_FULL_SELECTIONS (Q6): nothing excluded, a drive source, the
+    switch on → backup then remux; every track still gets its own file."""
+    fake, scan = await _hanako(monkeypatch)
+    tracks = _rip_start_tracks(scan)
+    out = tmp_path / "job"
+
+    run = await _rip_recorded(tracks, scan, out, device="/dev/sr0", backup_full_selections=True)
+
+    _assert_own_files(run, tracks, scan, out, _HANAKO_LABEL)
+    assert [inv.command for inv in fake.drive_reads] == ["backup"]
+    assert not any(inv.argv[-2] == "all" for inv in fake.invocations if inv.command == "mkv")
+
+
+async def test_without_a_stored_scan_excluded_titles_are_ripped_but_not_reported(monkeypatch, tmp_path):
+    """No `scan_titles` (a job scanned before S5): nothing to find the kept
+    titles by in a backup, so `mkv all` runs as before; the excluded track
+    still gets no report and its file stays unclaimed."""
+    iso = tmp_path / "sintel.iso"
+    iso.write_bytes(b"")
+    fake = install(monkeypatch, isos={str(iso): SINTEL_ISO})
+    scan = await _scan(monkeypatch, str(iso))
+    tracks = _exclude(_rip_start_tracks(scan), 6)
+    out = tmp_path / "job"
+
+    run = await _rip_recorded(tracks, scan, out, device=str(iso), scan_titles=None)
+
+    assert sorted(run.done) == ["trk_0", "trk_1", "trk_3", "trk_4"]
+    assert all(run.final(t).ok for t in tracks if not t.excluded)
+    assert [inv.argv[-2] for inv in fake.invocations if inv.command == "mkv"] == ["all"]
+    assert len(list(out.glob("*.mkv"))) == 5
+
+
+async def test_every_track_excluded_rips_nothing(monkeypatch, tmp_path):
+    fake, scan = await _hanako(monkeypatch)
+    tracks = _exclude(_rip_start_tracks(scan), *range(8))
+
+    run = await _rip_recorded(tracks, scan, tmp_path / "job", device="/dev/sr0")
+
+    assert run.starts == [] and run.done == {}
+    assert fake.invocations == []
