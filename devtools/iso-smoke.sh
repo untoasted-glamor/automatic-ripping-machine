@@ -329,11 +329,11 @@ run_iso_ripper() {
         -e MAKEMKV_KEY="${key}" \
         -e PUID="${PUID:-1000}" -e PGID="${PGID:-1000}" -e CDROM_GID="${CDROM_GID:-24}" \
         -v "${CACHE_DIR}:/corpus:ro" \
-        -v "${ROOT_DIR}/raw:/raw" \
-        -v "${ROOT_DIR}/logs:/logs" \
-        -v "${ROOT_DIR}/certs/arm-ca.crt:/etc/ssl/arm/arm-ca.crt:ro" \
-        -v "${ROOT_DIR}/certs/arm-ripper-sr0.crt:/etc/ssl/arm/tls.crt:ro" \
-        -v "${ROOT_DIR}/certs/arm-ripper-sr0.key:/etc/ssl/arm/tls.key:ro" \
+        -v "${ROOT_DIR}/arm/raw:/raw" \
+        -v "${ROOT_DIR}/arm/logs:/logs" \
+        -v "${ROOT_DIR}/arm/certs/arm-ca.crt:/etc/ssl/arm/arm-ca.crt:ro" \
+        -v "${ROOT_DIR}/arm/certs/arm-ripper-sr0.crt:/etc/ssl/arm/tls.crt:ro" \
+        -v "${ROOT_DIR}/arm/certs/arm-ripper-sr0.key:/etc/ssl/arm/tls.key:ro" \
         "${RIPPER_IMAGE}" >/dev/null
     ok "${RIPPER_CTR} up"
 }
@@ -518,7 +518,7 @@ PY
 
 verify_exclusion() {
     local job_id="$1" track_id="$2" source_ref="$3" failed=0
-    local raw_dir="${ROOT_DIR}/raw/${job_id}"
+    local raw_dir="${ROOT_DIR}/arm/raw/${job_id}"
     if ! api GET "/api/jobs/${job_id}" | TRACK_ID="${track_id}" python3 -c "$(cat <<'PY'
 import json, os, sys
 d = json.load(sys.stdin)
@@ -678,7 +678,7 @@ final_summary() {
     local job_id="$1"
     local rip_secs="$2"
     local transcode_secs="${3:-}"
-    local raw_dir="${ROOT_DIR}/raw/${job_id}"
+    local raw_dir="${ROOT_DIR}/arm/raw/${job_id}"
     local raw_total
     raw_total=$(du -cb "${raw_dir}"/*.mkv 2>/dev/null | tail -1 | awk '{print $1}' || echo 0)
     echo
