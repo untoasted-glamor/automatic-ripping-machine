@@ -82,6 +82,56 @@ def test_empty_scan_returns_empty():
     assert tracks == []
 
 
+def test_all_tracks_excludes_unknown_duration():
+    scan = ScanResult(
+        disc_type=DiscType.DVD,
+        titles=[ScanTitle(index=0, duration_seconds=3600), ScanTitle(index=1, duration_seconds=None)],
+    )
+    tracks = select_tracks("job_01JZXR7K3M5Q8N4VWA00000001", scan, _preset(TrackSelection.ALL_TRACKS))
+    assert [t.index for t in tracks] == [0]
+
+
+def test_main_feature_prefers_known_duration_over_unknown():
+    scan = ScanResult(
+        disc_type=DiscType.DVD,
+        titles=[ScanTitle(index=0, duration_seconds=None), ScanTitle(index=1, duration_seconds=90 * 60)],
+    )
+    tracks = select_tracks("job_01JZXR7K3M5Q8N4VWA00000001", scan, _preset(TrackSelection.MAIN_FEATURE))
+    assert [t.index for t in tracks] == [1]
+
+
+def test_main_feature_fallback_prefers_known_short_title_over_unknown():
+    # Nothing reaches the main-feature length: the longest known title wins,
+    # never one whose duration is unknown.
+    scan = ScanResult(
+        disc_type=DiscType.DVD,
+        titles=[ScanTitle(index=0, duration_seconds=None), ScanTitle(index=1, duration_seconds=0)],
+    )
+    tracks = select_tracks("job_01JZXR7K3M5Q8N4VWA00000001", scan, _preset(TrackSelection.MAIN_FEATURE))
+    assert [t.index for t in tracks] == [1]
+
+
+def test_main_feature_falls_back_to_first_title_when_all_durations_unknown():
+    scan = ScanResult(
+        disc_type=DiscType.DVD,
+        titles=[ScanTitle(index=0, duration_seconds=None), ScanTitle(index=1, duration_seconds=None)],
+    )
+    tracks = select_tracks("job_01JZXR7K3M5Q8N4VWA00000001", scan, _preset(TrackSelection.MAIN_FEATURE))
+    assert [t.index for t in tracks] == [0]
+    assert tracks[0].expected_duration_seconds is None
+
+
+def test_review_keeps_title_with_unknown_duration_excluded():
+    """An undated title still gets a Track row in review, excluded by
+    default since no rule can show it meets a length threshold."""
+    scan = ScanResult(
+        disc_type=DiscType.DVD,
+        titles=[ScanTitle(index=0, duration_seconds=90 * 60), ScanTitle(index=1, duration_seconds=None)],
+    )
+    tracks = select_tracks_for_review("job_01JZXR7K3M5Q8N4VWA00000001", scan, _preset(TrackSelection.ALL_TRACKS))
+    assert [(t.index, t.excluded) for t in tracks] == [(0, False), (1, True)]
+
+
 def test_data_disc_emits_single_dump():
     scan = ScanResult(disc_type=DiscType.DATA, volume_label="DATA_DISC")
     tracks = select_tracks("job_01JZXR7K3M5Q8N4VWA00000001", scan, _preset(TrackSelection.ALL_TRACKS))

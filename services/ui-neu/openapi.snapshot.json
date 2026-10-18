@@ -17023,7 +17023,14 @@
             "title": "Index"
           },
           "duration_seconds": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Duration Seconds"
           },
           "chapter_count": {

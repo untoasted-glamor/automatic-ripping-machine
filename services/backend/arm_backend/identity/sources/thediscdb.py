@@ -76,7 +76,9 @@ def build_claims(match: DiscMatch, scan: ScanResult, *, now: datetime) -> Source
             candidates = [
                 t
                 for t in scan.titles
-                if t.source_file is None and abs(t.duration_seconds - want) <= DURATION_WINDOW_SECONDS
+                if t.source_file is None
+                and t.duration_seconds is not None
+                and abs(t.duration_seconds - want) <= DURATION_WINDOW_SECONDS
             ]
             if len(candidates) != 1:
                 continue

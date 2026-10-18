@@ -87,11 +87,19 @@ def parse_makemkvcon_info(
     - TINFO:t,8,...  — chapter count
     - TINFO:t,11,... — title size in bytes
     - TINFO:t,27,... — source filename (e.g. title_t00.mkv)
+    - TCOUNT:n       — MakeMKV's own title count, only cross-checked against
+                       the titles parsed (a mismatch is logged); it never
+                       makes a title on its own.
+
+    A title that emitted any TINFO line but no usable TINFO:t,9 duration is
+    kept with duration_seconds=None rather than dropped: MakeMKV can still rip
+    it, and a dropped title leaves an output file no Track accounts for.
 
     Reference: https://github.com/automatic-ripping-machine/automatic-ripping-machine/wiki/MakeMKV-Codes
     """
     volume_label: str | None = None
     mkv_disc_type: DiscType | None = None
+    tcount: int | None = None
     titles: dict[int, dict[str, object]] = {}
 
     for raw in lines:
@@ -101,7 +109,13 @@ def parse_makemkvcon_info(
         msg_type, _, rest = line.partition(":")
         fields = [f.strip() for f in rest.split(",")]
 
-        if msg_type == "CINFO" and len(fields) >= 3:
+        if msg_type == "TCOUNT":
+            try:
+                tcount = int(fields[0])
+            except ValueError:
+                pass
+
+        elif msg_type == "CINFO" and len(fields) >= 3:
             try:
                 code = int(fields[0])
             except ValueError:
@@ -137,22 +151,50 @@ def parse_makemkvcon_info(
                 entry["source_file"] = value
 
     parsed: list[ScanTitle] = []
+    missing_duration: list[int] = []
     for idx in sorted(titles):
         entry = titles[idx]
         duration_obj = entry.get("duration_seconds")
-        if not isinstance(duration_obj, int):
-            continue
+        duration = duration_obj if isinstance(duration_obj, int) else None
+        if duration is None:
+            missing_duration.append(idx)
         chapter_obj = entry.get("chapter_count")
         size_obj = entry.get("size_bytes")
         source_obj = entry.get("source_file")
         parsed.append(
             ScanTitle(
                 index=idx,
-                duration_seconds=duration_obj,
+                duration_seconds=duration,
                 chapter_count=chapter_obj if isinstance(chapter_obj, int) else None,
                 size_bytes=size_obj if isinstance(size_obj, int) else None,
                 source_file=source_obj if isinstance(source_obj, str) else None,
             )
+        )
+
+    if missing_duration:
+        logger.warning(
+            "makemkvcon gave no usable duration (TINFO:t,9) for %d title(s); kept with an unknown "
+            "duration so each still gets a Track row; indices: %s",
+            len(missing_duration),
+            missing_duration,
+        )
+    # Only indices MakeMKV described become titles. An index TCOUNT counts but
+    # no TINFO line names means the output was cut short, not that a title is
+    # there: a made-up title would have no duration, so the rip would count it
+    # eligible and it could never get a file of its own.
+    if tcount is not None and len(parsed) < tcount:
+        logger.warning(
+            "makemkvcon TCOUNT=%d but only %d title(s) emitted TINFO output; the rest are missing "
+            "from this scan and will not be ripped; observed indices: %s",
+            tcount,
+            len(parsed),
+            [t.index for t in parsed],
+        )
+    elif tcount is not None and len(parsed) > tcount:
+        logger.warning(
+            "makemkvcon TCOUNT=%d is lower than the %d title(s) observed in TINFO output",
+            tcount,
+            len(parsed),
         )
 
     return volume_label, parsed, mkv_disc_type
@@ -165,7 +207,9 @@ def _classify_from_titles(titles: list[ScanTitle]) -> DiscType:
     """
     if not titles:
         return DiscType.UNKNOWN
-    longest = max(t.duration_seconds for t in titles)
+    # Every duration unknown (a cut-short scan): fall back on DVD, as for a
+    # disc with no long title, rather than fail on max() of nothing.
+    longest = max((t.duration_seconds for t in titles if t.duration_seconds is not None), default=0)
     return (
         DiscType.BLURAY
         if longest >= 60 * 60 * 1.5 and any(t.size_bytes is not None and t.size_bytes > 4_700_000_000 for t in titles)

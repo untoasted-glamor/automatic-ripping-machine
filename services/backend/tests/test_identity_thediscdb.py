@@ -160,6 +160,29 @@ def test_build_claims_ambiguous_duration_no_join() -> None:
     assert build_claims(match, scan, now=NOW).tracks == {}
 
 
+def test_build_claims_duration_fallback_skips_title_with_unknown_duration() -> None:
+    # A scan title with no duration can't be matched by duration; the one
+    # title that can still joins.
+    match = _match(
+        [
+            {
+                "SourceFile": "VTS_01_1.VOB",
+                "Duration": "1:30:00",
+                "Comment": "Movie.mkv",
+                "Item": {"Title": "Movie", "Type": "MainMovie"},
+            }
+        ]
+    )
+    scan = ScanResult(
+        disc_type=DiscType.DVD,
+        titles=[
+            ScanTitle(index=0, duration_seconds=None, source_file=None),
+            ScanTitle(index=1, duration_seconds=5401, source_file=None),
+        ],
+    )
+    assert list(build_claims(match, scan, now=NOW).tracks) == ["1"]
+
+
 def test_build_claims_duration_fallback_ignores_with_source_file() -> None:
     # Duration fallback only considers scan titles with source_file=None.
     # A scan title WITH a source_file within the duration window must NOT

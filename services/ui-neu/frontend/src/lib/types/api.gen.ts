@@ -4065,7 +4065,7 @@ export type ScanTitle = {
     /**
      * Duration Seconds
      */
-    duration_seconds: number;
+    duration_seconds: number | null;
     /**
      * Chapter Count
      */
