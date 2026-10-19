@@ -58,9 +58,11 @@ check both entry paths and both sub-modes. A third park reason exists:
 `on_previously_ripped = hold` parks with `wait_start_time = null` and waits for
 Rip again regardless of the sub-mode.
 
-**Open:** upstream's sidebar Pause/Resume (`setRippingEnabled` in ui-neu
-`lib/api/dashboard.ts`) deliberately sets `hold_for_review` together with
-`ripping_paused` (upstream `5dd6442c`: Pause means "park every disc for
-review" instead of refusing it). Resume therefore turns `hold_for_review` off
-and discs rip unreviewed until it is turned back on; `review_requires_confirm`
-itself survives. Not changed in the fork; needs an owner decision.
+**Pause/Resume (fork):** the header toggle (`setRippingEnabled` in ui-neu
+`lib/api/dashboard.ts`) is the only pause control; Settings no longer has a
+"Pause new rips" field. Pause sends `ripping_paused` and `hold_for_review` on
+together, because the backend only parks (instead of refusing) a disc while
+paused if hold is on (upstream `5dd6442c`). Resume sends only
+`ripping_paused: false` and never turns hold off. While paused the UI shows
+"Paused: All new rips paused until you resume" (owner's wording, keep verbatim;
+`PAUSED_LABEL` in `lib/utils/pause.ts`) and locks the disc-handling control.
