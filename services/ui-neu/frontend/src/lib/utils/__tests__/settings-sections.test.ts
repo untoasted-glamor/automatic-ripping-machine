@@ -135,6 +135,17 @@ describe('setup step field selection (setup spec 2026-10-01 §7.2)', () => {
 		expect(keys).toEqual(['auto_rip_on_insert']);
 	});
 
+	it('On insert does not claim ripping_paused (the header toggle owns pausing; the registry omits it)', () => {
+		const out = sectionFields('Ripping', [
+			f('auto_rip_on_insert', { widget: 'disc_handling' }),
+			f('block_on_miss'),
+			f('on_previously_ripped', { type: 'enum', enum_values: ['hold', 'reject', 'rip'] }),
+			f('ripping_paused')
+		]);
+		const onInsert = out.find((s) => s.title === 'On insert');
+		expect(onInsert?.fields.map((x) => x.key)).toEqual(['auto_rip_on_insert', 'block_on_miss', 'on_previously_ripped']);
+	});
+
 	it('stepFields hands the setup walkthrough the review gate with the disc-handling widget', async () => {
 		const { stepFields } = await import('../settings-sections');
 		const groups = [

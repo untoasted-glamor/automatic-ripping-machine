@@ -224,15 +224,9 @@ CONFIG_FIELD_META: list[ConfigFieldMeta] = [
         setup_step="makemkv",
         setup_order=3,
     ),
-    ConfigFieldMeta(
-        key="ripping_paused",
-        group="Ripping",
-        tier="operator",
-        label="Pause new rips",
-        help="Reject new rip jobs (in-flight rips continue).",
-        type="bool",
-        editable=True,
-    ),
+    # NOTE: ripping_paused is intentionally NOT registered. The header's Pause /
+    # Resume toggle is the one place to pause ripping (it writes the field over
+    # PATCH /api/config, together with hold_for_review), so it is not a form field.
     ConfigFieldMeta(
         key="hold_for_review",
         group="Ripping",

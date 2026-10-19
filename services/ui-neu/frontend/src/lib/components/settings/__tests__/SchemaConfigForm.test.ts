@@ -15,6 +15,16 @@ vi.mock('$lib/api/settings', () => ({
 	checkApiKey: (name: string, value?: string) => checkApiKey(name, value)
 }));
 
+// The disc-handling widget lists drives and reads the live pause state; keep
+// both inert (the dashboard poll has not answered).
+vi.mock('$lib/api/drives', () => ({ fetchDrives: () => Promise.resolve([]) }));
+vi.mock('$lib/stores/dashboard', async () => {
+	const { readable } = await import('svelte/store');
+	return {
+		dashboard: { ...readable({ db_available: true, ripping_enabled: true }), initialized: readable(false) }
+	};
+});
+
 // sectionFields itself is exercised end to end in settings-sections.test.ts;
 // here it's a spy over the real implementation so most tests see the real
 // Metadata sections while the layout-hints test below can swap in a fixed
@@ -571,5 +581,57 @@ describe('SchemaConfigForm setup walkthrough modes (setup spec §7.3)', () => {
 		await waitFor(() =>
 			expect(screen.getByTestId('key-check-makemkv_key')).toHaveTextContent("Couldn't reach MakeMKV")
 		);
+	});
+});
+
+describe('SchemaConfigForm Ripping: pausing lives in the header only', () => {
+	const field = (key: string, extra: Partial<ConfigFieldMeta> = {}): ConfigFieldMeta => ({
+		key,
+		group: 'Ripping',
+		tier: 'operator',
+		label: key,
+		help: '',
+		type: 'bool',
+		editable: true,
+		enum_values: null,
+		...extra
+	});
+	// The Ripping group as the backend now serves it: no ripping_paused field.
+	const RIPPING: SettingsGroup = {
+		name: 'Ripping',
+		fields: [
+			field('auto_rip_on_insert', { label: 'Auto-rip on insert', widget: 'disc_handling' }),
+			field('block_on_miss', { label: 'Block on metadata miss' }),
+			field('hold_for_review', { part_of: 'auto_rip_on_insert' }),
+			field('review_requires_confirm', { part_of: 'auto_rip_on_insert' }),
+			field('manual_wait_seconds', { type: 'int', part_of: 'auto_rip_on_insert' })
+		]
+	};
+	const SAVED = {
+		auto_rip_on_insert: true,
+		block_on_miss: false,
+		hold_for_review: true,
+		review_requires_confirm: false,
+		manual_wait_seconds: 60,
+		ripping_paused: true
+	};
+
+	it('renders no pause checkbox, and the disc-handling choice still locks from the saved config', () => {
+		renderComponent(SchemaConfigForm, { props: { group: RIPPING, config: SAVED } });
+		expect(screen.queryByText(/pause new rips/i)).toBeNull();
+		expect(screen.queryByTestId('setting-ripping_paused')).toBeNull();
+		expect(screen.getByTestId('disc-handling-paused')).toHaveTextContent(
+			'Paused: All new rips paused until you resume'
+		);
+		expect(screen.getByRole('radio', { name: /fully automatic/i })).toBeDisabled();
+	});
+
+	it('is unlocked when the saved config is not paused, and Save never sends ripping_paused', async () => {
+		renderComponent(SchemaConfigForm, { props: { group: RIPPING, config: { ...SAVED, ripping_paused: false } } });
+		expect(screen.queryByTestId('disc-handling-paused')).toBeNull();
+		await fireEvent.click(screen.getByRole('radio', { name: /fully automatic/i }));
+		await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+		await waitFor(() => expect(saveArmConfig).toHaveBeenCalled());
+		expect(saveArmConfig.mock.calls[0][0]).toEqual({ hold_for_review: false });
 	});
 });

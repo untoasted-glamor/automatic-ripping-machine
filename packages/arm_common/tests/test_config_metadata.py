@@ -23,23 +23,33 @@ def test_registry_entries_are_well_formed():
         assert (m.enum_values is not None) == (m.type in {"enum", "ranked"}), m.key
 
 
-# musicbrainz_user_agent is intentionally absent from CONFIG_FIELD_META (the UI
-# no longer renders it — the backend now hardcodes MUSICBRAINZ_USER_AGENT next to
-# its use). It stays on ConfigUpdateRequest/ConfigView because dropping it would
-# be a wire (OpenAPI) change, out of scope for this pass; the field is simply
-# dormant. See packages/arm_common/arm_common/config_metadata.py.
-_DORMANT_EDITABLE_FIELDS = {"musicbrainz_user_agent"}
+# Fields on ConfigUpdateRequest that are intentionally absent from
+# CONFIG_FIELD_META, so no settings form renders them. See the NOTE comments in
+# packages/arm_common/arm_common/config_metadata.py.
+# - musicbrainz_user_agent: dormant (the backend hardcodes MUSICBRAINZ_USER_AGENT
+#   next to its use); dropping it from the wire is out of scope.
+# - ripping_paused: written only by the header's Pause / Resume toggle, the one
+#   place to pause ripping.
+_UNREGISTERED_EDITABLE_FIELDS = {"musicbrainz_user_agent", "ripping_paused"}
 
 
 def test_every_editable_config_field_has_metadata():
     meta = _by_key()
     for field in ConfigUpdateRequest.model_fields:
-        if field in _DORMANT_EDITABLE_FIELDS:
-            assert field not in meta, f"{field} is marked dormant but still in CONFIG_FIELD_META"
+        if field in _UNREGISTERED_EDITABLE_FIELDS:
+            assert field not in meta, f"{field} is marked unregistered but still in CONFIG_FIELD_META"
             continue
         assert field in meta, f"{field} editable but missing from CONFIG_FIELD_META"
         assert meta[field].tier in {"operator", "secret"}, field
         assert meta[field].editable is True, field
+
+
+def test_ripping_paused_is_not_a_form_field() -> None:
+    """The header toggle is the one place to pause ripping: the field stays on
+    the wire (PATCH /api/config + ConfigView) but no settings form renders it."""
+    assert "ripping_paused" not in _by_key()
+    assert "ripping_paused" in ConfigUpdateRequest.model_fields
+    assert "ripping_paused" in ConfigView.model_fields
 
 
 def test_operator_and_secret_keys_are_real_config_view_fields():
