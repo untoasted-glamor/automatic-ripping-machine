@@ -374,7 +374,7 @@ watch_until_ripped() {
     local jwt="$1" drive_id="$2"
     log "polling /api/jobs?drive_id=${drive_id} until ripped (15-min timeout)" >&2
     local deadline=$(( $(date +%s) + 900 ))
-    local last_status="" job_id="" job_status=""
+    local last_status="" job_id="" job_status="" confirmed=0
     while :; do
         local body http_code
         body=$(curl -sk --max-time 10 "${API_BASE}/api/jobs?drive_id=${drive_id}&limit=1" \
@@ -398,6 +398,23 @@ watch_until_ripped() {
                 ok "rip complete: ${job_status}" >&2
                 printf '%s\n' "${job_id}"
                 return 0
+                ;;
+            awaiting_review)
+                # The review gate holds the disc. In mandatory-confirm mode
+                # (review_requires_confirm) no countdown will start it, so
+                # confirm it the way the UI's Start button does.
+                if [[ "${confirmed}" != 1 ]]; then
+                    local start_code
+                    start_code=$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' -X POST \
+                        "${API_BASE}/api/jobs/${job_id}/rip-start-review" \
+                        -H "Authorization: Bearer ${jwt}" 2>/dev/null) || true
+                    if [[ "${start_code}" != "200" ]]; then
+                        err "POST /api/jobs/${job_id}/rip-start-review HTTP ${start_code}"
+                        exit 1
+                    fi
+                    log "confirmed the review gate (rip-start-review)" >&2
+                    confirmed=1
+                fi
                 ;;
             failed|abandoned)
                 err "job ${job_id} ended in ${job_status} — check the backend log"
