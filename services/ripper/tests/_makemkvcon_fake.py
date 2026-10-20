@@ -40,11 +40,15 @@ What is modelled, and where it comes from (S0 "Spike results"):
   picks which behaviour the fake has where the two are known to differ:
   - `"2.0.0"` (recorded): `backup dev:…` exits 10 and wants `disc:<N>`; a
     `--decrypt` BD backup is written, but every later `file:` read of it
-    exits 139.
-  - `"1.18.4"` (the default): `backup dev:<device>` works, as upstream's
+    exits 139; `file:` on a DVD backup image exits 10.
+  - `"1.18.4"` (the default): `file:` on a DVD backup image reads it like
+    `iso:` (recorded, S17 17.3). `backup dev:<device>` works, as upstream's
     `rip_backup` calls it, and a decrypted BD backup reads back like an
-    encrypted one. *Assumed from upstream's FOLDER preset, not recorded on
-    this drive yet (track-select plan, S17).*
+    encrypted one: *assumed from upstream's FOLDER preset, not recorded on
+    this drive yet (S17 17.4).*
+  Title tables, numbering and output names are the same on both: the
+  Sintel ISO and ACCA image tables at 0/120/600 s are byte-identical on
+  1.18.4 (`*_v1184.txt`).
 - **Disc folders.** `folders` maps a folder path (with `BDMV/` or `VIDEO_TS/`
   under it) to its recording, read as `file:<folder>/BDMV` (or the folder
   itself), like a Rip-from-folder source.
@@ -466,7 +470,7 @@ class FakeMakemkvcon:
 
     def _open(self, source: str) -> tuple[Recording, bool] | _Backup | None:
         """(recording, is a decrypted BD backup) for a source that opens, the
-        backup for a `file:` read of a DVD image (fails silently), or None."""
+        backup for a 2.0.0 `file:` read of a DVD image (fails silently), or None."""
         scheme, _, rest = source.partition(":")
         if scheme == "dev" and self.disc is not None and rest == self.device:
             return self.disc, False
@@ -484,7 +488,9 @@ class FakeMakemkvcon:
         if backup is None:
             return None
         if backup.image:
-            return (backup.recording, False) if scheme == "iso" else backup
+            if scheme == "iso" or self.makemkv_version != "2.0.0":
+                return backup.recording, False
+            return backup
         if scheme == "file":
             return backup.recording, backup.decrypted and self.makemkv_version == "2.0.0"
         return None

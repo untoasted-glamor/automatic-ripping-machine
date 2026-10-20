@@ -104,9 +104,9 @@ async def test_dvd_backup_is_one_iso_image_read_back_with_iso(monkeypatch, tmp_p
     assert [inv.command for inv in fake.drive_reads] == ["backup"]
 
 
-async def test_a_file_read_of_a_dvd_image_fails_silently(monkeypatch, tmp_path):
+async def test_a_file_read_of_a_dvd_image_fails_silently_on_2_0_0(monkeypatch, tmp_path):
     """Recorded: rc 10, no MSG after the start-up line, nothing on stderr."""
-    install(monkeypatch, disc=ACCA_DVD)
+    install(monkeypatch, disc=ACCA_DVD, makemkv_version="2.0.0")
     image = tmp_path / "disc.iso"
     await _run("makemkvcon", "-r", "backup", "disc:0", str(image))
 
@@ -117,6 +117,34 @@ async def test_a_file_read_of_a_dvd_image_fails_silently(monkeypatch, tmp_path):
     assert [line for line in lines if line.startswith("MSG:")] == [lines[0]]
     assert lines[0].startswith("MSG:1005,")
     assert _table(lines) == []
+
+
+async def test_a_file_read_of_a_dvd_image_reads_it_on_1_18_4(monkeypatch, tmp_path):
+    """Recorded on 1.18.4 (S17): `file:` on the ACCA image gives the same
+    table as `iso:`, and a remux from it writes the title."""
+    install(monkeypatch, disc=ACCA_DVD)
+    image = tmp_path / "disc.iso"
+    await _run("makemkvcon", "-r", "backup", "disc:0", str(image))
+
+    lines, _, rc = await _run("makemkvcon", "-r", "--noscan", "info", f"file:{image}")
+    _, _, mkv_rc = await _run(
+        "makemkvcon", "-r", "--noscan", "--minlength=0", "mkv", f"file:{image}", "2", str(tmp_path / "out")
+    )
+
+    assert rc == 0
+    assert _table(lines) == _recorded_table("makemkvcon_dvd_acca_info_file_on_iso_backup_noscan_v1184.txt")
+    assert mkv_rc == 0
+    assert [p.name for p in (tmp_path / "out").iterdir()] == ["A1_t02.mkv"]
+
+
+@pytest.mark.parametrize(
+    ("minlength", "recorded_2_0_0", "recorded_1_18_4"),
+    [("0", "makemkvcon_iso_sintel_info_minlength0.txt", "makemkvcon_iso_sintel_info_minlength0_v1184.txt")],
+)
+def test_1_18_4_title_tables_match_the_2_0_0_recordings(minlength, recorded_2_0_0, recorded_1_18_4):
+    """S17 17.2: the tables the fake replays (recorded on 2.0.0) are what
+    1.18.4 prints, so the fake models both versions with one recording."""
+    assert _recorded_table(recorded_1_18_4) == _recorded_table(recorded_2_0_0)
 
 
 async def test_dvd_remux_from_the_image_replays_the_recording(monkeypatch, tmp_path):
