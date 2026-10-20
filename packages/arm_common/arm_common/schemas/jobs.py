@@ -21,6 +21,7 @@ from arm_common.enums import (
 from arm_common.disc_shape import looks_episodic as _looks_episodic
 from arm_common.schemas.identity import IdentityClaims
 from arm_common.schemas.job_metadata import ExternalIds, JobMetadata, MusicMeta
+from arm_common.schemas.ripper import ScanTitle
 
 
 class ResolveRequest(BaseModel):
@@ -385,6 +386,12 @@ class RipStartResponse(BaseModel):
     # 600). Surfaced here so the ripper doesn't have to read Session
     # state itself.
     min_length_seconds: int | None = None
+    # Every title the disc scan reported (`job.metadata_json["scan_result"]`),
+    # so the ripper can tell whether the kept tracks cover everything
+    # `makemkvcon mkv all` would rip: on the ungated path, titles the preset
+    # didn't select have no Track row at all, so `tracks` alone can't say.
+    # None when the job has no stored scan.
+    scan_titles: list[ScanTitle] | None = None
 
 
 # The one definition of apply/fan-out skip reasons — the backend engine

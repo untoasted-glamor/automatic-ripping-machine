@@ -66,6 +66,7 @@ from arm_common.schemas import (
     RipperHeartbeatRequest,
     RipStartResponse,
     ScanResult,
+    ScanTitle,
     SdfStatusReport,
     TrackUpdateRequest,
     TrackView,
@@ -168,6 +169,18 @@ def _rip_preset_id_from_session(sess: Session | None, disc_type: DiscType) -> st
     if preset_id is None:
         raise RipPresetUnavailable("no_default", f"no default rip preset for disc_type={disc_type.value}")
     return preset_id
+
+
+def _stored_scan_titles(job: Job) -> list[ScanTitle] | None:
+    """The titles of the job's stored disc scan, for `RipStartResponse.scan_titles`.
+
+    None when the job carries no `scan_result` (e.g. a job created before
+    the scan was stored).
+    """
+    scan_dict = (job.metadata_json or {}).get("scan_result")
+    if not scan_dict:
+        return None
+    return ScanResult.model_validate(scan_dict).titles
 
 
 def _min_length_override_from_session(sess: Session | None) -> int | None:
@@ -926,6 +939,7 @@ async def rip_start(
             rip_preset_id=preset_id,
             tracks=[TrackView.model_validate(t) for t in existing],
             min_length_seconds=min_length_seconds,
+            scan_titles=_stored_scan_titles(job),
         )
 
     # IDENTIFIED is the normal pre-rip state; AWAITING_REVIEW reaches here only
@@ -1022,6 +1036,7 @@ async def rip_start(
         rip_preset_id=preset_id,
         tracks=[TrackView.model_validate(t) for t in refreshed],
         min_length_seconds=min_length_seconds,
+        scan_titles=scan.titles,
     )
 
 
@@ -1079,6 +1094,7 @@ async def resume(
         rip_preset_id=preset_id,
         tracks=[TrackView.model_validate(t) for t in refreshed],
         min_length_seconds=min_length_seconds,
+        scan_titles=_stored_scan_titles(job),
     )
 
 

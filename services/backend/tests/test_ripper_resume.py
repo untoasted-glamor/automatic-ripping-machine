@@ -169,6 +169,65 @@ def test_resume_resolves_routed_session_exactly_once() -> None:
     assert len(calls) == 1
 
 
+def test_resume_returns_scan_titles_and_excluded_tracks() -> None:
+    """A resumed rip gets the same scan detail as rip-start, and the excluded
+    track is still in `tracks`, flagged, so the ripper re-runs the same
+    strategy and skips it again."""
+    dvd_keys: dict[str, Any] = {"source_playlist": None, "segment_count": 1, "segment_map": "1-7"}
+    titles: list[dict[str, Any]] = [
+        {
+            "index": 1,
+            "duration_seconds": 4200,
+            "chapter_count": 24,
+            "size_bytes": 30_000_000_000,
+            "source_file": "t00",
+            "original_title_id": 1,
+            **dvd_keys,
+        },
+        {
+            "index": 2,
+            "duration_seconds": 300,
+            "chapter_count": 1,
+            "size_bytes": 400_000_000,
+            "source_file": "t01",
+            "original_title_id": 4,
+            **dvd_keys,
+        },
+    ]
+    db = FakeSession()
+    _seed(db)
+    db.rows["jobs"][0].metadata_json = {
+        "scan_result": {"disc_type": "dvd", "volume_label": "IRON_MAN", "titles": titles, "fingerprints": [], "raw": {}}
+    }
+    db.rows["tracks"].append(
+        Track(
+            id="trk_2",
+            job_id="job_01JZXR7K3M5Q8N4VWA00000001",
+            kind=TrackKind.VIDEO_TITLE,
+            index=2,
+            source_ref="2",
+            status=TrackStatus.QUEUED,
+            attempts=0,
+            excluded=True,
+        )
+    )
+    with TestClient(_make_app(db, hub=_CapturingHub())) as client:
+        r = client.post("/api/ripper/jobs/job_01JZXR7K3M5Q8N4VWA00000001/resume", headers=_service_headers())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["scan_titles"] == titles
+    assert {t["id"]: t["excluded"] for t in body["tracks"]} == {"trk_1": False, "trk_2": True}
+
+
+def test_resume_without_stored_scan_has_null_scan_titles() -> None:
+    db = FakeSession()
+    _seed(db)  # metadata_json={}
+    with TestClient(_make_app(db, hub=_CapturingHub())) as client:
+        r = client.post("/api/ripper/jobs/job_01JZXR7K3M5Q8N4VWA00000001/resume", headers=_service_headers())
+    assert r.status_code == 200, r.text
+    assert r.json()["scan_titles"] is None
+
+
 def test_resume_on_non_ripping_job_returns_409() -> None:
     db = FakeSession()
     _seed(db, job_status=JobStatus.RIPPED)

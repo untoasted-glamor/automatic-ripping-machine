@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from arm_common import DiscType
-from arm_common.schemas import ScanTitle
+from arm_common.schemas import ScanResult, ScanTitle
 from arm_ripper.scan.makemkv import _classify_from_titles, parse_makemkvcon_info
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -160,3 +160,69 @@ def test_hd_dvd_does_not_match_dvd_branch():
     lines = ['CINFO:1,6207,"HD-DVD"']
     _, _, disc_type = parse_makemkvcon_info(lines)
     assert disc_type is None  # no enum yet — caller falls back to probe/heuristic
+
+
+def test_parses_blu_ray_title_keys_from_recorded_info():
+    # Recorded `info dev:` of the Hanako-kun BD (S0 0.2): every title carries
+    # its TINFO 16 playlist, and the play-all's TINFO 26 lists the episodes'
+    # clips in order plus two extras (0.6). BD emits no TINFO 24.
+    lines = (FIXTURES / "makemkvcon_bd_hanako_info.txt").read_text().splitlines()
+    volume_label, titles, disc_type = parse_makemkvcon_info(lines)
+
+    assert disc_type == DiscType.BLURAY
+    assert len(titles) == 8
+    assert [t.source_playlist for t in titles] == [f"{n:05d}.mpls" for n in (9, 10, 11, 12, 13, 14, 15, 8)]
+    assert [t.segment_count for t in titles] == [1, 1, 1, 1, 1, 1, 1, 9]
+    assert [t.segment_map for t in titles[:7]] == [str(clip) for clip in range(14, 21)]
+    play_all = titles[7]
+    assert play_all.duration_seconds == 2 * 3600 + 48 * 60 + 59
+    assert play_all.segment_map == "14,15,16,17,18,19,20,24,25"
+    assert play_all.source_file == "ToiletBound HanakoKun D1_t07.mkv"
+    assert all(t.original_title_id is None for t in titles)
+
+
+def test_parses_dvd_title_numbers_from_recorded_info():
+    # Recorded `info iso:` of the Sintel DVD at minlength 0 (S0 0.7): TINFO 24
+    # is the disc's own title number, the key that survives renumbering;
+    # TINFO 26 is a cell range, not a clip list; no TINFO 16 on DVD.
+    lines = (FIXTURES / "makemkvcon_iso_sintel_info_minlength0.txt").read_text().splitlines()
+    _, titles, disc_type = parse_makemkvcon_info(lines)
+
+    assert disc_type == DiscType.DVD
+    assert [t.original_title_id for t in titles] == [1, 2, 3, 4, 5, 6, 7]
+    assert [t.duration_seconds for t in titles] == [898, 897, 119, 365, 216, 107, 3504]
+    assert titles[0].segment_count == 1
+    assert titles[0].segment_map == "1-7"
+    assert all(t.source_playlist is None for t in titles)
+
+
+def test_dump_without_key_lines_leaves_new_fields_none():
+    lines = (FIXTURES / "makemkvcon_dvd_short.txt").read_text().splitlines()
+    _, titles, _ = parse_makemkvcon_info(lines)
+
+    for title in titles:
+        assert title.source_playlist is None
+        assert title.original_title_id is None
+        assert title.segment_count is None
+        assert title.segment_map is None
+
+
+def test_unparsable_numeric_key_fields_are_dropped():
+    lines = ['TINFO:0,9,0,"0:10:00"', 'TINFO:0,24,0,"x"', 'TINFO:0,25,0,"?"']
+    _, titles, _ = parse_makemkvcon_info(lines)
+
+    assert titles[0].original_title_id is None
+    assert titles[0].segment_count is None
+
+
+def test_scan_stored_before_the_key_fields_still_validates():
+    stored = {
+        "disc_type": "dvd",
+        "volume_label": "OLD",
+        "titles": [{"index": 0, "duration_seconds": 900, "chapter_count": 4, "size_bytes": 1, "source_file": "a.mkv"}],
+    }
+    scan = ScanResult.model_validate(stored)
+
+    assert scan.titles[0].source_file == "a.mkv"
+    assert scan.titles[0].source_playlist is None
+    assert scan.titles[0].segment_map is None
