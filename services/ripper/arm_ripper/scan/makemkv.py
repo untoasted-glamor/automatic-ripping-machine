@@ -396,7 +396,16 @@ async def probe_makemkv_key(key: str | None) -> tuple[MakemkvKeyState, str | Non
 
 
 async def scan_disc(device_path: str) -> ScanResult:
-    cmd = ["makemkvcon", "-r", "--cache=1", "info", makemkv_source_url(device_path)]
+    """List every title on the disc, however short.
+
+    Runs `info` at `--minlength=0`: MakeMKV numbers titles densely over the
+    ones that pass its minimum, so a scan at its built-in 120 s would number
+    titles differently from a rip run at any other minimum (a session
+    override). Scanning everything lets the rip's minimum be applied
+    afterwards, to titles whose ids are known. The caller records which
+    titles are worth a Track row in `ScanResult.min_length_seconds`.
+    """
+    cmd = ["makemkvcon", "-r", "--cache=1", "--minlength=0", "info", makemkv_source_url(device_path)]
     logger.info("makemkvcon info device=%s", device_path)
 
     try:

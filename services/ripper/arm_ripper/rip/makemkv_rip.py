@@ -630,7 +630,7 @@ async def rip_disc(
     attribution itself; the result will have an empty `titles` dict.
 
     Not matched against the scan's TINFO 27 (planned output filename):
-    the scan runs without `--minlength`, so its `_tNN` numbering differs
+    the scan runs at `--minlength=0`, so its `_tNN` numbering differs
     from this rip's whenever `--minlength` drops a scanned title.
 
     `stop`, when set mid-rip, kills makemkvcon and returns STOPPED_ERROR as

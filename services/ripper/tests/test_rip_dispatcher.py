@@ -31,7 +31,7 @@ import arm_ripper.rip.makemkv_rip as makemkv_rip_module
 import arm_ripper.scan.makemkv as scan_makemkv_module
 from arm_common import DiscType, DriveMediaStatus
 from arm_common.enums import TrackKind, TrackStatus
-from arm_common.schemas import ScanResult, TrackView
+from arm_common.schemas import ScanResult, ScanTitle, TrackView
 
 from arm_ripper.drive_status import probe_drive_media
 from arm_ripper.rip.dispatcher import rip_all
@@ -1304,6 +1304,7 @@ async def _rip_tracks(
     *,
     disc_type: DiscType = DiscType.BLURAY,
     device: str = "/dev/sr0",
+    min_length_seconds: int = 120,
     **kwargs: Any,
 ) -> tuple[dict[str, list[RipResult]], list[str]]:
     """Run rip_all (a BD in /dev/sr0 unless told otherwise); return every
@@ -1324,7 +1325,7 @@ async def _rip_tracks(
         output_dir=tmp_path,
         on_track_start=on_start,
         on_track_done=on_done,
-        min_length_seconds=120,
+        min_length_seconds=min_length_seconds,
         **kwargs,
     )
     return reports, started
@@ -1517,21 +1518,28 @@ async def test_rip_all_counts_a_title_with_no_known_duration_as_eligible(monkeyp
     assert captured["eligible_source_indexes"] == [0, 2]
 
 
-# --- rip_all against the recorded-output makemkvcon fake (S6) ----------------
+# --- rip_all against the recorded-output makemkvcon fake (S6, S16) -----------
 #
 # `tests._makemkvcon_fake` answers from real recordings: the Hanako-kun BD in
-# /dev/sr0 and the Sintel DVD as an ISO.
+# /dev/sr0 (or as a disc folder) and the Sintel DVD as an ISO. The disc scan
+# lists every title (`--minlength=0`); tracks exist for the titles the preset
+# keeps at or above the ripper's 120 s baseline, as the backend makes them,
+# and rip_all gets the stored scan's titles as rip-start sends them.
+
+_BASELINE = 120
 
 
-def _rip_start_tracks(scan: ScanResult) -> list[TrackView]:
-    """Track rows as rip-start hands them over (`select_tracks`): the scan's
-    duration and size are the *expected* values; `duration_seconds` stays
-    unset until the title is ripped."""
+def _rip_start_tracks(scan: ScanResult, baseline: int = _BASELINE, keep: set[int] | None = None) -> list[TrackView]:
+    """Track rows as rip-start hands them over (`select_tracks`): one per
+    title at or above the baseline (ARCHIVE), or only `keep`'s titles (a
+    preset that picks some), with the scan's duration and size as the
+    *expected* values; `duration_seconds` stays unset until ripped."""
     return [
         _track(t.index, duration_seconds=None).model_copy(
             update={"expected_duration_seconds": t.duration_seconds, "expected_size_bytes": t.size_bytes}
         )
         for t in scan.titles
+        if (t.duration_seconds or 0) >= baseline and (keep is None or t.index in keep)
     ]
 
 
@@ -1552,55 +1560,172 @@ def _install_sources(monkeypatch, tmp_path: Path, source: str) -> tuple[Any, str
     return fake, device
 
 
+def _assert_own_titles(reports: dict[str, list[RipResult]], tracks: list[TrackView], scan: ScanResult, out: Path):
+    """Every track DONE once, with a file in `out` sized as its own title."""
+    titles = {t.index: t for t in scan.titles}
+    for track in tracks:
+        (result,) = reports[track.id]
+        title = titles[track.index]
+        assert result.ok is True, (track.index, result.error)
+        assert result.output_path is not None and result.output_path.parent == out
+        assert result.size_bytes == result.output_path.stat().st_size == file_size(title.size_bytes or 0)
+        assert result.duration_seconds == title.duration_seconds
+    assert len({reports[t.id][0].output_path for t in tracks}) == len(tracks)
+
+
 @pytest.mark.parametrize("source", ["bd-drive", "dvd-iso", "bd-folder"])
 async def test_rip_all_full_selection_gives_every_track_its_own_title(monkeypatch, tmp_path, source):
-    """Characterizes today's `mkv all` path (S6.2): every scanned title kept,
-    rip at the scan's minimum. Each track is DONE with the file MakeMKV
-    planned for it (the scan's TINFO 27 name), sized as its own title, and
-    the drive is read by one invocation for the whole rip."""
+    """Today's `mkv all` path (S6.2) with every track kept, ripped at the
+    baseline: each track is DONE with a file sized as its own title, and the
+    drive is read by one invocation for the whole rip."""
     fake, device = _install_sources(monkeypatch, tmp_path, source)
     scan = await _scan(monkeypatch, device)
     fake.invocations.clear()
     tracks = _rip_start_tracks(scan)
     out = tmp_path / "job"
 
-    reports, _ = await _rip_tracks(tracks, out, disc_type=scan.disc_type, device=device)
+    reports, _ = await _rip_tracks(tracks, out, disc_type=scan.disc_type, device=device, scan_titles=scan.titles)
 
-    for title in scan.titles:
-        (result,) = reports[f"trk_{title.index}"]
-        assert result.ok is True, (title.index, result.error)
-        assert result.output_path == out / str(title.source_file)
-        assert result.size_bytes == result.output_path.stat().st_size == file_size(title.size_bytes or 0)
-        assert result.duration_seconds == title.duration_seconds
-    assert len(list(out.iterdir())) == len(scan.titles)
+    _assert_own_titles(reports, tracks, scan, out)
+    assert len(list(out.iterdir())) == len(tracks)
     assert len(fake.drive_reads) == (1 if source == "bd-drive" else 0)
 
 
-async def test_rip_all_resume_pass_leaves_settled_tracks_alone(monkeypatch, tmp_path):
+@pytest.mark.parametrize("source", ["bd-drive", "dvd-iso"])
+async def test_a_preset_that_keeps_one_title_gets_that_titles_file(monkeypatch, tmp_path, source):
+    """The `_tNN` bug outside the review gate: a preset kept one title (the
+    longest, as MAIN_FEATURE does), so it is the only Track, while `mkv all`
+    rips every title at the minimum. The track gets its own title's file,
+    not `_t00`; the other files stay on disk, unclaimed."""
+    fake, device = _install_sources(monkeypatch, tmp_path, source)
+    scan = await _scan(monkeypatch, device)
+    longest = max(scan.titles, key=lambda t: t.duration_seconds or 0)
+    tracks = _rip_start_tracks(scan, keep={longest.index})
+    assert longest.index != min(t.index for t in scan.titles if (t.duration_seconds or 0) >= _BASELINE)
+    out = tmp_path / "job"
+
+    reports, _ = await _rip_tracks(tracks, out, disc_type=scan.disc_type, device=device, scan_titles=scan.titles)
+
+    _assert_own_titles(reports, tracks, scan, out)
+    assert len(list(out.iterdir())) == sum(1 for t in scan.titles if (t.duration_seconds or 0) >= _BASELINE)
+
+
+async def _sintel_rip(monkeypatch, tmp_path, min_length_seconds: int) -> tuple[ScanResult, dict[str, RipResult], Path]:
+    _, iso = _install_sources(monkeypatch, tmp_path, "dvd-iso")
+    scan = await _scan(monkeypatch, iso)
+    tracks = _rip_start_tracks(scan)
+    out = tmp_path / "job"
+    reports, _ = await _rip_tracks(
+        tracks,
+        out,
+        disc_type=scan.disc_type,
+        device=iso,
+        scan_titles=scan.titles,
+        min_length_seconds=min_length_seconds,
+    )
+    assert all(len(r) == 1 for r in reports.values()), reports
+    return scan, {track_id: r[0] for track_id, r in reports.items()}, out
+
+
+async def test_scan_lists_every_title_and_the_baseline_cuts_the_tracks(monkeypatch, tmp_path):
+    _, iso = _install_sources(monkeypatch, tmp_path, "dvd-iso")
+    scan = await _scan(monkeypatch, iso)
+
+    assert [t.duration_seconds for t in scan.titles] == [898, 897, 119, 365, 216, 107, 3504]
+    assert [t.index for t in _rip_start_tracks(scan)] == [0, 1, 3, 4, 6]
+
+
+async def test_rip_minimum_below_the_baseline_keeps_files_on_their_own_titles(monkeypatch, tmp_path):
+    """Sintel titles 0–6 (1:59 and 1:47 among them), tracks only for the
+    ≥120 s titles, a 60 s rip minimum: `mkv all` also rips the two short
+    titles, numbering its files over all seven. Each track still gets its
+    own title's file; the short titles' files stay on disk, unclaimed."""
+    scan, final, out = await _sintel_rip(monkeypatch, tmp_path, min_length_seconds=60)
+
+    sizes = {t.index: file_size(t.size_bytes or 0) for t in scan.titles}
+    assert sorted(final) == ["trk_0", "trk_1", "trk_3", "trk_4", "trk_6"]
+    for idx in (0, 1, 3, 4, 6):
+        result = final[f"trk_{idx}"]
+        assert result.ok is True, (idx, result.error)
+        assert result.output_path is not None and result.output_path.name.endswith(f"_t{idx:02d}.mkv")
+        assert result.size_bytes == sizes[idx]
+    claimed = {r.output_path for r in final.values()}
+    unclaimed = sorted(p.name for p in out.iterdir() if p not in claimed)
+    assert unclaimed == ["B5_t05.mkv", "B6_t02.mkv"]
+
+
+async def test_rip_minimum_above_a_kept_title_fails_only_that_title(monkeypatch, tmp_path):
+    """Same disc ripped at 600 s: the 6:05 and 3:36 tracks are FAILED below
+    minlength; the others get their own titles' files."""
+    scan, final, _ = await _sintel_rip(monkeypatch, tmp_path, min_length_seconds=600)
+
+    sizes = {t.index: file_size(t.size_bytes or 0) for t in scan.titles}
+    for idx in (3, 4):
+        assert final[f"trk_{idx}"].ok is False
+        assert "below minlength=600s" in (final[f"trk_{idx}"].error or "")
+    for idx in (0, 1, 6):
+        assert final[f"trk_{idx}"].ok is True
+        assert final[f"trk_{idx}"].size_bytes == sizes[idx]
+
+
+async def test_disc_progress_goes_to_a_track_when_the_first_title_has_none(monkeypatch, tmp_path):
+    """The rip's first title (a short clip, ripped at a 10 s minimum) has no
+    track; the disc progress bar is credited to the first title that has one."""
+    _stub_rip_disc(
+        monkeypatch, RipDiscResult(overall_error=None, titles={}), fire_per_title_start=False, fire_disc_progress=[0.5]
+    )
+    progress: list[str] = []
+
+    async def on_progress(track: TrackView, _fraction: float, _stats: Any = None) -> None:
+        progress.append(track.id)
+
+    async def noop(*_args: Any) -> None:
+        return None
+
+    await rip_all(
+        disc_type=DiscType.BLURAY,
+        device_path="/dev/sr0",
+        tracks=[_track(1, duration_seconds=None)],
+        scan_titles=[ScanTitle(index=0, duration_seconds=30), ScanTitle(index=1, duration_seconds=1800)],
+        output_dir=tmp_path,
+        on_track_start=noop,
+        on_track_done=noop,
+        on_track_progress=on_progress,
+        min_length_seconds=10,
+    )
+
+    assert progress == ["trk_1"]
+
+
+@pytest.mark.parametrize("keep", [None, {1, 3, 5}], ids=["all-kept", "some-kept"])
+async def test_rip_all_resume_pass_leaves_settled_tracks_alone(monkeypatch, tmp_path, keep):
     """A D-133 resume pass: `mkv all` rips the whole disc again, but the
     tracks an earlier pass settled get no callbacks and their new files are
-    deleted, while the rest get their own titles' files."""
+    deleted (matched by position in the scan-based list), while the rest get
+    their own titles' files, also when the preset kept only some titles."""
     fake, device = _install_sources(monkeypatch, tmp_path, "bd-drive")
     scan = await _scan(monkeypatch, device)
     fake.invocations.clear()
-    tracks = _rip_start_tracks(scan)
-    settled = {tracks[0].id, tracks[1].id}
+    tracks = _rip_start_tracks(scan, keep=keep)
+    settled = {tracks[0].id}
     out = tmp_path / "job"
 
-    reports, started = await _rip_tracks(tracks, out, device=device, skip_track_ids=settled)
+    reports, started = await _rip_tracks(tracks, out, device=device, skip_track_ids=settled, scan_titles=scan.titles)
 
-    for title in scan.titles:
-        track_id = f"trk_{title.index}"
-        if track_id in settled:
-            assert reports[track_id] == []
-            assert not (out / str(title.source_file)).exists()
-            continue
-        (result,) = reports[track_id]
-        assert result.ok is True, (title.index, result.error)
-        assert result.output_path == out / str(title.source_file)
-        assert result.size_bytes == file_size(title.size_bytes or 0)
+    by_index = {t.index: t for t in scan.titles}
+    assert reports[tracks[0].id] == []
+    assert not any(p.name.endswith(f"_t{_position(scan, tracks[0].index):02d}.mkv") for p in out.iterdir())
+    rest = [t for t in tracks if t.id not in settled]
+    _assert_own_titles(reports, rest, scan, out)
+    assert all(by_index[t.index].size_bytes for t in rest)
     assert settled.isdisjoint(started)
     assert len(fake.drive_reads) == 1
+
+
+def _position(scan: ScanResult, index: int) -> int:
+    """A title's `_tNN` number in `mkv all` at the baseline."""
+    eligible = sorted(t.index for t in scan.titles if (t.duration_seconds or 0) >= _BASELINE)
+    return eligible.index(index)
 
 
 async def test_rip_all_disc_backup_writes_the_decrypted_folder(monkeypatch, tmp_path):

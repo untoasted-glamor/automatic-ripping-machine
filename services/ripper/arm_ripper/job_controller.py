@@ -503,9 +503,14 @@ class JobController:
         a cancellation."""
         started_at = datetime.now(timezone.utc)
         try:
-            return await self._scan_until_ready(device_path, started_at=started_at)
+            result = await self._scan_until_ready(device_path, started_at=started_at)
         finally:
             self._set_scan_activity(None)
+        if result.disc_type in (DiscType.DVD, DiscType.BLURAY):
+            # The MakeMKV scan lists every title; the backend gives Track rows
+            # only to those at or above this baseline.
+            result = result.model_copy(update={"min_length_seconds": self._default_min_length_seconds})
+        return result
 
     async def _scan_until_ready(self, device_path: str, *, started_at: datetime) -> ScanResult:
         """Scan the disc, retrying when a DISC_OK drive yields zero titles.
@@ -999,6 +1004,7 @@ class JobController:
                     disc_type=disc_type,
                     device_path=rip_path,
                     tracks=tracks,
+                    scan_titles=rip_start.scan_titles,
                     output_dir=rip_dir,
                     on_track_start=on_track_start,
                     on_track_done=on_track_done,
