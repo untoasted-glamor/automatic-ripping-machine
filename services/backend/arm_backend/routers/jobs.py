@@ -81,6 +81,7 @@ from arm_common.schemas import (
 from arm_common.enums import (
     NON_TERMINAL_JOB_STATUSES,
     POST_RIP_JOB_STATUSES,
+    RIP_STARTED_JOB_STATUSES,
     RESOLVABLE_JOB_STATUSES,
     RESOLVABLE_PROMOTE_JOB_STATUSES,
     TERMINAL_JOB_STATUSES,
@@ -1069,14 +1070,15 @@ async def update_job(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"unknown track_id {edit.track_id} for job {job_id}",
                 )
-            # Re-including a track once the rip is done is only safe if it has
-            # a file: a title that failed or was never produced has none, and
-            # a session applied afterwards would have nothing to transcode for
-            # it. Excluding stays allowed in every status ("skip at transcode").
+            # Re-including a track once ripping has started is only safe if it
+            # has a file: the ripper took its keep/drop set at rip-start, so an
+            # excluded title that has no file yet won't get one, and a session
+            # applied afterwards would have nothing to transcode for it.
+            # Excluding stays allowed in every status ("skip at transcode").
             if (
                 edit.excluded is False
                 and track.excluded
-                and job.status in POST_RIP_JOB_STATUSES
+                and job.status in RIP_STARTED_JOB_STATUSES
                 and not track.output_path
             ):
                 raise HTTPException(

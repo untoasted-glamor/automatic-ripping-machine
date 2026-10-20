@@ -164,6 +164,9 @@ APPLY_PARK_JOB_STATUSES: frozenset[JobStatus] = frozenset(
 POST_RIP_JOB_STATUSES: frozenset[JobStatus] = frozenset(
     {JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL, JobStatus.RIPPED_AWAITING_IDENTIFY}
 )
+# The ripper has taken the job's keep/drop set (`Track.excluded`) at rip-start,
+# so re-including a title that has no file can no longer get it ripped.
+RIP_STARTED_JOB_STATUSES: frozenset[JobStatus] = POST_RIP_JOB_STATUSES | frozenset({JobStatus.RIPPING})
 # Jobs whose parked applications are re-drained when transcoding is re-enabled:
 # the rip is done and identity is known, so the only thing that held an encode
 # application parked was the toggle. Pre-rip jobs (identified, awaiting review)

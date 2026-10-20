@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from arm_common import Job, Track
+from arm_common.enums import RIP_STARTED_JOB_STATUSES
 from arm_common.schemas.identity import JOB_CLAIM_FIELDS, TRACK_CLAIM_FIELDS, IdentityClaims
 
 from arm_backend.identity.proposals import MANUAL
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 # field was fill-if-empty. Kept so pre-provenance rows behave as before.
 _UNGUARDED_ATTRS = {"role", "excluded"}
 _DEFAULTS: dict[str, Any] = {"excluded": False}
+# The ripper takes the keep/drop set at rip-start. After that a source's
+# proposal (a disc map, the preset, a reset to the default) never changes
+# `excluded`: only the operator's own edit does, which PATCH /jobs gates.
+_FROZEN_AFTER_RIP_START = "excluded"
 # Episode matches are winner-takes-all: two providers' placements of the same
 # disc are alternatives, never parts to merge field by field.
 _EPISODE_TIER = TIER_BY_CAPABILITY[Capability.EPISODE_MATCH]
@@ -142,6 +147,7 @@ def apply_resolution(
         changed += _apply_one(job, attr, resolution.job.get(claim_field), job_prov, resolution.known_sources)
     job.identity_provenance = job_prov or None
 
+    rip_started = job.status in RIP_STARTED_JOB_STATUSES
     for track in tracks:
         prov = dict(track.identity_provenance or {})
         winners = resolution.tracks.get(track.source_ref, {})
@@ -150,6 +156,8 @@ def apply_resolution(
             w = winners.get(claim_field)
             if w is not None:
                 w = Winner(_to_attr_value(claim_field, w.value), w.source)
+            if rip_started and attr == _FROZEN_AFTER_RIP_START and (w is None or w.source != MANUAL):
+                continue
             track_changed += _apply_one(track, attr, w, prov, resolution.known_sources)
         track.identity_provenance = prov or None
         changed += track_changed

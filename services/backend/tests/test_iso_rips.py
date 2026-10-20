@@ -334,6 +334,15 @@ async def test_sweep_fails_unfinished_job_and_retires() -> None:
         Track(job_id="job_1", kind=TrackKind.VIDEO_TITLE, index=0, source_ref="0", status=TrackStatus.DONE),
         Track(job_id="job_1", kind=TrackKind.VIDEO_TITLE, index=1, source_ref="1", status=TrackStatus.FAILED),
         Track(job_id="job_1", kind=TrackKind.VIDEO_TITLE, index=2, source_ref="2", status=TrackStatus.IN_PROGRESS),
+        # Excluded: counted as skipped, like rip_complete counts it.
+        Track(
+            job_id="job_1",
+            kind=TrackKind.VIDEO_TITLE,
+            index=3,
+            source_ref="3",
+            status=TrackStatus.QUEUED,
+            excluded=True,
+        ),
         Track(job_id="job_other", kind=TrackKind.VIDEO_TITLE, index=0, source_ref="0", status=TrackStatus.DONE),
     ]
     manager, hub = _Manager(), _Hub()  # no container at all -> "missing"
@@ -352,6 +361,7 @@ async def test_sweep_fails_unfinished_job_and_retires() -> None:
         "tracks_done": 1,
         "tracks_failed": 1,
         "tracks_total": 3,
+        "tracks_skipped": 1,
         "reason": "ISO ripper stopped unexpectedly",
     }
     assert db.committed == 1

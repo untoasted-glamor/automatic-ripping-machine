@@ -1,5 +1,7 @@
 """Resolver: tier > pin > rank; presence semantics; provenance; resets."""
 
+import pytest
+
 from arm_common import DiscType, Job, JobStatus, Track, TrackKind
 from arm_common.enums import TrackRole
 from arm_common.schemas.identity import IdentityClaims, JobClaim, SourceClaims, TrackClaim
@@ -163,6 +165,44 @@ def test_manual_selected_false_beats_thediscdb_selected_on_unguarded_field() -> 
     apply_resolution(_job(), [track], res)
     assert track.excluded is True
     assert track.identity_provenance == {"role": "thediscdb", "excluded": "manual"}
+
+
+def _ripping_job(job_status: JobStatus) -> Job:
+    job = _job()
+    job.status = job_status
+    return job
+
+
+@pytest.mark.parametrize("job_status", [JobStatus.RIPPING, JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL])
+def test_a_source_never_changes_excluded_once_ripping_started(job_status: JobStatus) -> None:
+    """The ripper took the keep/drop set at rip-start: a disc map that now
+    selects an excluded title, or a reset to the default, leaves `excluded`
+    alone, so a title with no file is never re-included behind PATCH's back.
+    Other fields still resolve."""
+    selected = _track("1", role=TrackRole.OTHER, excluded=True)
+    owned = _track("2", excluded=True, identity_provenance={"excluded": "preset"})
+    res = resolve(
+        _claims(thediscdb=SourceClaims(tracks={"1": TrackClaim(role=TrackRole.MAIN, selected=True)})),
+        tiers=TIERS,
+    )
+
+    apply_resolution(_ripping_job(job_status), [selected, owned], res)
+
+    assert (selected.role, selected.excluded) == (TrackRole.MAIN, True)
+    assert owned.excluded is True
+    assert owned.identity_provenance == {"excluded": "preset"}
+
+
+def test_the_operator_still_changes_excluded_once_ripping_started() -> None:
+    """A manual claim (the operator's PATCH, which gates re-including a
+    title with no file) still applies after rip-start."""
+    track = _track(excluded=False)
+    res = resolve(_claims(manual=SourceClaims(tracks={"1": TrackClaim(selected=False)})), tiers=TIERS)
+
+    apply_resolution(_ripping_job(JobStatus.RIPPED), [track], res)
+
+    assert track.excluded is True
+    assert track.identity_provenance == {"excluded": "manual"}
 
 
 def test_apply_manual_overrides_unowned_value() -> None:

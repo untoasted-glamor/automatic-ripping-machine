@@ -139,6 +139,9 @@ async def _fail_job(db: AsyncSession, hub: WSHub, job: Job) -> None:
     payload `rip_complete` sends plus the reason. Job has no reason column;
     the reason lives in the persisted event's payload."""
     tracks = (await db.execute(select(Track).where(col(Track.job_id) == job.id))).scalars().all()
+    # Counted as rip_complete counts them: kept tracks, plus the excluded ones
+    # as skipped.
+    kept = [t for t in tracks if not t.excluded]
     job.status = JobStatus.FAILED
     job.ripped_at = datetime.now(UTC)
     db.add(job)
@@ -151,9 +154,10 @@ async def _fail_job(db: AsyncSession, hub: WSHub, job: Job) -> None:
             "job_id": job.id,
             "drive_id": job.drive_id,
             "status": job.status.value,
-            "tracks_done": sum(1 for t in tracks if t.status == TrackStatus.DONE),
-            "tracks_failed": sum(1 for t in tracks if t.status == TrackStatus.FAILED),
-            "tracks_total": len(tracks),
+            "tracks_done": sum(1 for t in kept if t.status == TrackStatus.DONE),
+            "tracks_failed": sum(1 for t in kept if t.status == TrackStatus.FAILED),
+            "tracks_total": len(kept),
+            "tracks_skipped": len(tracks) - len(kept),
             "reason": STOPPED_UNEXPECTEDLY,
         },
         job_id=job.id,

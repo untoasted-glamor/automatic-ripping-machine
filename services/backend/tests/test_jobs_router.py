@@ -1455,12 +1455,34 @@ def test_update_job_refuses_reincluding_a_track_with_no_ripped_file(signing_key:
     assert db.rows["tracks"][0].title is None
 
 
+def test_update_job_refuses_reincluding_a_fileless_track_mid_rip(signing_key: bytes) -> None:
+    """The ripper took the keep/drop set at rip-start: re-including an
+    excluded title that has no file while the job is ripping can't get it
+    ripped, so it is refused like after the rip."""
+    db = FakeSession()
+    _seed_job_with_track(db)
+    db.rows["jobs"][0].status = JobStatus.RIPPING
+    db.rows["tracks"][0].excluded = True
+    db.rows["tracks"][0].output_path = None
+    app, token = _make_app(signing_key, db)
+    with TestClient(app) as c:
+        r = c.patch(
+            f"/api/jobs/{_JOB_ID_A}",
+            json={"tracks": [{"track_id": _TRK_ID_A, "excluded": False}]},
+            headers=_auth(token),
+        )
+    assert r.status_code == 409
+    assert r.json()["detail"] == "track 1 has no ripped file; re-rip the disc to include it"
+    assert db.rows["tracks"][0].excluded is True
+
+
 @pytest.mark.parametrize(
     ("job_status", "excluded_now", "output_path", "excluded_to"),
     [
         (JobStatus.RIPPED, False, None, True),  # skip at transcode: always allowed
         (JobStatus.RIPPED_PARTIAL, True, "/raw/job/Box_t00.mkv", False),  # has a file: re-include ok
-        (JobStatus.RIPPING, True, None, False),  # still ripping: the file may yet come
+        (JobStatus.RIPPING, True, "/raw/job/Box_t00.mkv", False),  # ripping, file already written
+        (JobStatus.RIPPING, False, None, True),  # skip at transcode mid-rip
         (JobStatus.AWAITING_REVIEW, True, None, False),  # before rip: either direction
         (JobStatus.AWAITING_REVIEW, False, None, True),
     ],
