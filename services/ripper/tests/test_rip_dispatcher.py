@@ -21,19 +21,23 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 import arm_ripper.drive_status as drive_status_module
 import arm_ripper.rip.dispatcher as dispatcher_module
 import arm_ripper.rip.makemkv_rip as makemkv_rip_module
+import arm_ripper.scan.makemkv as scan_makemkv_module
 from arm_common import DiscType, DriveMediaStatus
 from arm_common.enums import TrackKind, TrackStatus
-from arm_common.schemas import TrackView
+from arm_common.schemas import ScanResult, TrackView
 
 from arm_ripper.drive_status import probe_drive_media
 from arm_ripper.rip.dispatcher import rip_all
 from arm_ripper.rip.makemkv_rip import RipDiscResult, RipResult
+from arm_ripper.scan.disc_probe import DiscProbe
+from tests._makemkvcon_fake import HANAKO_BD, SINTEL_ISO, file_size, install
 
 
 def _track(idx: int, source_ref: str | None = None, duration_seconds: int | None = 1800) -> TrackView:
@@ -1295,10 +1299,15 @@ def _mkv_all_script(saved: list[int], prgc_positions: list[int]) -> list[str | t
 
 
 async def _rip_tracks(
-    tracks: list[TrackView], tmp_path: Path, **kwargs: Any
+    tracks: list[TrackView],
+    tmp_path: Path,
+    *,
+    disc_type: DiscType = DiscType.BLURAY,
+    device: str = "/dev/sr0",
+    **kwargs: Any,
 ) -> tuple[dict[str, list[RipResult]], list[str]]:
-    """Run rip_all for a BD; return every terminal report per track id and
-    the order of start reports."""
+    """Run rip_all (a BD in /dev/sr0 unless told otherwise); return every
+    terminal report per track id and the order of start reports."""
     reports: dict[str, list[RipResult]] = {t.id: [] for t in tracks}
     started: list[str] = []
 
@@ -1309,8 +1318,8 @@ async def _rip_tracks(
         reports[track.id].append(result)
 
     await rip_all(
-        disc_type=DiscType.BLURAY,
-        device_path="/dev/sr0",
+        disc_type=disc_type,
+        device_path=device,
         tracks=tracks,
         output_dir=tmp_path,
         on_track_start=on_start,
@@ -1506,3 +1515,107 @@ async def test_rip_all_counts_a_title_with_no_known_duration_as_eligible(monkeyp
     )
 
     assert captured["eligible_source_indexes"] == [0, 2]
+
+
+# --- rip_all against the recorded-output makemkvcon fake (S6) ----------------
+#
+# `tests._makemkvcon_fake` answers from real recordings: the Hanako-kun BD in
+# /dev/sr0 and the Sintel DVD as an ISO.
+
+
+def _rip_start_tracks(scan: ScanResult) -> list[TrackView]:
+    """Track rows as rip-start hands them over (`select_tracks`): the scan's
+    duration and size are the *expected* values; `duration_seconds` stays
+    unset until the title is ripped."""
+    return [
+        _track(t.index, duration_seconds=None).model_copy(
+            update={"expected_duration_seconds": t.duration_seconds, "expected_size_bytes": t.size_bytes}
+        )
+        for t in scan.titles
+    ]
+
+
+async def _scan(monkeypatch, device: str) -> ScanResult:
+    monkeypatch.setattr(scan_makemkv_module, "probe_disc", AsyncMock(return_value=DiscProbe(crc64=None)))
+    return await scan_makemkv_module.scan_disc(device)
+
+
+def _install_sources(monkeypatch, tmp_path: Path, source: str) -> tuple[Any, str]:
+    """The fake with the Hanako-kun BD in /dev/sr0, the Sintel DVD as an ISO
+    and the Hanako-kun BD as a disc folder; returns the device to rip."""
+    iso = tmp_path / "sintel.iso"
+    iso.write_bytes(b"")
+    folder = tmp_path / "hanako"
+    (folder / "BDMV").mkdir(parents=True)
+    fake = install(monkeypatch, disc=HANAKO_BD, isos={str(iso): SINTEL_ISO}, folders={str(folder): HANAKO_BD})
+    device = {"bd-drive": "/dev/sr0", "dvd-iso": str(iso), "bd-folder": str(folder)}[source]
+    return fake, device
+
+
+@pytest.mark.parametrize("source", ["bd-drive", "dvd-iso", "bd-folder"])
+async def test_rip_all_full_selection_gives_every_track_its_own_title(monkeypatch, tmp_path, source):
+    """Characterizes today's `mkv all` path (S6.2): every scanned title kept,
+    rip at the scan's minimum. Each track is DONE with the file MakeMKV
+    planned for it (the scan's TINFO 27 name), sized as its own title, and
+    the drive is read by one invocation for the whole rip."""
+    fake, device = _install_sources(monkeypatch, tmp_path, source)
+    scan = await _scan(monkeypatch, device)
+    fake.invocations.clear()
+    tracks = _rip_start_tracks(scan)
+    out = tmp_path / "job"
+
+    reports, _ = await _rip_tracks(tracks, out, disc_type=scan.disc_type, device=device)
+
+    for title in scan.titles:
+        (result,) = reports[f"trk_{title.index}"]
+        assert result.ok is True, (title.index, result.error)
+        assert result.output_path == out / str(title.source_file)
+        assert result.size_bytes == result.output_path.stat().st_size == file_size(title.size_bytes or 0)
+        assert result.duration_seconds == title.duration_seconds
+    assert len(list(out.iterdir())) == len(scan.titles)
+    assert len(fake.drive_reads) == (1 if source == "bd-drive" else 0)
+
+
+async def test_rip_all_resume_pass_leaves_settled_tracks_alone(monkeypatch, tmp_path):
+    """A D-133 resume pass: `mkv all` rips the whole disc again, but the
+    tracks an earlier pass settled get no callbacks and their new files are
+    deleted, while the rest get their own titles' files."""
+    fake, device = _install_sources(monkeypatch, tmp_path, "bd-drive")
+    scan = await _scan(monkeypatch, device)
+    fake.invocations.clear()
+    tracks = _rip_start_tracks(scan)
+    settled = {tracks[0].id, tracks[1].id}
+    out = tmp_path / "job"
+
+    reports, started = await _rip_tracks(tracks, out, device=device, skip_track_ids=settled)
+
+    for title in scan.titles:
+        track_id = f"trk_{title.index}"
+        if track_id in settled:
+            assert reports[track_id] == []
+            assert not (out / str(title.source_file)).exists()
+            continue
+        (result,) = reports[track_id]
+        assert result.ok is True, (title.index, result.error)
+        assert result.output_path == out / str(title.source_file)
+        assert result.size_bytes == file_size(title.size_bytes or 0)
+    assert settled.isdisjoint(started)
+    assert len(fake.drive_reads) == 1
+
+
+async def test_rip_all_disc_backup_writes_the_decrypted_folder(monkeypatch, tmp_path):
+    """Upstream's FOLDER preset against the fake (MakeMKV 1.18.4): one
+    `backup --decrypt` of the drive, and the track is DONE with
+    `<job>/backup`, which reads back as the disc's backup."""
+    fake = install(monkeypatch, disc=HANAKO_BD)
+    out = tmp_path / "job"
+    backup = _track(0, source_ref="full").model_copy(update={"kind": TrackKind.DISC_BACKUP})
+
+    reports, started = await _rip_tracks([backup], out)
+
+    (result,) = reports[backup.id]
+    assert result.ok is True, result.error
+    assert result.output_path == out / "backup"
+    assert (out / "backup" / "BDMV" / "index.bdmv").is_file()
+    assert started == [backup.id]
+    assert [inv.command for inv in fake.drive_reads] == ["backup"]

@@ -1,0 +1,83 @@
+MSG:1005,0,1,"MakeMKV v2.0.0 linux(x64-release) started","%1 started","MakeMKV v2.0.0 linux(x64-release)"
+PRGT:5018,0,"Scanning CD-ROM devices"
+PRGC:5018,0,"Scanning CD-ROM devices"
+PRGV:0,0,65536
+PRGV:0,0,65536
+PRGV:65536,0,65536
+PRGV:65536,65536,65536
+MSG:5042,0,0,"The program can't find any usable optical drives.","The program can't find any usable optical drives."
+DRV:0,256,999,0,"","",""
+DRV:1,256,999,0,"","",""
+DRV:2,256,999,0,"","",""
+DRV:3,256,999,0,"","",""
+DRV:4,256,999,0,"","",""
+DRV:5,256,999,0,"","",""
+DRV:6,256,999,0,"","",""
+DRV:7,256,999,0,"","",""
+DRV:8,256,999,0,"","",""
+DRV:9,256,999,0,"","",""
+DRV:10,256,999,0,"","",""
+DRV:11,256,999,0,"","",""
+DRV:12,256,999,0,"","",""
+DRV:13,256,999,0,"","",""
+DRV:14,256,999,0,"","",""
+DRV:15,256,999,0,"","",""
+PRGV:0,65536,65536
+PRGV:0,0,65536
+PRGT:3100,0,"Opening DVD disc"
+MSG:3007,0,0,"Using direct disc access mode","Using direct disc access mode"
+PRGC:3102,0,"Processing title sets"
+PRGV:0,0,65536
+PRGV:0,0,65536
+PRGV:8192,0,65536
+PRGV:8192,524,65536
+PRGV:16384,524,65536
+PRGV:16384,1048,65536
+PRGV:24576,1048,65536
+PRGV:24576,1572,65536
+PRGV:32768,1572,65536
+PRGV:32768,2097,65536
+PRGV:40960,2097,65536
+PRGV:40960,2621,65536
+PRGV:49152,2621,65536
+PRGV:49152,3145,65536
+PRGV:57344,3145,65536
+PRGV:57344,3670,65536
+PRGC:3120,1,"Scanning contents"
+PRGV:0,3670,65536
+PRGV:655,3670,65536
+PRGV:655,4194,65536
+PRGV:1310,4194,65536
+PRGV:1310,4718,65536
+PRGV:3276,4718,65536
+PRGV:3276,6291,65536
+PRGV:4587,6291,65536
+PRGV:4587,7340,65536
+PRGV:6553,7340,65536
+PRGV:6553,8912,65536
+PRGC:3103,0,"Processing titles"
+PRGV:0,8912,65536
+MSG:3028,0,3,"Title #1 was added (7 cell(s), 0:14:58)","Title #%1 was added (%2 cell(s), %3)","1","7","0:14:58"
+PRGV:7281,8912,65536
+PRGV:7281,9437,65536
+MSG:3028,16777216,3,"Title #2 was added (8 cell(s), 0:14:57)","Title #%1 was added (%2 cell(s), %3)","2","8","0:14:57"
+MSG:3025,16777216,3,"Title #3 has length of 119 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","3","119","120"
+MSG:3028,16777216,3,"Title #4 was added (1 cell(s), 0:06:05)","Title #%1 was added (%2 cell(s), %3)","4","1","0:06:05"
+MSG:3028,0,3,"Title #5 was added (1 cell(s), 0:03:36)","Title #%1 was added (%2 cell(s), %3)","5","1","0:03:36"
+PRGV:36408,9437,65536
+PRGV:36408,11534,65536
+MSG:3025,16777216,3,"Title #6 has length of 107 seconds which is less than minimum title length of 120 seconds and was therefore skipped","Title #%1 has length of %2 seconds which is less than minimum title length of %3 seconds and was therefore skipped","6","107","120"
+MSG:3028,0,3,"Title #7 was added (7 cell(s), 0:58:24)","Title #%1 was added (%2 cell(s), %3)","7","7","0:58:24"
+PRGC:3104,0,"Decrypting data"
+PRGV:0,11534,65536
+PRGV:8192,11534,65536
+PRGV:8192,12058,65536
+PRGV:24576,12058,65536
+PRGV:24576,13107,65536
+PRGV:32768,13107,65536
+PRGV:32768,13631,65536
+PRGV:49152,13631,65536
+PRGV:49152,14680,65536
+PRGV:65536,14680,65536
+PRGV:65536,15728,65536
+MSG:5011,0,0,"Operation successfully completed","Operation successfully completed"
