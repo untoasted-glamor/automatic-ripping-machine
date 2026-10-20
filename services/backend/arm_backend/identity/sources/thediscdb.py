@@ -1,9 +1,15 @@
 """TheDiscDB disc-map source: join a snapshot match to the MakeMKV scan and
 propose per-title identity (tier 2).
 
-Join keys, in order: SourceFile == ScanTitle.source_file (case-insensitive);
-else duration within +-2s IF exactly one scan title with source_file=None is
-in the window (ambiguity -> no join; a wrong label is worse than no label).
+Join keys, in order: SourceFile == ScanTitle.source_playlist (MakeMKV TINFO
+16, the Blu-ray playlist such as `00001.mpls`; case-insensitive); else
+duration within +-2s IF exactly one scan title with no playlist is in the
+window (ambiguity -> no join; a wrong label is worse than no label). A title
+whose playlist is known but isn't in the disc map is never joined by
+duration: the playlist says it is a different title.
+
+Never `ScanTitle.source_file`: that is TINFO 27, MakeMKV's planned output
+name (`<label>_t00.mkv`), which no SourceFile equals.
 """
 
 from __future__ import annotations
@@ -59,7 +65,7 @@ def _int_or_none(value: Any) -> int | None:
 
 
 def build_claims(match: DiscMatch, scan: ScanResult, *, now: datetime) -> SourceClaims:
-    by_source_file = {t.source_file.lower(): t for t in scan.titles if t.source_file}
+    by_playlist = {t.source_playlist.lower(): t for t in scan.titles if t.source_playlist}
     tracks: dict[str, TrackClaim] = {}
     for entry in match.disc.get("Titles") or []:
         if not isinstance(entry, dict):
@@ -68,7 +74,7 @@ def build_claims(match: DiscMatch, scan: ScanResult, *, now: datetime) -> Source
         if not isinstance(item, dict):
             item = {}
         source_file = str(entry.get("SourceFile") or "").lower()
-        scan_title = by_source_file.get(source_file)
+        scan_title = by_playlist.get(source_file)
         if scan_title is None:
             want = parse_duration(str(entry.get("Duration") or ""))
             if want is None:
@@ -76,7 +82,7 @@ def build_claims(match: DiscMatch, scan: ScanResult, *, now: datetime) -> Source
             candidates = [
                 t
                 for t in scan.titles
-                if t.source_file is None
+                if t.source_playlist is None
                 and t.duration_seconds is not None
                 and abs(t.duration_seconds - want) <= DURATION_WINDOW_SECONDS
             ]
