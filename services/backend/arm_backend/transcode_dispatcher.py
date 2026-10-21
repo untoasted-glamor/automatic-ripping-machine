@@ -102,6 +102,13 @@ _PROBE_HOLD_LOG_SECONDS = 600
 _TRANSPORT_DEAD_ERRORS = (SSHException, ConnectionResetError, BrokenPipeError, EOFError)
 
 
+def _is_name_conflict(exc: BaseException) -> bool:
+    """Docker refused the create: a container already has the task's name."""
+    from docker.errors import APIError  # type: ignore[import-untyped]
+
+    return isinstance(exc, APIError) and exc.status_code == 409
+
+
 def _is_transport_death(exc: BaseException) -> bool:
     """A dead docker-over-SSH transport surfaces either as a raw paramiko
     SSHException or wrapped inside docker's APIError cause chain (docker-py
@@ -303,6 +310,12 @@ class TranscodeDispatcher:
         # querying live; it is only ever stale for the window between a GPU
         # being enabled and the next tick or claim.
         self._enabled_gpu_vendors: set[GpuVendor] = set()
+        # Encode tasks this process spawned a container for that have not
+        # claimed yet: task id -> time.monotonic() of the spawn. A task stays
+        # QUEUED until its transcoder calls /claim, which can take longer than
+        # a tick on a loaded host; until then it is not spawned again and its
+        # container counts against the parallel limit.
+        self._starting: dict[str, float] = {}
 
     @property
     def docker_client(self) -> Any:
@@ -464,7 +477,7 @@ class TranscodeDispatcher:
         slot, so no spawn would come along to rebuild it and the claim would
         be kept forever.
         """
-        from docker.errors import NotFound  # type: ignore[import-untyped]
+        from docker.errors import NotFound
 
         containers = self._docker_call(
             task_id,
@@ -672,6 +685,17 @@ class TranscodeDispatcher:
             .all()
         )
         queued_ids = [row.id for row in queued_rows]
+        # A starting task leaves the map once it is claimed (or failed or
+        # deleted), or when its container has not claimed it within the
+        # stale threshold; the next spawn then removes that container.
+        now = time.monotonic()
+        queued_id_set = set(queued_ids)
+        self._starting = {
+            task_id: spawned_at
+            for task_id, spawned_at in self._starting.items()
+            if task_id in queued_id_set and now - spawned_at < self._settings.ARM_TRANSCODE_STALE_THRESHOLD_SECONDS
+        }
+        encode_slots -= len(self._starting)
         spawned = 0
         held_encode = 0
         encode_examined = 0
@@ -727,6 +751,10 @@ class TranscodeDispatcher:
                     except Exception as exc:
                         logger.exception("passthrough execution failed task_id=%s: %s", task_id, exc)
                         await db.rollback()
+                    continue
+                if task_id in self._starting:
+                    # Its container is starting up and claims the task once it
+                    # registers.
                     continue
                 if encode_examined >= _QUEUE_SCAN_LIMIT:
                     # Encode-only cap; passthrough tasks further back in the
@@ -794,6 +822,7 @@ class TranscodeDispatcher:
                     # thread doesn't put any DB access off the loop.
                     await asyncio.to_thread(self._spawn_container, task, assignment=assignment)
                     started = True
+                    self._starting[task_id] = time.monotonic()
                     spawned += 1
                     self.last_spawn_error = None
                     # Commit this task's GPU claim promptly, per-task, right
@@ -839,10 +868,22 @@ class TranscodeDispatcher:
                         assignment.gpu.status = GpuStatus.AVAILABLE
                         assignment.gpu.claimed_by_task_id = None
                         await db.commit()
+                    name_conflict = not started and _is_name_conflict(exc)
+                    if name_conflict:
+                        # An earlier container holds the task's name: one whose
+                        # create timed out after docker made it (never started,
+                        # so never auto-removed), or one that did not claim the
+                        # task in time. The task is still QUEUED, so no
+                        # transcoder owns it: remove the holder, spawn next tick.
+                        try:
+                            await asyncio.to_thread(self._remove_task_containers, task_id)
+                        except Exception as remove_exc:
+                            logger.warning("could not remove the container holding task_id=%s: %s", task_id, remove_exc)
                     # Only a container that never started counts as an
                     # attempt: when just the commit failed, the transcoder
-                    # is running and will claim the task.
-                    if not started:
+                    # is running and will claim the task. A name conflict is
+                    # the earlier container's doing, not the task's.
+                    if not started and not name_conflict:
                         try:
                             await self._count_failed_spawn(db, task_id)
                         except Exception:

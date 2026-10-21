@@ -500,6 +500,102 @@ async def test_spawn_continues_after_one_failure() -> None:
     assert docker.containers.run.call_count == 2
 
 
+def _two_queued_encode_tasks() -> FakeSession:
+    db = _app_with_one_task(TranscodeTaskStatus.QUEUED, created_at=datetime.now(UTC))
+    db.rows["transcode_tasks"].append(
+        TranscodeTask(
+            id="txt_2",
+            session_application_id="sap_x",
+            source_track_id="trk_2",
+            status=TranscodeTaskStatus.QUEUED,
+            attempts=0,
+            progress_pct=0,
+            output_path="q2.mkv",
+            created_at=datetime.now(UTC) + timedelta(seconds=1),
+        )
+    )
+    return db
+
+
+async def test_a_starting_container_is_not_spawned_again_and_holds_its_slot() -> None:
+    # The task stays QUEUED until its transcoder claims it; a loaded host can
+    # take longer than a tick to get there.
+    db = _two_queued_encode_tasks()
+    docker = MagicMock()
+    disp = TranscodeDispatcher(_settings(MAX_PARALLEL_TRANSCODES=1), _db_factory(db), docker, WSHub())
+
+    assert await disp.spawn_pending(db) == 1
+    assert await disp.spawn_pending(db) == 0
+
+    docker.containers.run.assert_called_once()
+    assert docker.containers.run.call_args.kwargs["name"] == "arm-transcode-txt_1"
+    assert [t.attempts for t in db.rows["transcode_tasks"]] == [0, 0]
+
+
+async def test_a_claimed_task_frees_its_starting_entry() -> None:
+    db = _two_queued_encode_tasks()
+    docker = MagicMock()
+    disp = TranscodeDispatcher(_settings(MAX_PARALLEL_TRANSCODES=2), _db_factory(db), docker, WSHub())
+    assert await disp.spawn_pending(db) == 2
+
+    first = db.rows["transcode_tasks"][0]
+    first.status = TranscodeTaskStatus.IN_PROGRESS
+    first.claimed_by = "arm-transcode-txt_1"
+    first.claim_heartbeat_at = datetime.now(UTC)
+    await disp.spawn_pending(db)
+
+    # Counted once, as IN_PROGRESS; txt_2 is still starting.
+    assert set(disp._starting) == {"txt_2"}
+
+
+async def test_a_container_that_never_claims_is_spawned_again_after_the_stale_threshold() -> None:
+    db = _app_with_one_task(TranscodeTaskStatus.QUEUED, created_at=datetime.now(UTC))
+    docker = MagicMock()
+    disp = TranscodeDispatcher(_settings(), _db_factory(db), docker, WSHub())
+    assert await disp.spawn_pending(db) == 1
+
+    disp._starting["txt_1"] -= 91
+    assert await disp.spawn_pending(db) == 1
+    assert docker.containers.run.call_count == 2
+
+
+async def test_a_name_conflict_removes_the_holder_without_counting_an_attempt() -> None:
+    # A create that timed out after docker made the container leaves it in
+    # `created`: never started, never auto-removed, holding the task's name.
+    from docker.errors import APIError  # type: ignore[import-untyped]
+
+    db = _app_with_one_task(TranscodeTaskStatus.QUEUED, created_at=datetime.now(UTC))
+    docker = MagicMock()
+    holder = MagicMock()
+    docker.containers.list.return_value = [holder]
+    docker.containers.run.side_effect = [APIError("Conflict", response=MagicMock(status_code=409)), MagicMock()]
+    disp = TranscodeDispatcher(_settings(), _db_factory(db), docker, WSHub())
+
+    assert await disp.spawn_pending(db) == 0
+    docker.containers.list.assert_called_once_with(all=True, filters={"label": "arm.task_id=txt_1"})
+    holder.remove.assert_called_once_with(force=True)
+    task = db.rows["transcode_tasks"][0]
+    assert (task.status, task.attempts) == (TranscodeTaskStatus.QUEUED, 0)
+
+    assert await disp.spawn_pending(db) == 1
+
+
+async def test_a_name_conflict_survives_a_failed_removal(caplog: pytest.LogCaptureFixture) -> None:
+    from docker.errors import APIError  # type: ignore[import-untyped]
+
+    db = _app_with_one_task(TranscodeTaskStatus.QUEUED, created_at=datetime.now(UTC))
+    docker = MagicMock()
+    docker.containers.list.side_effect = RuntimeError("docker socket read timed out")
+    docker.containers.run.side_effect = APIError("Conflict", response=MagicMock(status_code=409))
+    disp = TranscodeDispatcher(_settings(), _db_factory(db), docker, WSHub())
+
+    with caplog.at_level(logging.WARNING):
+        assert await disp.spawn_pending(db) == 0
+
+    assert "could not remove the container holding task_id=txt_1" in caplog.text
+    assert db.rows["transcode_tasks"][0].attempts == 0
+
+
 async def test_spawn_pending_runs_spawn_container_via_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fix 76-4: `_spawn_container` does a blocking docker call (and, on the
     SSH-rebuild path, a blocking TCP+SSH handshake that can take tens of
