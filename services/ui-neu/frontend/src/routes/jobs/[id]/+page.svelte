@@ -651,7 +651,7 @@
 													type="checkbox"
 													checked={!track.excluded}
 													onchange={(e) => toggleExcluded(track.id, e.currentTarget as HTMLInputElement)}
-													title="Include this track in transcode output (the disc still rips in full)"
+													title="Include this track. A title excluded before the rip starts is not ripped; one excluded later is left out of transcodes."
 													class="job-detail-track-checkbox"
 												/>
 											{:else}
