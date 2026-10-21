@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     # sends a non-null value in `RipStartResponse.min_length_seconds`,
     # the ripper uses that instead of this baseline.
     ARM_MIN_LENGTH_SECONDS: int = 120
+    # When every title is kept, a disc rip runs one `makemkvcon mkv all`. On
+    # a disc with a play-all that reads the shared clips twice, where a
+    # `backup` reads the disc once; set this to send full selections down
+    # the backup-then-remux path that partial selections always take. Off
+    # until a timing on a real disc decides it (track-select plan, Q6).
+    ARM_BACKUP_FULL_SELECTIONS: bool = False
     # Source mode. When ARM_SOURCE_PATH is set, the ripper skips its poll
     # loop, treats the path as the bound device everywhere (registering it
     # as such with the backend), and runs the scan → identify → rip

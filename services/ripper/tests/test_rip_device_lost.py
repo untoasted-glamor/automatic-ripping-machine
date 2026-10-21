@@ -150,6 +150,9 @@ async def test_a_drive_that_comes_back_on_a_new_node_resumes_the_rest(monkeypatc
     assert calls[1]["device_path"] == "/dev/sr1"
     assert calls[1]["output_dir"] == env["raw"] / "resume-1"
     assert calls[1]["skip_track_ids"] == {"trk_0"}
+    # Backup-then-remux keeps its disc backup in the job's own folder on every
+    # pass, so a resume remuxes from one an earlier pass finished.
+    assert [c["backup_dir"] for c in calls] == [env["raw"] / ".backup"] * 2
     # Nothing failed; each track went in_progress once, then done.
     for tid in ("trk_0", "trk_1", "trk_2"):
         assert client.statuses(tid) == [TrackStatus.IN_PROGRESS, TrackStatus.DONE]

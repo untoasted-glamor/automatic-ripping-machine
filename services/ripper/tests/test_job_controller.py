@@ -1183,3 +1183,101 @@ async def test_run_command_kill_survives_process_lookup_error(monkeypatch):
     rc, msg = await JobController._run_command("eject", "-sv", "/dev/sr0", log_failure=False)
     assert rc is None
     assert msg == "timeout"
+
+
+# --- rip only the kept titles (track-select S7) --------------------------------
+
+
+async def test_resume_with_an_excluded_track_never_reports_it(monkeypatch, tmp_path, stub_eject):
+    """`/resume` hands back every track, the excluded one included (audit
+    A7). The rip re-runs the same strategy, so the excluded title is still
+    skipped: it is never PATCHed, the kept ones finish, and the job is
+    reported complete."""
+    from arm_common.enums import TrackKind, TrackStatus
+
+    import arm_ripper.scan.makemkv as scan_makemkv_module
+    from arm_ripper.scan.disc_probe import DiscProbe
+    from tests._makemkvcon_fake import SINTEL_ISO, install
+
+    async def _noop(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(jc_module, "refresh_makemkv_key", _noop)
+    iso = tmp_path / "sintel.iso"
+    iso.write_bytes(b"")
+    install(monkeypatch, isos={str(iso): SINTEL_ISO})
+
+    async def _no_probe(_device: str, **_kwargs) -> DiscProbe:
+        return DiscProbe(crc64=None)
+
+    monkeypatch.setattr(scan_makemkv_module, "probe_disc", _no_probe)
+    scan = await scan_makemkv_module.scan_disc(str(iso))
+    tracks = [
+        TrackView(
+            id=f"trk_{t.index}",
+            job_id="job_test",
+            kind=TrackKind.VIDEO_TITLE,
+            index=t.index,
+            source_ref=str(t.index),
+            status=TrackStatus.QUEUED,
+            output_path=None,
+            size_bytes=None,
+            duration_seconds=None,
+            expected_duration_seconds=t.duration_seconds,
+            attempts=1,
+            last_error=None,
+            excluded=t.index == 6,
+        )
+        for t in scan.titles
+        if (t.duration_seconds or 0) >= 120
+    ]
+
+    class ResumeClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.patches: list[tuple[str, dict[str, object]]] = []
+
+        async def resume(self, job_id: str) -> RipStartResponse:
+            self.resume_calls.append(job_id)
+            return RipStartResponse(
+                job_id=job_id, rip_preset_id="rpr_test", tracks=tracks, scan_titles=scan.titles, min_length_seconds=120
+            )
+
+        async def update_track(self, track_id: str, **fields: object) -> TrackView:  # type: ignore[override]
+            self.patches.append((track_id, fields))
+            return next(t for t in tracks if t.id == track_id)
+
+    client = ResumeClient()
+    client.community_keydb_enabled = False
+    client.makemkv_sdf_enabled = False
+    controller = JobController(client, "drv_test", default_min_length_seconds=120)
+
+    await asyncio.wait_for(controller.resume_inflight_job(_view(JobStatus.RIPPING), str(iso)), timeout=5.0)
+
+    patched = {track_id for track_id, _ in client.patches}
+    assert patched == {"trk_0", "trk_1", "trk_3", "trk_4"}
+    for track_id in patched:
+        statuses = [f.get("status") for tid, f in client.patches if tid == track_id]
+        assert statuses == [TrackStatus.IN_PROGRESS, TrackStatus.DONE]
+    assert client.rip_complete_calls == ["job_test"]
+    assert not list(tmp_path.rglob("B1_t06.mkv"))
+
+
+async def test_backup_full_selections_reaches_the_rip(monkeypatch, tmp_path, stub_eject):
+    """`ARM_BACKUP_FULL_SELECTIONS` (main.py) is handed to every rip."""
+    seen: list[object] = []
+
+    async def fake_rip_all(**kw) -> None:
+        seen.append((kw["backup_full_selections"], kw["backup_dir"]))
+
+    monkeypatch.setattr(jc_module, "rip_all", fake_rip_all)
+    controller = JobController(FakeClient(), "drv_test", device_path="/dev/sr0", backup_full_selections=True)
+
+    await controller._execute_rip(
+        job_id="job_x",
+        disc_type=DiscType.BLURAY,
+        device_path="/dev/sr0",
+        rip_start=RipStartResponse(job_id="job_x", rip_preset_id="rpr", tracks=[]),
+    )
+
+    assert seen == [(True, tmp_path / "job_x" / ".backup")]

@@ -157,6 +157,7 @@ def test_container_spec_forwards_ripper_tunables_under_their_ripper_names() -> N
     m, _ = _manager(
         ARM_RIPPER_POLL_INTERVAL_SECONDS="1.5",
         ARM_RIPPER_MIN_LENGTH_SECONDS="300",
+        ARM_RIPPER_BACKUP_FULL_SELECTIONS="true",
         ARM_RIPPER_MAKEMKV_KEYCHECK_INTERVAL_SECONDS="3600",
         ARM_RIPPER_NOT_READY_REARM_POLLS="5",
         ARM_RIPPER_OPTICAL_SR_MAX="15",
@@ -165,6 +166,7 @@ def test_container_spec_forwards_ripper_tunables_under_their_ripper_names() -> N
     env = m.container_spec(_drive())["environment"]
     assert env["POLL_INTERVAL_SECONDS"] == "1.5"
     assert env["ARM_MIN_LENGTH_SECONDS"] == "300"
+    assert env["ARM_BACKUP_FULL_SELECTIONS"] == "true"
     assert env["MAKEMKV_KEYCHECK_INTERVAL_SECONDS"] == "3600"
     assert env["ARM_NOT_READY_REARM_POLLS"] == "5"
     assert env["ARM_OPTICAL_SR_MAX"] == "15"
@@ -175,6 +177,7 @@ def test_container_spec_omits_unset_tunables() -> None:
     m, _ = _manager()
     env = m.container_spec(_drive())["environment"]
     assert "POLL_INTERVAL_SECONDS" not in env and "ARM_OPTICAL_SR_MAX" not in env
+    assert "ARM_BACKUP_FULL_SELECTIONS" not in env
 
 
 def test_container_spec_prefers_the_local_ripper_certs_path() -> None:

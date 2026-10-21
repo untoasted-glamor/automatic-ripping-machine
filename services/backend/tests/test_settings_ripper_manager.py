@@ -26,6 +26,7 @@ def test_ripper_tunable_passthroughs_default_empty() -> None:
     for key in (
         "ARM_RIPPER_POLL_INTERVAL_SECONDS",
         "ARM_RIPPER_MIN_LENGTH_SECONDS",
+        "ARM_RIPPER_BACKUP_FULL_SELECTIONS",
         "ARM_RIPPER_MAKEMKV_KEYCHECK_INTERVAL_SECONDS",
         "ARM_RIPPER_NOT_READY_REARM_POLLS",
         "ARM_RIPPER_OPTICAL_SR_MAX",

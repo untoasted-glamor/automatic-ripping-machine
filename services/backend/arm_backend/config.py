@@ -191,6 +191,7 @@ class Settings(BaseSettings):
     # container_spec maps them to the ripper's env names.
     ARM_RIPPER_POLL_INTERVAL_SECONDS: str = ""
     ARM_RIPPER_MIN_LENGTH_SECONDS: str = ""
+    ARM_RIPPER_BACKUP_FULL_SELECTIONS: str = ""
     ARM_RIPPER_MAKEMKV_KEYCHECK_INTERVAL_SECONDS: str = ""
     ARM_RIPPER_NOT_READY_REARM_POLLS: str = ""
     ARM_RIPPER_OPTICAL_SR_MAX: str = ""

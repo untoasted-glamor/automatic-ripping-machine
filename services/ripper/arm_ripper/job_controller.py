@@ -26,7 +26,7 @@ from arm_ripper.drive_handle import DriveHandle
 from arm_ripper.makemkv_sdf import refresh_makemkv_sdf
 from arm_ripper.makemkv_key import refresh_makemkv_key
 from arm_ripper.rip import RipResult, rip_all
-from arm_ripper.rip.dispatcher import DEFAULT_MIN_LENGTH_SECONDS, TransferStats
+from arm_ripper.rip.dispatcher import DEFAULT_MIN_LENGTH_SECONDS, SELECTION_BACKUP_DIRNAME, TransferStats
 from arm_ripper.drive_poll import _ABSENT_ERRNOS, DriveState, read_drive_status
 from arm_ripper.scan import ScanError, scan as scan_disc
 from arm_ripper.source import is_file_source
@@ -156,6 +156,7 @@ class JobController:
         ws: WSClient | None = None,
         device_path: str | DriveHandle | None = None,
         default_min_length_seconds: int = DEFAULT_MIN_LENGTH_SECONDS,
+        backup_full_selections: bool = False,
         resolution_timeout: float | None = _RESOLUTION_TIMEOUT_UNSET,  # type: ignore[assignment]
         on_scan_activity_change: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
@@ -189,6 +190,9 @@ class JobController:
         # `main.py` from `ARM_MIN_LENGTH_SECONDS`; tests get the dispatcher
         # default (600).
         self._default_min_length_seconds = default_min_length_seconds
+        # `ARM_BACKUP_FULL_SELECTIONS`: rip a disc whose every title is kept by
+        # backup-then-remux too, instead of one `mkv all` (track-select Q6).
+        self._backup_full_selections = backup_full_selections
         # Ceiling on an AWAITING_USER_ID / AWAITING_REVIEW park, in seconds.
         # None means wait indefinitely — source mode's one-shot container must
         # not exit (and have the backend watchdog mark the job FAILED) while
@@ -1013,6 +1017,10 @@ class JobController:
                     stop=lost if resumable else None,
                     skip_track_ids=skip,
                     drive_lost=functools.partial(self._drive_gone, rip_path) if resumable else None,
+                    backup_full_selections=self._backup_full_selections,
+                    # The job's, whichever folder this pass rips into, so a
+                    # resume remuxes from a backup an earlier pass finished.
+                    backup_dir=output_dir / SELECTION_BACKUP_DIRNAME,
                 )
             finally:
                 if watcher is not None:
@@ -1020,8 +1028,9 @@ class JobController:
             if not (lost.is_set() and unfinished):
                 break
             # The drive dropped off the bus mid-rip. Keep the disc's finished
-            # titles and, once it is back, rip the rest with one more
-            # `mkv all` on its new node (never per-title invocations).
+            # titles and, once it is back, rip the rest on its new node: one
+            # more `mkv all`, or the kept titles' remuxes from a finished
+            # backup (never per-title invocations against the drive).
             logger.warning(
                 "drive disconnected mid-rip on %s; %d title(s) unfinished; waiting up to %.0fs for it to return",
                 rip_path,
@@ -1040,7 +1049,7 @@ class JobController:
             rip_path = returned
             rip_dir = output_dir / f"resume-{resumes}"
             logger.info(
-                "drive back at %s; resuming %d title(s) with one more mkv all (resume %d)",
+                "drive back at %s; resuming %d title(s) (resume %d)",
                 rip_path,
                 len(tracks) - len(skip),
                 resumes,
