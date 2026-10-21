@@ -5,6 +5,8 @@ Two callers:
 - Upstream's FOLDER preset (`TrackKind.DISC_BACKUP`, Blu-ray): a decrypted
   `BDMV/` + `CERTIFICATE/` tree under `<job>/backup`, a finished output that
   passthrough files into the library.
+
+Both read a drive as `disc:<N>` (`backup_source`): `backup` refuses `dev:`.
 - Backup-then-remux (track-select plan, D1): one read of the disc into
   `<job>/.backup/`, scratch the kept titles are remuxed from. How that backup
   is taken lives in `selection_backup` alone.

@@ -931,6 +931,7 @@ async def test_rip_all_disc_backup_track_uses_rip_backup(monkeypatch, tmp_path):
         raise AssertionError("a disc backup must not reach rip_disc or rip_data")
 
     monkeypatch.setattr(dispatcher_module, "rip_backup", fake_rip_backup)
+    install(monkeypatch, disc=HANAKO_BD)
     monkeypatch.setattr(dispatcher_module, "rip_disc", must_not_run)
     monkeypatch.setattr(dispatcher_module, "rip_data", must_not_run)
     backup = _track(0, source_ref="full").model_copy(update={"kind": TrackKind.DISC_BACKUP})
@@ -954,12 +955,25 @@ async def test_rip_all_disc_backup_track_uses_rip_backup(monkeypatch, tmp_path):
         on_track_done=on_done,
         on_track_progress=on_progress,
     )
-    assert backup_calls == [("dev:/dev/sr0", tmp_path / "backup", True)]
+    assert backup_calls == [("disc:0", tmp_path / "backup", True)]
     assert events == [
         ("start", "trk_0"),
         ("progress", ("trk_0", 0.5, None)),
         ("done", ("trk_0", True, 7)),
     ]
+
+
+async def test_a_disc_backup_track_fails_when_makemkv_does_not_list_the_drive(monkeypatch, tmp_path):
+    install(monkeypatch, disc=HANAKO_BD, device="/dev/sr3")
+    backup = _track(0, source_ref="full").model_copy(update={"kind": TrackKind.DISC_BACKUP})
+
+    reports, started = await _rip_tracks([backup], tmp_path / "job")
+
+    (result,) = reports[backup.id]
+    assert started == [backup.id]
+    assert result.ok is False
+    assert result.error == "makemkvcon lists no drive at /dev/sr0, so it can't back the disc up"
+    assert not (tmp_path / "job" / "backup").exists()
 
 
 async def test_rip_all_hashes_each_title_and_patches_done_with_its_sha256(monkeypatch, tmp_path):
@@ -1704,8 +1718,8 @@ def _position(scan: ScanResult, index: int) -> int:
 
 async def test_rip_all_disc_backup_writes_the_decrypted_folder(monkeypatch, tmp_path):
     """Upstream's FOLDER preset against the fake (MakeMKV 1.18.4): one
-    `backup --decrypt` of the drive, and the track is DONE with
-    `<job>/backup`, which reads back as the disc's backup."""
+    `backup --decrypt disc:<N>` of the drive (`dev:` is refused), and the
+    track is DONE with `<job>/backup`, which reads back as the disc's backup."""
     fake = install(monkeypatch, disc=HANAKO_BD)
     out = tmp_path / "job"
     backup = _track(0, source_ref="full").model_copy(update={"kind": TrackKind.DISC_BACKUP})

@@ -22,7 +22,7 @@ What is modelled, and where it comes from (S0 "Spike results"):
   when a title failed). An id with no title exits 12 and writes nothing, with
   no error message (recorded). `mkv all` itself was never recorded; its save
   phase is the recorded single-title shape repeated.
-- **`backup <dev:<device>|disc:<N>> <path>`** replays the recorded backup
+- **`backup disc:<N> <path>`** replays the recorded backup
   stream of that disc type and writes what the real tool wrote:
   - Blu-ray: a folder at `<path>` with the recorded layout (empty files),
     read back as `file:<path>`.
@@ -38,14 +38,14 @@ What is modelled, and where it comes from (S0 "Spike results"):
 - **MakeMKV version.** Every recording was made on 2.0.0; the ripper image
   runs 1.18.4 (2.0.0 segfaults on unencrypted Blu-rays). `makemkv_version`
   picks which behaviour the fake has where the two are known to differ:
-  - `"2.0.0"` (recorded): `backup dev:…` exits 10 and wants `disc:<N>`; a
-    `--decrypt` BD backup is written, but every later `file:` read of it
-    exits 139; `file:` on a DVD backup image exits 10.
+  - `"2.0.0"` (recorded): a `--decrypt` BD backup is written, but every
+    later `file:` read of it exits 139; `file:` on a DVD backup image exits 10.
   - `"1.18.4"` (the default): `file:` on a DVD backup image reads it like
-    `iso:` (recorded, S17 17.3). `backup dev:<device>` works, as upstream's
-    `rip_backup` calls it, and a decrypted BD backup reads back like an
-    encrypted one: *assumed from upstream's FOLDER preset, not recorded on
-    this drive yet (S17 17.4).*
+    `iso:` (recorded, S17 17.3), and a decrypted BD backup reads back like
+    an encrypted one, with the same permuted ids (recorded, S17 17.4).
+  On both, `backup` refuses any source but `disc:<N>`: `backup dev:…` exits
+  10 with `Backup source must start with "disc:"` on stderr and writes
+  nothing (recorded on the Hanako-kun BD, 2.0.0 and 1.18.4).
   Title tables, numbering and output names are the same on both: the
   Sintel ISO and ACCA image tables at 0/120/600 s are byte-identical on
   1.18.4 (`*_v1184.txt`).
@@ -509,8 +509,7 @@ class FakeMakemkvcon:
         return next((f for f in self._failures if f.command == inv.command and f.title == title), None)
 
     def _run(self, inv: Invocation, args: list[str]) -> tuple[list[_Step], list[str], int]:
-        dev_backup = self.makemkv_version != "2.0.0" and inv.source.startswith("dev:")
-        if inv.command == "backup" and not (inv.source.startswith("disc:") or dev_backup):
+        if inv.command == "backup" and not inv.source.startswith("disc:"):
             recorded = _fixture_lines("makemkvcon_bd_hanako_backup_dev_source_rejected_rc10.txt")
             return list(self._with_drives(recorded[:-1], inv.noscan)), [recorded[-1]], 10
 

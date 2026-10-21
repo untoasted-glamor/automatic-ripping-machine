@@ -176,10 +176,15 @@ async def test_a_drive_index_lookup_reads_no_disc(monkeypatch):
     assert fake.drive_reads == []
 
 
-async def test_backup_refuses_a_dev_source_on_2_0_0(monkeypatch, tmp_path):
-    install(monkeypatch, disc=HANAKO_BD, makemkv_version="2.0.0")
+@pytest.mark.parametrize("version", ["2.0.0", "1.18.4"])
+async def test_backup_refuses_a_dev_source(monkeypatch, tmp_path, version):
+    """Recorded on both versions, upstream's exact `rip_backup` command
+    included: exit 10, the one stderr line, nothing written."""
+    install(monkeypatch, disc=HANAKO_BD, makemkv_version=version)
 
-    _, stderr, rc = await _run("makemkvcon", "-r", "backup", "dev:/dev/sr0", str(tmp_path / "bk"))
+    _, stderr, rc = await _run(
+        "makemkvcon", "backup", "--decrypt", "--robot", "--progress=-stdout", "dev:/dev/sr0", str(tmp_path / "bk")
+    )
 
     assert rc == 10
     assert 'Backup source must start with "disc:"' in stderr
@@ -210,14 +215,14 @@ async def test_a_decrypted_blu_ray_backup_segfaults_every_later_read_on_2_0_0(mo
     assert not (tmp_path / "out").exists()
 
 
-async def test_a_decrypted_dev_backup_reads_back_on_1_18_4(monkeypatch, tmp_path):
-    """Upstream's `rip_backup` command on 1.18.4 (the default): `dev:` is
-    accepted, and the decrypted folder reads back through `file:<bk>/BDMV`
-    with the backup's own numbering."""
+async def test_a_decrypted_disc_backup_reads_back_on_1_18_4(monkeypatch, tmp_path):
+    """Recorded on 1.18.4 (S17 17.4): `backup --decrypt disc:0` works, and
+    the decrypted folder reads back through `file:<bk>/BDMV` with the
+    backup's own, permuted numbering."""
     fake = install(monkeypatch, disc=HANAKO_BD)
     bk = tmp_path / "bk"
 
-    _, _, rc = await _run("makemkvcon", "backup", "--decrypt", "--robot", "--progress=-stdout", "dev:/dev/sr0", str(bk))
+    _, _, rc = await _run("makemkvcon", "backup", "--decrypt", "--robot", "--progress=-stdout", "disc:0", str(bk))
     info, _, info_rc = await _run("makemkvcon", "-r", "--noscan", "info", f"file:{bk / 'BDMV'}")
 
     assert (rc, info_rc) == (0, 0)

@@ -12,7 +12,13 @@ from arm_common.schemas import ScanTitle, TrackView
 
 from arm_ripper.rip.abcde_rip import rip_cd
 from arm_ripper.rip.data_rip import rip_data
-from arm_ripper.rip.makemkv_backup import BACKUP_DIRNAME, BackupSourceError, rip_backup, selection_backup
+from arm_ripper.rip.makemkv_backup import (
+    BACKUP_DIRNAME,
+    BackupSourceError,
+    backup_source,
+    rip_backup,
+    selection_backup,
+)
 from arm_ripper.rip.makemkv_rip import (
     _OUTPUT_FILE_RE,
     REMUX_MIN_LENGTH_SECONDS,
@@ -124,7 +130,8 @@ async def rip_all(
       title is then remuxed from disk. `backup_full_selections`
       (`ARM_BACKUP_FULL_SELECTIONS`) sends full selections from a drive
       down this path too.
-    - Any disc whose tracks are all DISC_BACKUP: one `makemkvcon backup --decrypt` (`rip_backup`) for the first track.
+    - Any disc whose tracks are all DISC_BACKUP: one `makemkvcon backup --decrypt disc:<N>` (`rip_backup`) for the
+      first track.
     - CD: mark all tracks IN_PROGRESS, run abcde once for the whole disc,
       then emit DONE/FAILED per track from the bulk result.
     - DATA: a single dd dump assigned to the first (only) track.
@@ -137,12 +144,13 @@ async def rip_all(
             if on_track_progress is not None:
                 await on_track_progress(backup, fraction)
 
-        result = await rip_backup(
-            makemkv_source_url(device_path),
-            output_dir / BACKUP_DIRNAME,
-            decrypt=True,
-            on_progress=_on_backup_progress,
-        )
+        # MakeMKV's `backup` takes a drive only as `disc:<N>` (`dev:` is refused).
+        try:
+            source = await backup_source(device_path)
+        except BackupSourceError as exc:
+            await on_track_done(backup, RipResult(ok=False, error=str(exc)))
+            return
+        result = await rip_backup(source, output_dir / BACKUP_DIRNAME, decrypt=True, on_progress=_on_backup_progress)
         await on_track_done(backup, result)
         return
 
