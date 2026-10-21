@@ -523,6 +523,52 @@ def test_builtin_tv_session_unset_season_or_disc_still_422s(token: str) -> None:
     assert f"mark it optional as {{{token}?}}" in str(exc.value)
 
 
+# ── built-in Jellyfin TV session: {episode_code} ──
+
+
+def _jellyfin_tv_session() -> Session:
+    from arm_backend.seeders import SESSIONS
+
+    seed = next(s for s in SESSIONS if s["id"] == "ses_builtin_tv_jellyfin_1080p")
+    return Session(**seed)
+
+
+def _jellyfin_path(job: Job, **track_kwargs: object) -> str:
+    track = _box_set_track()
+    for key, value in track_kwargs.items():
+        setattr(track, key, value)
+    return compute_outputs(job, [track], _jellyfin_tv_session(), _tv_preset())[0].output_path
+
+
+def test_jellyfin_tv_session_names_a_placed_title_by_episode() -> None:
+    path = _jellyfin_path(_box_set_job(season=1, disc_number=1), role=TrackRole.EPISODE, episode_number=3)
+    assert path == "ACCA (2017)/Season 01/ACCA - S01E03 - tv-1080p-h-265.mkv"
+
+
+def test_jellyfin_tv_session_names_a_two_episode_title_as_a_range() -> None:
+    path = _jellyfin_path(_box_set_job(season=1, disc_number=1), episode_number=1, episode_number_end=2)
+    assert "/ACCA - S01E01-E02 - " in path
+
+
+def test_jellyfin_tv_session_episode_needs_no_disc_number() -> None:
+    assert "/ACCA - S01E03 - " in _jellyfin_path(_box_set_job(season=1), episode_number=3)
+
+
+@pytest.mark.parametrize("role", [None, TrackRole.EPISODE, TrackRole.EXTRA])
+def test_jellyfin_tv_session_falls_back_to_the_disc_position(role: TrackRole | None) -> None:
+    """A title with no episode number keeps the unambiguous S01D02T01, never a
+    bare S01 that a second unplaced title would collide with."""
+    path = _jellyfin_path(_box_set_job(season=1, disc_number=2), role=role)
+    assert path == "ACCA (2017)/Season 01/ACCA - S01D02T01 - tv-1080p-h-265.mkv"
+
+
+@pytest.mark.parametrize("columns", [{"disc_number": 1}, {"season": 1}])
+def test_jellyfin_tv_session_without_season_or_fallback_disc_422s(columns: dict[str, int]) -> None:
+    with pytest.raises(TemplateValidationError) as exc:
+        _jellyfin_path(_box_set_job(**columns))
+    assert "token {episode_code} resolved empty" in str(exc.value)
+
+
 # ── two-episode {episode} range + role-aware episode-token checks ──
 
 
