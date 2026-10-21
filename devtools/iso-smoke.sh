@@ -37,6 +37,15 @@
 #      live (usually a no-op — the watchdog beats us to it). Opt out with
 #      --no-cleanup.
 #
+# `--exclude[=N]` checks that an excluded title is not ripped (track-select
+# plan, S7.7): the review gate is made mandatory for the run (restored on
+# exit), and when the disc parks in review one title is excluded through
+# `PATCH /api/jobs/{id}` before the rip is confirmed. After the rip the job
+# must be `ripped`, the excluded title still `queued` with no file under
+# raw/<job_id>/, every other title `done`, and no `.backup/` or `.remux/`
+# left (an ISO is remuxed from directly, with no backup). This runs the
+# real makemkvcon, so it checks that the ripper tests' fake matches it.
+#
 # Idempotent. Safe to re-run.
 
 set -euo pipefail
@@ -92,6 +101,9 @@ SESSION_ID="${DEFAULT_SESSION_ID}"
 DO_TRANSCODE=1
 DO_CLEANUP=1
 FORCE_REBUILD=0
+EXCLUDE_TITLE=""        # --exclude[=N]: "first" = the lowest-numbered track
+EXCLUDE_RECORD=""       # file holding "<track_id> <source_ref>" once excluded
+REVIEW_CFG_SAVED=""     # the review-gate config to restore on exit
 
 log() { printf '\033[1;36m→\033[0m %s\n' "$*"; }
 ok()  { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
@@ -99,7 +111,7 @@ warn() { printf '\033[1;33m!\033[0m %s\n' "$*" >&2; }
 err() { printf '\033[1;31m✗\033[0m %s\n' "$*" >&2; }
 
 show_help() {
-    sed -n '2,40p' "$0" | sed 's/^# \?//'
+    sed -n '2,50p' "$0" | sed 's/^# \?//'
     cat <<'EOF'
 
 Usage: iso-smoke.sh [options]
@@ -122,6 +134,11 @@ Options:
                       image before launching. Use after editing
                       services/ripper/ — otherwise the in-flight image
                       still carries the old code.
+  --exclude[=N]       Make the review gate mandatory for the run, exclude
+                      title N (a track's source_ref; default: the lowest-
+                      numbered track) when the disc parks in review, then
+                      confirm, and check after the rip that the title was
+                      not ripped. The gate setting is restored on exit.
   --help, -h          Show this message.
 
 Environment variables:
@@ -144,6 +161,8 @@ for arg in "$@"; do
         --rebuild) FORCE_REBUILD=1 ;;
         --session=*) SESSION_ID="${arg#--session=}" ;;
         --iso=*) ISO_CHOICE="${arg#--iso=}" ;;
+        --exclude) EXCLUDE_TITLE="first" ;;
+        --exclude=*) EXCLUDE_TITLE="${arg#--exclude=}" ;;
         *) err "unknown arg: $arg"; exit 2 ;;
     esac
 done
@@ -404,6 +423,9 @@ watch_until_ripped() {
                 # (review_requires_confirm) no countdown will start it, so
                 # confirm it the way the UI's Start button does.
                 if [[ "${confirmed}" != 1 ]]; then
+                    if [[ -n "${EXCLUDE_TITLE}" ]]; then
+                        exclude_one "${jwt}" "${job_id}" || exit 1
+                    fi
                     local start_code
                     start_code=$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' -X POST \
                         "${API_BASE}/api/jobs/${job_id}/rip-start-review" \
@@ -477,6 +499,117 @@ acquire_jwt() {
     fi
     ok "JWT acquired for ${user}" >&2
     printf '%s\n' "${jwt}"
+}
+
+# ---- Exclusion check (--exclude) ------------------------------------------
+
+# `api JWT METHOD PATH [JSON]` -> response body on 2xx; an error and status 1
+# otherwise.
+api() {
+    local jwt="$1" method="$2" path="$3" data="${4:-}" body http_code
+    local args=(-sk --max-time 15 -X "${method}" "${API_BASE}${path}"
+        -H "Authorization: Bearer ${jwt}" -w '\n%{http_code}')
+    if [[ -n "${data}" ]]; then
+        args+=(-H 'Content-Type: application/json' -d "${data}")
+    fi
+    body=$(curl "${args[@]}" 2>/dev/null) || true
+    http_code="${body##*$'\n'}"
+    body="${body%$'\n'*}"
+    if [[ "${http_code}" != 2* ]]; then
+        err "${method} ${path} HTTP ${http_code}: ${body:0:300}"
+        return 1
+    fi
+    printf '%s\n' "${body}"
+}
+
+# Mandatory review for this run, so the disc waits for the exclusion. The
+# previous setting is restored by on_exit.
+review_gate_mandatory() {
+    local jwt="$1" saved
+    saved=$(api "${jwt}" GET /api/config | python3 -c \
+        'import sys,json; d=json.load(sys.stdin); print(json.dumps({k: d[k] for k in ("hold_for_review","review_requires_confirm")}))') \
+        || exit 1
+    api "${jwt}" PATCH /api/config '{"hold_for_review":true,"review_requires_confirm":true}' >/dev/null || exit 1
+    REVIEW_CFG_SAVED="${saved}"
+    ok "review gate mandatory for this run (was ${saved})"
+}
+
+restore_review_config() {
+    local jwt="$1"
+    if [[ -n "${REVIEW_CFG_SAVED}" ]] && api "${jwt}" PATCH /api/config "${REVIEW_CFG_SAVED}" >/dev/null; then
+        ok "review gate restored: ${REVIEW_CFG_SAVED}"
+        REVIEW_CFG_SAVED=""
+    fi
+}
+
+# Exclude one title of a job parked in review; records "<track_id>
+# <source_ref>" in EXCLUDE_RECORD (this runs in watch_until_ripped's
+# subshell, so a variable would not survive it).
+exclude_one() {
+    local jwt="$1" job_id="$2" picked
+    picked=$(api "${jwt}" GET "/api/jobs/${job_id}" | WANT="${EXCLUDE_TITLE}" python3 -c "$(cat <<'PY'
+import json, os, sys
+tracks = json.load(sys.stdin)["tracks"]
+want = os.environ["WANT"]
+pick = min(tracks, key=lambda t: t["index"]) if want == "first" else next(
+    (t for t in tracks if t["source_ref"] == want), None)
+if pick is None or len(tracks) < 2:
+    sys.exit(f"no track with source_ref {want} (or fewer than two tracks): {[t['source_ref'] for t in tracks]}")
+print(pick["id"], pick["source_ref"])
+PY
+)") || return 1
+    local track_id="${picked% *}" source_ref="${picked#* }"
+    api "${jwt}" PATCH "/api/jobs/${job_id}" \
+        "$(printf '{"tracks":[{"track_id":"%s","excluded":true}]}' "${track_id}")" >/dev/null || return 1
+    printf '%s\n' "${picked}" >"${EXCLUDE_RECORD}"
+    ok "excluded title ${source_ref} (${track_id})" >&2
+}
+
+verify_exclusion() {
+    local jwt="$1" job_id="$2" failed=0 picked
+    picked=$(<"${EXCLUDE_RECORD}")
+    if [[ -z "${picked}" ]]; then
+        err "the disc never parked in review, so no title was excluded"
+        exit 1
+    fi
+    local track_id="${picked% *}" source_ref="${picked#* }"
+    local raw_dir="${DATA_DIR}/raw/${job_id}"
+    if ! api "${jwt}" GET "/api/jobs/${job_id}" | TRACK_ID="${track_id}" python3 -c "$(cat <<'PY'
+import json, os, sys
+d = json.load(sys.stdin)
+bad = []
+if d["job"]["status"] != "ripped":
+    bad.append(f"job is {d['job']['status']}, not ripped")
+for t in d["tracks"]:
+    if t["id"] == os.environ["TRACK_ID"]:
+        if t["status"] != "queued" or t["output_path"]:
+            bad.append(f"excluded track {t['source_ref']} is {t['status']} with output {t['output_path']}")
+    elif t["status"] != "done":
+        bad.append(f"track {t['source_ref']} is {t['status']}: {t['last_error']}")
+if bad:
+    sys.exit("; ".join(bad))
+PY
+)"; then
+        failed=1
+    fi
+    local nn
+    nn=$(printf '%02d' "${source_ref}")
+    if compgen -G "${raw_dir}/*_t${nn}.mkv" >/dev/null; then
+        err "excluded title ${source_ref} has a file: $(ls "${raw_dir}"/*_t"${nn}".mkv)"
+        failed=1
+    fi
+    local leftover
+    for leftover in .backup .remux; do
+        if [[ -e "${raw_dir}/${leftover}" ]]; then
+            err "${raw_dir}/${leftover} left behind"
+            failed=1
+        fi
+    done
+    if (( failed )); then
+        err "exclusion check FAILED for ${job_id}"
+        exit 1
+    fi
+    ok "excluded title ${source_ref} was not ripped; every other title is done; no scratch left"
 }
 
 # ---- Transcode ----------------------------------------------------------
@@ -623,6 +756,10 @@ print("1" if any(d["id"] == want for d in rows) else "")
 # on every exit path (success, error, or an explicit `exit 1` — including
 # the watch-deadline timeout).
 on_exit() {
+    restore_review_config "${jwt}"
+    if [[ -n "${EXCLUDE_RECORD}" ]]; then
+        rm -f "${EXCLUDE_RECORD}"
+    fi
     if [[ -z "${ISO_DRIVE_ID:-}" ]]; then
         return
     fi
@@ -678,12 +815,21 @@ apply_makemkv_key "${jwt}" "${key}"
 ISO_LIBRARY_PATH=$(require_iso_library_path)
 ISO_REL_PATH=$(stage_iso "${ISO_LIBRARY_PATH}")
 
+if [[ -n "${EXCLUDE_TITLE}" ]]; then
+    EXCLUDE_RECORD=$(mktemp)
+    trap on_exit EXIT
+    review_gate_mandatory "${jwt}"
+fi
+
 rip_start=$(date +%s)
 ISO_DRIVE_ID=$(create_iso_rip "${jwt}" "${ISO_REL_PATH}")
 trap on_exit EXIT
 job_id=$(watch_until_ripped "${jwt}" "${ISO_DRIVE_ID}")
 rip_end=$(date +%s)
 rip_secs=$(( rip_end - rip_start ))
+if [[ -n "${EXCLUDE_TITLE}" ]]; then
+    verify_exclusion "${jwt}" "${job_id}"
+fi
 
 if (( DO_TRANSCODE == 0 )); then
     final_summary "${job_id}" "${rip_secs}"
