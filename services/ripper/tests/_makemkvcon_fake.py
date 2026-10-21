@@ -414,6 +414,10 @@ class FakeMakemkvcon:
         assert title is None or command == "mkv", "only an mkv fails per title"
         self._failures.append(_Failure(command, title, returncode, message, silent))
 
+    def clear_failures(self) -> None:
+        """Undo every `fail`: later invocations succeed again (a retry)."""
+        self._failures.clear()
+
     # --- the fake process --------------------------------------------------
 
     async def create_subprocess_exec(self, *argv: str, **_kwargs: Any) -> _Process:

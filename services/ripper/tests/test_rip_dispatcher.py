@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -37,7 +38,7 @@ from arm_ripper.drive_status import probe_drive_media
 from arm_ripper.rip.dispatcher import rip_all
 from arm_ripper.rip.makemkv_rip import RipDiscResult, RipResult
 from arm_ripper.scan.disc_probe import DiscProbe
-from tests._makemkvcon_fake import HANAKO_BD, SINTEL_ISO, file_size, install
+from tests._makemkvcon_fake import ACCA_DVD, HANAKO_BD, SINTEL_ISO, Recording, file_size, install
 
 
 def _track(idx: int, source_ref: str | None = None, duration_seconds: int | None = 1800) -> TrackView:
@@ -1594,11 +1595,12 @@ async def test_rip_all_full_selection_gives_every_track_its_own_title(monkeypatc
 @pytest.mark.parametrize("source", ["bd-drive", "dvd-iso"])
 async def test_a_preset_that_keeps_one_title_gets_that_titles_file(monkeypatch, tmp_path, source):
     """The `_tNN` bug outside the review gate: a preset kept one title (the
-    longest, as MAIN_FEATURE does), so it is the only Track, while `mkv all`
-    rips every title at the minimum. The track gets its own title's file,
-    not `_t00`; the other files stay on disk, unclaimed."""
+    longest, as MAIN_FEATURE does), so it is the only Track. That title alone
+    is ripped (backup-then-remux, S7), and the track gets its own title's
+    file, not `_t00`; the drive is read once and no scratch is left."""
     fake, device = _install_sources(monkeypatch, tmp_path, source)
     scan = await _scan(monkeypatch, device)
+    fake.invocations.clear()
     longest = max(scan.titles, key=lambda t: t.duration_seconds or 0)
     tracks = _rip_start_tracks(scan, keep={longest.index})
     assert longest.index != min(t.index for t in scan.titles if (t.duration_seconds or 0) >= _BASELINE)
@@ -1607,7 +1609,8 @@ async def test_a_preset_that_keeps_one_title_gets_that_titles_file(monkeypatch, 
     reports, _ = await _rip_tracks(tracks, out, disc_type=scan.disc_type, device=device, scan_titles=scan.titles)
 
     _assert_own_titles(reports, tracks, scan, out)
-    assert len(list(out.iterdir())) == sum(1 for t in scan.titles if (t.duration_seconds or 0) >= _BASELINE)
+    assert [p.name for p in out.iterdir()] == [reports[tracks[0].id][0].output_path.name]
+    assert len(fake.drive_reads) == (1 if source == "bd-drive" else 0)
 
 
 async def _sintel_rip(monkeypatch, tmp_path, min_length_seconds: int) -> tuple[ScanResult, dict[str, RipResult], Path]:
@@ -1637,9 +1640,9 @@ async def test_scan_lists_every_title_and_the_baseline_cuts_the_tracks(monkeypat
 
 async def test_rip_minimum_below_the_baseline_keeps_files_on_their_own_titles(monkeypatch, tmp_path):
     """Sintel titles 0–6 (1:59 and 1:47 among them), tracks only for the
-    ≥120 s titles, a 60 s rip minimum: `mkv all` also rips the two short
-    titles, numbering its files over all seven. Each track still gets its
-    own title's file; the short titles' files stay on disk, unclaimed."""
+    ≥120 s titles, a 60 s rip minimum: `mkv all` would also rip the two
+    short titles, so only the kept ones are remuxed (S7). Each track gets
+    its own title's file; the short titles get none."""
     scan, final, out = await _sintel_rip(monkeypatch, tmp_path, min_length_seconds=60)
 
     sizes = {t.index: file_size(t.size_bytes or 0) for t in scan.titles}
@@ -1650,8 +1653,7 @@ async def test_rip_minimum_below_the_baseline_keeps_files_on_their_own_titles(mo
         assert result.output_path is not None and result.output_path.name.endswith(f"_t{idx:02d}.mkv")
         assert result.size_bytes == sizes[idx]
     claimed = {r.output_path for r in final.values()}
-    unclaimed = sorted(p.name for p in out.iterdir() if p not in claimed)
-    assert unclaimed == ["B5_t05.mkv", "B6_t02.mkv"]
+    assert sorted(p for p in out.iterdir()) == sorted(claimed)
 
 
 async def test_rip_minimum_above_a_kept_title_fails_only_that_title(monkeypatch, tmp_path):
@@ -1668,41 +1670,13 @@ async def test_rip_minimum_above_a_kept_title_fails_only_that_title(monkeypatch,
         assert final[f"trk_{idx}"].size_bytes == sizes[idx]
 
 
-async def test_disc_progress_goes_to_a_track_when_the_first_title_has_none(monkeypatch, tmp_path):
-    """The rip's first title (a short clip, ripped at a 10 s minimum) has no
-    track; the disc progress bar is credited to the first title that has one."""
-    _stub_rip_disc(
-        monkeypatch, RipDiscResult(overall_error=None, titles={}), fire_per_title_start=False, fire_disc_progress=[0.5]
-    )
-    progress: list[str] = []
-
-    async def on_progress(track: TrackView, _fraction: float, _stats: Any = None) -> None:
-        progress.append(track.id)
-
-    async def noop(*_args: Any) -> None:
-        return None
-
-    await rip_all(
-        disc_type=DiscType.BLURAY,
-        device_path="/dev/sr0",
-        tracks=[_track(1, duration_seconds=None)],
-        scan_titles=[ScanTitle(index=0, duration_seconds=30), ScanTitle(index=1, duration_seconds=1800)],
-        output_dir=tmp_path,
-        on_track_start=noop,
-        on_track_done=noop,
-        on_track_progress=on_progress,
-        min_length_seconds=10,
-    )
-
-    assert progress == ["trk_1"]
-
-
 @pytest.mark.parametrize("keep", [None, {1, 3, 5}], ids=["all-kept", "some-kept"])
 async def test_rip_all_resume_pass_leaves_settled_tracks_alone(monkeypatch, tmp_path, keep):
     """A D-133 resume pass: `mkv all` rips the whole disc again, but the
     tracks an earlier pass settled get no callbacks and their new files are
     deleted (matched by position in the scan-based list), while the rest get
-    their own titles' files, also when the preset kept only some titles."""
+    their own titles' files. When the preset kept only some titles the pass
+    backs the disc up and remuxes only the unsettled kept ones (S7)."""
     fake, device = _install_sources(monkeypatch, tmp_path, "bd-drive")
     scan = await _scan(monkeypatch, device)
     fake.invocations.clear()
@@ -1743,4 +1717,460 @@ async def test_rip_all_disc_backup_writes_the_decrypted_folder(monkeypatch, tmp_
     assert result.output_path == out / "backup"
     assert (out / "backup" / "BDMV" / "index.bdmv").is_file()
     assert started == [backup.id]
+    assert [(inv.command, inv.decrypt) for inv in fake.drive_reads] == [("backup", True)]
+    assert not (out / ".backup").exists()
+
+
+# --- rip only the kept titles: backup-then-remux (S7) -------------------------
+#
+# A drive whose kept titles are fewer than `mkv all` would rip is read once by
+# a `backup` into `<job>/.backup/`, and each kept title is remuxed from it with
+# `--noscan`. ISO and folder sources are remuxed from directly. Excluded
+# tracks get no callbacks at all (they stay `queued`).
+
+
+def _work(fake: Any) -> list[Any]:
+    """Every invocation but the `info disc:9999` lookup of the drive's `disc:<N>`."""
+    return [inv for inv in fake.invocations if inv.source != "disc:9999"]
+
+
+def _exclude(tracks: list[TrackView], *indexes: int) -> list[TrackView]:
+    return [t.model_copy(update={"excluded": True}) if t.index in indexes else t for t in tracks]
+
+
+async def _bd_job(monkeypatch, tmp_path: Path, *, same_ids: bool = False) -> tuple[Any, ScanResult]:
+    """The Hanako-kun BD in /dev/sr0. Its 2.0.0 backup numbers every title
+    differently from the disc (the play-all is disc 7, backup 0); with
+    `same_ids` the backup keeps the disc's numbering, which a 1.18.4
+    decrypted backup may (S17 17.4 decides)."""
+    disc = Recording(HANAKO_BD.info_min0) if same_ids else HANAKO_BD
+    fake = install(monkeypatch, disc=disc)
+    scan = await _scan(monkeypatch, "/dev/sr0")
+    fake.invocations.clear()
+    return fake, scan
+
+
+def _results(reports: dict[str, list[RipResult]]) -> dict[str, RipResult]:
+    assert all(len(r) == 1 for r in reports.values() if r), reports
+    return {track_id: r[0] for track_id, r in reports.items() if r}
+
+
+@pytest.mark.parametrize("same_ids", [False, True], ids=["backup-ids-permuted", "backup-ids-identical"])
+async def test_a_blu_ray_with_the_play_all_excluded_rips_only_the_episodes(monkeypatch, tmp_path, same_ids):
+    fake, scan = await _bd_job(monkeypatch, tmp_path, same_ids=same_ids)
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    out = tmp_path / "job"
+
+    reports, started = await _rip_tracks(tracks, out, scan_titles=scan.titles)
+
+    episodes = [t for t in tracks if t.index != 7]
+    _assert_own_titles(reports, episodes, scan, out)
+    assert sorted(p.name for p in out.iterdir()) == [f"ToiletBound HanakoKun D1_t{i:02d}.mkv" for i in range(7)]
+    assert reports["trk_7"] == [] and "trk_7" not in started
     assert [inv.command for inv in fake.drive_reads] == ["backup"]
+    assert all(not inv.probes_drive for inv in fake.invocations if inv.command != "backup")
+    assert sum(inv.command == "mkv" for inv in fake.invocations) == 7
+
+
+async def test_excluding_title_0_still_gives_title_1_its_own_file(monkeypatch, tmp_path):
+    """The D2 trap: with `_t00` gone, nothing may shift onto title 1."""
+    _, scan = await _bd_job(monkeypatch, tmp_path)
+    tracks = _exclude(_rip_start_tracks(scan), 0)
+    out = tmp_path / "job"
+
+    reports, _ = await _rip_tracks(tracks, out, scan_titles=scan.titles)
+
+    title_1 = next(t for t in scan.titles if t.index == 1)
+    (result,) = reports["trk_1"]
+    assert result.output_path is not None and result.output_path.name.endswith("_t01.mkv")
+    assert result.size_bytes == file_size(title_1.size_bytes or 0)
+    assert reports["trk_0"] == []
+    _assert_own_titles(reports, tracks[1:], scan, out)
+
+
+@pytest.mark.parametrize("source", ["dvd-iso", "bd-folder"])
+async def test_a_file_source_remuxes_its_kept_titles_with_no_backup(monkeypatch, tmp_path, source):
+    fake, device = _install_sources(monkeypatch, tmp_path, source)
+    scan = await _scan(monkeypatch, device)
+    fake.invocations.clear()
+    tracks = _rip_start_tracks(scan)
+    excluded = tracks[1].index
+    out = tmp_path / "job"
+
+    reports, _ = await _rip_tracks(
+        _exclude(tracks, excluded), out, disc_type=scan.disc_type, device=device, scan_titles=scan.titles
+    )
+
+    kept = [t for t in tracks if t.index != excluded]
+    _assert_own_titles(reports, kept, scan, out)
+    assert reports[f"trk_{excluded}"] == []
+    assert sorted(p.name for p in out.iterdir()) == sorted(reports[t.id][0].output_path.name for t in kept)
+    assert fake.drive_reads == []
+    assert {inv.command for inv in fake.invocations} == {"info", "mkv"}
+
+
+async def test_a_dvd_at_minimum_0_with_a_clip_excluded_backs_up_to_one_image(monkeypatch, tmp_path):
+    """ACCA_CS_D1 at minimum 0: four titles, one a 17 s clip that is excluded.
+    The DVD backup is one image (`.backup/disc.iso`, read back as `iso:`,
+    as recorded on 2.0.0; S17 17.6 checks 1.18.4), and the kept titles are
+    remuxed from it."""
+    fake = install(monkeypatch, disc=ACCA_DVD)
+    scan = await _scan(monkeypatch, "/dev/sr0")
+    fake.invocations.clear()
+    tracks = _exclude(_rip_start_tracks(scan, baseline=0), 1)
+    out = tmp_path / "job"
+
+    reports, _ = await _rip_tracks(tracks, out, disc_type=DiscType.DVD, scan_titles=scan.titles, min_length_seconds=0)
+
+    _assert_own_titles(reports, [t for t in tracks if t.index != 1], scan, out)
+    assert reports["trk_1"] == []
+    assert [inv.command for inv in fake.drive_reads] == ["backup"]
+    image = f"iso:{out / '.backup' / 'disc.iso'}"
+    assert {inv.source for inv in _work(fake) if inv.command in ("info", "mkv")} == {image}
+    assert not (out / ".backup").exists()
+
+
+async def test_kept_tracks_get_their_sha256_and_start_only_when_their_remux_does(monkeypatch, tmp_path):
+    _, scan = await _bd_job(monkeypatch, tmp_path)
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    out = tmp_path / "job"
+    events: list[str] = []
+
+    async def on_start(track: TrackView) -> None:
+        events.append(f"start {track.index}")
+
+    async def on_done(track: TrackView, result: RipResult) -> None:
+        assert result.ok and result.output_path is not None
+        assert result.sha256 == hashlib.sha256(result.output_path.read_bytes()).hexdigest()
+        events.append(f"done {track.index}")
+
+    async def on_progress(track: TrackView, fraction: float, stats: Any = None) -> None:
+        if not events or events[-1] != "progress":
+            events.append("progress")
+
+    await rip_all(
+        disc_type=DiscType.BLURAY,
+        device_path="/dev/sr0",
+        tracks=tracks,
+        scan_titles=scan.titles,
+        output_dir=out,
+        on_track_start=on_start,
+        on_track_done=on_done,
+        on_track_progress=on_progress,
+    )
+
+    # The backup's progress comes before any track starts.
+    assert events[0] == "progress"
+    assert [e for e in events if e.startswith("start")] == [f"start {i}" for i in range(7)]
+    assert sorted(e for e in events if e.startswith("done")) == sorted(f"done {i}" for i in range(7))
+
+
+async def test_one_progress_bar_backup_then_remuxes(monkeypatch, tmp_path):
+    """S7.4: one bar per job, credited to the first kept track: the backup
+    fills it to 0.9, the remuxes from 0.9 to 1.0, never going back; the
+    hash pass reports itself as "verifying"."""
+    _, scan = await _bd_job(monkeypatch, tmp_path)
+    tracks = _exclude(_rip_start_tracks(scan), 0, 7)
+    bar: list[tuple[str, float]] = []
+    verifying: list[float] = []
+
+    async def on_progress(track: TrackView, fraction: float, stats: Any = None) -> None:
+        if stats is not None:
+            assert stats["phase"] == "verifying"
+            verifying.append(fraction)
+            return
+        bar.append((track.id, fraction))
+
+    await _rip_tracks(tracks, tmp_path / "job", scan_titles=scan.titles, on_track_progress=on_progress)
+
+    assert {track_id for track_id, _ in bar} == {"trk_1"}
+    fractions = [f for _, f in bar]
+    assert fractions == sorted(fractions)
+    assert any(0.0 < f < 0.9 for f in fractions)
+    assert any(0.9 < f < 1.0 for f in fractions)
+    assert fractions[-1] == pytest.approx(1.0)
+    assert all(0.0 <= f <= 1.0 for f in verifying)
+
+
+async def test_a_kept_track_below_the_minimum_fails_and_the_rest_are_remuxed(monkeypatch, tmp_path):
+    _, iso = _install_sources(monkeypatch, tmp_path, "dvd-iso")
+    scan = await _scan(monkeypatch, iso)
+    tracks = _exclude(_rip_start_tracks(scan), 0)
+
+    reports, _ = await _rip_tracks(
+        tracks, tmp_path / "job", disc_type=DiscType.DVD, device=iso, scan_titles=scan.titles, min_length_seconds=600
+    )
+
+    final = _results(reports)
+    assert sorted(final) == ["trk_1", "trk_3", "trk_4", "trk_6"]
+    for idx in (3, 4):
+        assert final[f"trk_{idx}"].ok is False
+        assert "below minlength=600s" in (final[f"trk_{idx}"].error or "")
+    assert final["trk_1"].ok and final["trk_6"].ok
+
+
+async def test_a_failed_backup_fails_every_kept_track_and_is_deleted(monkeypatch, tmp_path):
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    fake.fail("backup", message="L-EC uncorrectable error")
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    out = tmp_path / "job"
+
+    reports, started = await _rip_tracks(tracks, out, scan_titles=scan.titles)
+
+    final = _results(reports)
+    assert sorted(final) == [f"trk_{i}" for i in range(7)]
+    for result in final.values():
+        assert result.ok is False
+        assert (result.error or "").startswith("disc backup failed:")
+        assert "L-EC uncorrectable error" in (result.error or "")
+    assert sorted(started) == sorted(final)
+    assert not (out / ".backup").exists()
+    assert [inv.command for inv in _work(fake)] == ["backup"]
+
+
+async def test_a_drive_makemkv_does_not_list_fails_every_kept_track(monkeypatch, tmp_path):
+    """No `DRV:` line names the device, so there is no `disc:<N>` to back up:
+    every kept track is FAILED saying so, and nothing reads the drive."""
+    _, scan = await _bd_job(monkeypatch, tmp_path)
+    # MakeMKV lists the drive under a node other than the one the ripper has.
+    fake = install(monkeypatch, disc=HANAKO_BD, device="/dev/sr3")
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    out = tmp_path / "job"
+
+    reports, started = await _rip_tracks(tracks, out, scan_titles=scan.titles)
+
+    final = _results(reports)
+    assert sorted(final) == sorted(started) == [f"trk_{i}" for i in range(7)]
+    assert {r.error for r in final.values()} == {
+        "disc backup failed: makemkvcon lists no drive at /dev/sr0, so it can't back the disc up"
+    }
+    assert [inv.command for inv in fake.invocations] == ["info"]
+    assert not (out / ".backup").exists()
+
+
+async def test_one_failed_remux_fails_only_its_track_and_keeps_the_backup(monkeypatch, tmp_path):
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    fake.fail("mkv", title="00010.mpls")  # disc title 1
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    out = tmp_path / "job"
+
+    reports, _ = await _rip_tracks(tracks, out, scan_titles=scan.titles)
+
+    final = _results(reports)
+    assert final["trk_1"].ok is False
+    assert "produced no .mkv" in (final["trk_1"].error or "")
+    _assert_own_titles(reports, [t for t in tracks if t.index not in (1, 7)], scan, out)
+    assert (out / ".backup" / ".complete").read_text().strip() == f"file:{out / '.backup' / 'disc' / 'BDMV'}"
+    assert not (out / ".remux").exists()
+
+
+async def test_a_title_missing_from_the_backup_fails_only_that_track(monkeypatch, tmp_path):
+    """A kept title the backup doesn't list (no title plays its playlist) is
+    FAILED rather than remuxed from the wrong title; the backup is kept."""
+    _, scan = await _bd_job(monkeypatch, tmp_path)
+    titles = [t.model_copy(update={"source_playlist": "99999.mpls"}) if t.index == 2 else t for t in scan.titles]
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    out = tmp_path / "job"
+
+    reports, _ = await _rip_tracks(tracks, out, scan_titles=titles)
+
+    final = _results(reports)
+    assert final["trk_2"].ok is False
+    assert final["trk_2"].error == "could not map title 2 to the backup"
+    _assert_own_titles(reports, [t for t in tracks if t.index not in (2, 7)], scan, out)
+    assert (out / ".backup" / ".complete").is_file()
+
+
+async def test_a_full_selection_from_a_drive_keeps_mkv_all(monkeypatch, tmp_path):
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    tracks = _rip_start_tracks(scan)
+    out = tmp_path / "job"
+
+    reports, _ = await _rip_tracks(tracks, out, scan_titles=scan.titles)
+
+    _assert_own_titles(reports, tracks, scan, out)
+    assert [(inv.command, inv.argv[-2]) for inv in fake.drive_reads] == [("mkv", "all")]
+
+
+async def test_backup_full_selections_sends_a_full_drive_selection_down_the_backup_path(monkeypatch, tmp_path):
+    """`ARM_BACKUP_FULL_SELECTIONS` (Q6): every title kept, still one backup
+    read and a remux per title; an ISO source keeps `mkv all`."""
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    tracks = _rip_start_tracks(scan)
+    out = tmp_path / "job"
+
+    reports, _ = await _rip_tracks(tracks, out, scan_titles=scan.titles, backup_full_selections=True)
+
+    _assert_own_titles(reports, tracks, scan, out)
+    assert [inv.command for inv in fake.drive_reads] == ["backup"]
+    assert not (out / ".backup").exists()
+
+    fake, iso = _install_sources(monkeypatch, tmp_path, "dvd-iso")
+    iso_scan = await _scan(monkeypatch, iso)
+    fake.invocations.clear()
+    iso_tracks = _rip_start_tracks(iso_scan)
+    await _rip_tracks(
+        iso_tracks,
+        tmp_path / "iso-job",
+        disc_type=DiscType.DVD,
+        device=iso,
+        scan_titles=iso_scan.titles,
+        backup_full_selections=True,
+    )
+    assert [(inv.command, inv.argv[-2]) for inv in fake.invocations] == [("mkv", "all")]
+
+
+async def test_without_a_stored_scan_exclusions_fall_back_to_mkv_all_and_stay_unreported(monkeypatch, tmp_path):
+    """A job scanned before S5 has nothing to find titles by in a backup:
+    `mkv all` rips everything, the excluded title's file stays unclaimed,
+    and the excluded track gets no callbacks."""
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    tracks = [
+        t.model_copy(update={"duration_seconds": t.expected_duration_seconds})
+        for t in _exclude(_rip_start_tracks(scan), 7)
+    ]
+    out = tmp_path / "job"
+
+    reports, started = await _rip_tracks(tracks, out)
+
+    assert reports["trk_7"] == [] and "trk_7" not in started
+    assert all(reports[f"trk_{i}"][0].ok for i in range(7))
+    assert len(list(out.glob("*.mkv"))) == 8
+    assert [inv.command for inv in fake.drive_reads] == ["mkv"]
+
+
+async def test_a_disc_level_error_on_mkv_all_never_reports_an_excluded_track(monkeypatch, tmp_path):
+    """Audit A23: the overall-error branch fails every unfinished track, but
+    never an excluded one (here excluded and below the minimum, so `mkv all`
+    stays the strategy)."""
+    _stub_rip_disc(monkeypatch, RipDiscResult(overall_error="boom", titles={}), fire_per_title_start=False)
+    tracks = [_track(0), _track(1), _track(2, duration_seconds=30).model_copy(update={"excluded": True})]
+
+    reports, started = await _rip_tracks(
+        tracks,
+        tmp_path,
+        scan_titles=[
+            ScanTitle(index=0, duration_seconds=1800),
+            ScanTitle(index=1, duration_seconds=1800),
+            ScanTitle(index=2, duration_seconds=30),
+        ],
+    )
+
+    assert reports["trk_2"] == [] and "trk_2" not in started
+    assert [r.error for r in reports["trk_0"] + reports["trk_1"]] == ["boom", "boom"]
+
+
+async def test_an_excluded_track_with_a_bad_source_ref_is_not_reported(monkeypatch, tmp_path):
+    _stub_rip_disc(monkeypatch, RipDiscResult(overall_error=None, titles={}), fire_per_title_start=False)
+    bad = _track(5, source_ref="bogus").model_copy(update={"excluded": True})
+
+    reports, _ = await _rip_tracks([bad], tmp_path)
+
+    assert reports[bad.id] == []
+
+
+# --- D-133 on the selection path ----------------------------------------------
+
+
+async def test_a_drop_during_the_backup_reruns_it_on_the_resume(monkeypatch, tmp_path):
+    """The drive leaves mid-backup: the backup is stopped and deleted, every
+    kept track is reported with the stop error (the controller holds them for
+    the resume), and the resume pass backs the disc up again."""
+    from arm_ripper.rip.makemkv_rip import STOPPED_ERROR
+
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    job = tmp_path / "job"
+    stop = asyncio.Event()
+
+    async def drop_halfway(_track: TrackView, fraction: float, _stats: Any = None) -> None:
+        if fraction > 0.4:
+            stop.set()
+
+    first, _ = await _rip_tracks(
+        tracks, job, scan_titles=scan.titles, stop=stop, on_track_progress=drop_halfway, backup_dir=job / ".backup"
+    )
+
+    assert all(r.error == f"disc backup failed: {STOPPED_ERROR}" for r in _results(first).values())
+    assert len(_results(first)) == 7
+    assert not (job / ".backup").exists()
+
+    second, _ = await _rip_tracks(
+        tracks,
+        job / "resume-1",
+        scan_titles=scan.titles,
+        stop=asyncio.Event(),
+        skip_track_ids={"trk_7"},
+        backup_dir=job / ".backup",
+    )
+
+    _assert_own_titles(second, [t for t in tracks if t.index != 7], scan, job / "resume-1")
+    assert [inv.command for inv in fake.drive_reads] == ["backup", "backup"]
+    assert not (job / ".backup").exists()
+
+
+async def test_a_backup_that_finished_after_the_drive_dropped_does_not_count(monkeypatch, tmp_path):
+    """makemkvcon can exit 0 after the drive left under it, before anything
+    stopped it: the copy may be cut short, so it is deleted and the kept
+    tracks are reported stopped (unfinished, for the resume)."""
+    from arm_ripper.rip.makemkv_rip import STOPPED_ERROR
+
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    out = tmp_path / "job"
+    stop = asyncio.Event()
+
+    reports, _ = await _rip_tracks(tracks, out, scan_titles=scan.titles, stop=stop, drive_lost=lambda: True)
+
+    assert stop.is_set()
+    assert {r.error for r in _results(reports).values()} == {f"disc backup failed: {STOPPED_ERROR}"}
+    assert not (out / ".backup").exists()
+    assert [inv.command for inv in _work(fake)] == ["backup"]
+
+
+async def test_a_drop_after_the_backup_finished_costs_nothing(monkeypatch, tmp_path):
+    """Once the backup is complete the remuxes read only from disk: a drive
+    that leaves now stops nothing, and every kept title is ripped."""
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    out = tmp_path / "job"
+    stop = asyncio.Event()
+
+    async def drop_while_remuxing(_track: TrackView, fraction: float, stats: Any = None) -> None:
+        if stats is None and fraction > 0.9:
+            stop.set()
+
+    reports, _ = await _rip_tracks(
+        tracks, out, scan_titles=scan.titles, stop=stop, on_track_progress=drop_while_remuxing
+    )
+
+    assert stop.is_set()
+    _assert_own_titles(reports, [t for t in tracks if t.index != 7], scan, out)
+    assert [inv.command for inv in fake.drive_reads] == ["backup"]
+
+
+async def test_a_resume_remuxes_from_the_finished_backup_with_no_drive_read(monkeypatch, tmp_path):
+    """A pass that left a finished backup (here: one remux failed) and a
+    resume over it: the resume reads no drive, remuxes only the tracks not
+    yet settled, and removes the backup once they are all done."""
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    fake.fail("mkv", title="00010.mpls")  # disc title 1
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    job = tmp_path / "job"
+
+    first, _ = await _rip_tracks(tracks, job, scan_titles=scan.titles, backup_dir=job / ".backup")
+    assert _results(first)["trk_1"].ok is False
+    fake.clear_failures()
+    fake.invocations.clear()
+
+    settled = {t.id for t in tracks if t.index != 1}
+    second, started = await _rip_tracks(
+        tracks, job / "resume-1", scan_titles=scan.titles, skip_track_ids=settled, backup_dir=job / ".backup"
+    )
+
+    assert started == ["trk_1"]
+    assert {track_id for track_id, r in second.items() if r} == {"trk_1"}
+    _assert_own_titles(second, [tracks[1]], scan, job / "resume-1")
+    assert fake.drive_reads == []
+    assert [inv.command for inv in fake.invocations] == ["info", "mkv"]
+    assert not (job / ".backup").exists()
