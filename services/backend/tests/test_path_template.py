@@ -87,6 +87,16 @@ def test_validate_tv_template_zero_padded_tokens() -> None:
     assert "S01D01T01" in out
 
 
+def test_validate_tv_template_episode_code() -> None:
+    out = validate_template("{show}/Season {season}/{show} - {episode_code}.{ext}", MediaType.TV, True)
+    assert out.endswith(" - S01E01.mkv")
+
+
+def test_validate_rejects_episode_code_outside_tv() -> None:
+    with pytest.raises(TemplateValidationError):
+        validate_template("{title} - {episode_code}.{ext}", MediaType.MOVIE, True)
+
+
 def test_validate_music_template() -> None:
     out = validate_template(
         "{artist}/{album}/{track} - {track_title} - {transcode_slug}.{ext}",

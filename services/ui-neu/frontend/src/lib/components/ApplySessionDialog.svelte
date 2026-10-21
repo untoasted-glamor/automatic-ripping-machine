@@ -120,6 +120,7 @@
 		show: 'a show name',
 		season: 'a season',
 		episode: 'an episode number',
+		episode_code: 'a season or disc number',
 		episode_title: 'an episode title',
 		artist: 'an artist',
 		album: 'an album',

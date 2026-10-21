@@ -16,6 +16,7 @@ export const MEDIA_SAMPLE: Record<MediaType, Record<string, string>> = {
 		disc: '1',
 		track: '03',
 		episode: '03',
+		episode_code: 'S01E03',
 		episode_title: 'Bag',
 		duration_human: '47m',
 		transcode_slug: 'h265',

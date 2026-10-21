@@ -66,6 +66,19 @@ def _format_duration_human(seconds: int | None) -> str:
     return f"{hours:02d}h{minutes:02d}m"
 
 
+def _episode_code(season: str, disc: str, track: str, episode: str) -> str:
+    """`S01E03` (or `S01E01-E02`) once the episode is known, else the disc
+    position `S01D01T03`, so a title the episode match has not placed keeps an
+    unambiguous name instead of collapsing to `S01`. Empty without a season,
+    or without a disc for the fallback, so the required token fails like
+    {season} and {disc} do."""
+    if season and episode:
+        return f"S{season}E{episode}"
+    if season and disc:
+        return f"S{season}D{disc}T{track}"
+    return ""
+
+
 def _build_track_ctx(
     job: Job,
     track: Track,
@@ -132,6 +145,7 @@ def _build_track_ctx(
         "transcode_slug": slugify(transcode_preset.name) if transcode_preset is not None else "",
         "ext": transcode_preset.container.value if transcode_preset is not None else "",
     }
+    ctx["episode_code"] = _episode_code(ctx["season"], ctx["disc"], ctx["track"], episode)
     # Session is reserved for future use (overrides_json may seed extra ctx keys);
     # keep the param so call sites don't rebreak when overrides land.
     _ = session

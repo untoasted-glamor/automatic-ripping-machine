@@ -23,6 +23,7 @@
 			'disc',
 			'track',
 			'episode',
+			'episode_code',
 			'episode_title',
 			'duration_human',
 			'transcode_slug',
