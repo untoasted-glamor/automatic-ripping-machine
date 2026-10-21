@@ -64,7 +64,7 @@ from arm_backend.identity.proposals import claims_of
 from arm_backend.identity.sources.registry import EPISODE_SOURCE_BY_SETTING
 from arm_backend.seeders import CONFIG_SINGLETON_ID
 from arm_backend.ws import WSHub
-from arm_common import Config, Job, JobStatus, Track
+from arm_common import Config, Job, JobStatus, Track, with_log_context
 from arm_common.schemas import ExternalIds
 
 logger = logging.getLogger("arm_backend.identity.stage_runner")
@@ -317,7 +317,8 @@ class EpisodeStageRunner:
         # stays a no-op, since the run reads the current state once it starts.
         async with self._run_slots:
             self._started.add(job_id)
-            await self._run_body(job_id)
+            with with_log_context(job_id=job_id):
+                await self._run_body(job_id)
 
     async def _run_body(self, job_id: str) -> None:
         try:

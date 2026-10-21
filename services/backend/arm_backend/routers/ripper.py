@@ -16,6 +16,7 @@ from arm_backend.auth import (
 from arm_backend.auto_session import after_rip, cancel_parked_applications, resolve_routed_session_id
 from arm_backend.crash_recovery import reset_job_for_recovery
 from arm_backend.db import get_session
+from arm_backend.log_context import job_log_context
 from arm_backend.metadata import MetadataDispatcher
 from arm_backend.metadata.base import MetadataResult, extract_poster_url, metadata_with_identity
 from arm_backend.metadata.dispatcher import DISPATCH_TIMEOUT_SECONDS
@@ -45,6 +46,7 @@ from arm_common import (
     RipPreset,
     Session,
     TrackStatus,
+    bind_log_context,
 )
 from arm_common.enums import NON_TERMINAL_JOB_STATUSES, DriveKind, DriveSourceKind, PreviouslyRippedAction
 from arm_common.models import Track
@@ -74,7 +76,7 @@ from arm_common.schemas import (
 
 logger = logging.getLogger("arm_backend.routers.ripper")
 
-router = APIRouter(prefix="/api/ripper", tags=["ripper"])
+router = APIRouter(prefix="/api/ripper", tags=["ripper"], dependencies=[Depends(job_log_context)])
 
 _DEFAULT_RIP_PRESET_BY_DISC_TYPE: dict[DiscType, str] = {
     DiscType.DVD: "rpr_builtin_movie_archive",
@@ -672,6 +674,8 @@ async def identify(
         await session.flush()
         already_identified = False
         prior_status = None
+    # The metadata lookups and identity resolution below log into this job's log.
+    bind_log_context(job_id=job.id)
 
     # Persist every fingerprint the ripper computed. The (job_id, algo)
     # unique constraint plus per-scan dedup means re-runs of identify on

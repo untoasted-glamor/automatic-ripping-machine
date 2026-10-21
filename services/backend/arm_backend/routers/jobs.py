@@ -19,6 +19,7 @@ from arm_backend.auto_session import (
 )
 from arm_backend.config import settings
 from arm_backend.db import get_session
+from arm_backend.log_context import job_log_context
 from arm_backend.identity.ids import current_ids
 from arm_backend.identity.pipeline import resolve_job
 from arm_backend.identity.proposals import (
@@ -48,6 +49,7 @@ from arm_common import (
     SessionApplicationStatus,
     TrackStatus,
     TranscodeTaskStatus,
+    bind_log_context,
     User,
 )
 from arm_common.fileops import is_within
@@ -98,7 +100,7 @@ from arm_common.ulid import is_valid_id
 
 logger = logging.getLogger("arm_backend.routers.jobs")
 
-router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(job_log_context)])
 
 
 def _get_hub(request: Request) -> WSHub:
@@ -864,6 +866,9 @@ async def delete_job(
     media (sibling re-rips share the `media/<Title>/` parent dir); empty
     parents are pruned after the unlink phase.
     """
+    # This request removes the job's log; a line tagged with the job, which the
+    # LogTailer copies a moment later, would create it again.
+    bind_log_context(job_id=None)
     job = (await db.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")

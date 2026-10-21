@@ -53,6 +53,7 @@ async def reset_job_for_recovery(db: AsyncSession, job: Job) -> int:
             "crash recovery: job_id=%s reset %d track(s) to queued",
             job.id,
             touched,
+            extra={"job_id": job.id},
         )
     return touched
 

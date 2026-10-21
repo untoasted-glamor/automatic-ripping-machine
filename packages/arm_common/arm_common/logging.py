@@ -8,7 +8,8 @@ which is what the backend's `LogTailer` and zip endpoint read from.
 
 `with_log_context(job_id=..., track_id=..., session_application_id=...)`
 pushes correlation IDs onto contextvars; the formatter reads them back on
-every emitted record. asyncio + contextvars propagate across `await` and
+every emitted record. Code that finds its job partway through binds it with
+`bind_log_context(job_id=...)` inside a `log_context_scope()`. asyncio + contextvars propagate across `await` and
 `asyncio.create_task` automatically. **Caveat:** `loop.run_in_executor`
 does NOT copy the current context — wrap with
 `contextvars.copy_context().run(...)` at the executor boundary.
@@ -175,3 +176,32 @@ def with_log_context(
     finally:
         for var, token in reversed(tokens):
             var.reset(token)
+
+
+@contextmanager
+def log_context_scope() -> Iterator[None]:
+    """Undo, on exit, every `bind_log_context` made inside the block.
+
+    For a scope whose job is only known partway through, such as a request
+    handler that creates its job: the Backend's request dependency opens one,
+    and the handler binds the job once it has it, with no block to re-indent
+    the rest of the handler under.
+    """
+    vars_ = (_job_id, _track_id, _session_application_id)
+    tokens = [(var, var.set(var.get())) for var in vars_]
+    try:
+        yield
+    finally:
+        for var, token in reversed(tokens):
+            var.reset(token)
+
+
+def bind_log_context(*, job_id: str | None) -> None:
+    """Set the job's correlation ID for the rest of the current context.
+
+    Unlike `with_log_context`, `None` clears it. Call it only inside a
+    `log_context_scope` (or a `with_log_context` that set `job_id`), which
+    restores the earlier value on exit; outside one, the value lasts as long
+    as the context does.
+    """
+    _job_id.set(job_id)

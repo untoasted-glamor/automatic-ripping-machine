@@ -6,6 +6,8 @@ Service-token auth (no JWT plumbing required).
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from datetime import UTC, datetime
 from typing import AsyncIterator
@@ -13,6 +15,7 @@ from typing import AsyncIterator
 os.environ.setdefault("DATABASE_URL", "postgresql://x:x@localhost/x")
 os.environ.setdefault("ARM_SERVICE_TOKEN", "tok-service")
 
+import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -25,6 +28,7 @@ from arm_common import (  # noqa: E402
     IdentificationMode,
     Job,
     JobStatus,
+    JsonFormatter,
     MediaType,
     OutputMode,
     RipPreset,
@@ -275,6 +279,24 @@ def test_complete_marks_done_and_aggregates_application() -> None:
     assert db.rows["transcode_tasks"][0].status == TranscodeTaskStatus.DONE
     assert db.rows["session_applications"][0].status == SessionApplicationStatus.DONE
     assert db.rows["session_applications"][0].completed_at is not None
+
+
+def test_complete_logs_into_the_tasks_job(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.handler.setFormatter(JsonFormatter("test"))
+    caplog.set_level(logging.INFO, logger="arm_backend")
+    db = FakeSession()
+    _seed(db, task_status=TranscodeTaskStatus.IN_PROGRESS)
+    db.rows["session_applications"][0].status = SessionApplicationStatus.RUNNING
+    with TestClient(_make_app(db)) as client:
+        r = client.patch(
+            "/api/transcoder/tasks/txt_1/complete",
+            json={"output_path": "Iron Man (2008)/Iron Man.mkv", "size_bytes": 1, "duration_seconds": 1},
+            headers=_SERVICE_AUTH,
+        )
+    assert r.status_code == 200, r.text
+    rows = [json.loads(line) for line in caplog.text.splitlines()]
+    complete_line = next(row for row in rows if row["msg"].startswith("transcode complete task_id="))
+    assert complete_line["job_id"] == "job_01JZXR7K3M5Q8N4VWA00000001"
 
 
 def test_fail_marks_failed_and_aggregates() -> None:

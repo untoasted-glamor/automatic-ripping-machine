@@ -8,6 +8,7 @@ Fake-session + mocked dispatcher/hub, service-token and drive-owner auth.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import secrets
@@ -29,6 +30,7 @@ from arm_backend.routers import ripper as ripper_router  # noqa: E402
 from arm_backend.identity.sources.thediscdb_snapshot import DiscMatch  # noqa: E402
 from arm_common import (  # noqa: E402
     Config,
+    JsonFormatter,
     ContainerFormat,
     DiscFingerprint,
     DiscType,
@@ -505,6 +507,23 @@ def test_identify_success_sets_identified_and_poster() -> None:
     assert "pending_session_id" not in out["metadata_json"]
     fps = [r for r in db.added if type(r).__name__ == "DiscFingerprint"]
     assert {f.algo for f in fps} == {"crc64"}  # dedup + empty skipped
+
+
+def test_identify_logs_into_the_job_it_creates(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.handler.setFormatter(JsonFormatter("test"))
+    caplog.set_level(logging.INFO, logger="arm_backend")
+    db = FakeSession()
+    db.rows["drives"] = [_drive()]
+    db.rows["config"] = [_config()]
+    result = MetadataResult(title="Iron Man", year=2008, kind="movie", payload={})
+    with TestClient(_make_app(db, dispatcher=_Dispatcher(result))) as client:
+        r = client.post(
+            "/api/ripper/identify", json={"drive_id": "drv_x", "scan_result": _scan_dict()}, headers=_SERVICE_AUTH
+        )
+    assert r.status_code == 200, r.text
+    rows = [json.loads(line) for line in caplog.text.splitlines()]
+    identify_line = next(row for row in rows if row["msg"].startswith("identify job_id="))
+    assert identify_line["job_id"] == r.json()["id"]
 
 
 def test_identify_with_hold_parks_review(signing_key: bytes) -> None:

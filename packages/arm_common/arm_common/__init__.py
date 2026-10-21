@@ -5,7 +5,9 @@ from arm_common.encoders import (
 )
 from arm_common.logging import (
     JsonFormatter,
+    bind_log_context,
     configure_service_logging,
+    log_context_scope,
     with_log_context,
 )
 from arm_common.enums import (
@@ -118,8 +120,10 @@ __all__ = [
     "User",
     "UserRole",
     "VideoCodec",
+    "bind_log_context",
     "configure_service_logging",
     "get_encoder",
+    "log_context_scope",
     "new_id",
     "with_log_context",
 ]

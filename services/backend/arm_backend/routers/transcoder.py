@@ -23,6 +23,7 @@ from sqlmodel import col, select
 
 from arm_backend.auth import require_service_token
 from arm_backend.db import get_session
+from arm_backend.log_context import job_log_context
 from arm_backend.transcode_apply import aggregate_session_application
 from arm_backend.transcode_dispatcher import release_gpu_for_task
 from arm_backend.ws import WSHub
@@ -33,6 +34,7 @@ from arm_common import (
     TranscodePreset,
     TranscodeTask,
     TranscodeTaskStatus,
+    bind_log_context,
 )
 from arm_common.models import Track
 from arm_common.schemas import (
@@ -50,7 +52,11 @@ from arm_common.schemas import (
 
 logger = logging.getLogger("arm_backend.routers.transcoder")
 
-router = APIRouter(prefix="/api/transcoder", tags=["transcoder"], dependencies=[Depends(require_service_token)])
+router = APIRouter(
+    prefix="/api/transcoder",
+    tags=["transcoder"],
+    dependencies=[Depends(require_service_token), Depends(job_log_context)],
+)
 
 
 def _get_hub(request: Request) -> WSHub:
@@ -63,6 +69,14 @@ async def _load_task(db: AsyncSession, task_id: str) -> TranscodeTask:
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown transcode_task_id: {task_id}")
     return row
+
+
+async def _bind_task_job(db: AsyncSession, task: TranscodeTask) -> None:
+    """Tag the rest of the request's log lines with the task's job."""
+    application = (
+        await db.execute(select(SessionApplication).where(col(SessionApplication.id) == task.session_application_id))
+    ).scalar_one_or_none()
+    bind_log_context(job_id=application.job_id if application is not None else None)
 
 
 def _require_owner(task: TranscodeTask, hostname: str | None) -> None:
@@ -143,6 +157,7 @@ async def claim(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing X-ARM-Hostname header")
 
     task = await _load_task(db, task_id)
+    await _bind_task_job(db, task)
     if task.status == TranscodeTaskStatus.IN_PROGRESS and task.claimed_by == x_arm_hostname:
         # Idempotent re-claim by the same host — return the row unchanged.
         return ClaimTaskResponse(task=TranscodeTaskView.model_validate(task))
@@ -232,6 +247,7 @@ async def complete(
 ) -> TranscodeTask:
     task = await _load_task(db, task_id)
     _require_owner(task, x_arm_hostname)
+    await _bind_task_job(db, task)
     if task.status != TranscodeTaskStatus.IN_PROGRESS:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -295,6 +311,7 @@ async def fail(
 ) -> TranscodeTask:
     task = await _load_task(db, task_id)
     _require_owner(task, x_arm_hostname)
+    await _bind_task_job(db, task)
     if task.status != TranscodeTaskStatus.IN_PROGRESS:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

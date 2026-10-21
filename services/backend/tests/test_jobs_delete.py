@@ -11,6 +11,8 @@ Covers the real failure modes:
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import secrets
 from pathlib import Path
@@ -27,7 +29,7 @@ from arm_backend.db import get_session  # noqa: E402
 from arm_backend.jwt_utils import issue_access_token  # noqa: E402
 from arm_backend.routers import jobs as jobs_router  # noqa: E402
 from arm_backend.routers import logs as logs_router  # noqa: E402
-from arm_common import DiscType, Job, JobStatus, User  # noqa: E402
+from arm_common import DiscType, Job, JobStatus, JsonFormatter, User  # noqa: E402
 
 from tests._fakes import FakeSession  # noqa: E402
 
@@ -289,6 +291,23 @@ def test_delete_removes_per_job_log(tmp_path: Any, signing_key: bytes, monkeypat
         r = client.delete("/api/jobs/job_01JZXR7K3M5Q8N4VWA00000002", headers=_auth(token))
     assert r.status_code == 204
     assert not log_file.exists()
+
+
+def test_delete_logs_outside_the_job(signing_key: bytes, caplog: pytest.LogCaptureFixture) -> None:
+    """The delete removes the job's log; a line tagged with the job would
+    make the LogTailer create it again."""
+    caplog.handler.setFormatter(JsonFormatter("test"))
+    caplog.set_level(logging.INFO, logger="arm_backend")
+    db = FakeSession()
+    _seed_admin(db)
+    db.rows["jobs"] = [_make_job("job_01JZXR7K3M5Q8N4VWA00000002", status=JobStatus.RIPPED)]
+    app, token = _make_app(signing_key, db, _CapturingHub())
+    with TestClient(app) as client:
+        r = client.delete("/api/jobs/job_01JZXR7K3M5Q8N4VWA00000002", headers=_auth(token))
+    assert r.status_code == 204
+    rows = [json.loads(line) for line in caplog.text.splitlines()]
+    delete_line = next(row for row in rows if row["msg"].startswith("delete job_id="))
+    assert delete_line["job_id"] is None
 
 
 def test_delete_succeeds_when_per_job_log_missing(

@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from arm_common import configure_service_logging, with_log_context
+from arm_common import bind_log_context, configure_service_logging, log_context_scope, with_log_context
 
 REQUIRED_KEYS = {
     "ts",
@@ -112,6 +112,30 @@ def test_explicit_extra_overrides_contextvar(tmp_path: Path) -> None:
     rows = _read_log_file(tmp_path, "test-svc")
     via_extra = next(r for r in rows if r["msg"] == "via-extra")
     assert via_extra["job_id"] == "explicit"
+
+
+def test_bind_inside_scope_lasts_until_the_scope_exits(tmp_path: Path) -> None:
+    configure_service_logging("test-svc", log_dir=str(tmp_path))
+    logger = logging.getLogger("arm_common.tests.bind")
+
+    with with_log_context(job_id="outer"):
+        with log_context_scope():
+            logger.info("before-bind")
+            bind_log_context(job_id="bound")
+            logger.info("bound")
+            bind_log_context(job_id=None)
+            logger.info("cleared")
+            bind_log_context(job_id="bound-again")
+        logger.info("after-scope")
+    logger.info("outside")
+
+    rows = _read_log_file(tmp_path, "test-svc")
+    msgs = {row["msg"]: row for row in rows}
+    assert msgs["before-bind"]["job_id"] == "outer"
+    assert msgs["bound"]["job_id"] == "bound"
+    assert msgs["cleared"]["job_id"] is None
+    assert msgs["after-scope"]["job_id"] == "outer"
+    assert msgs["outside"]["job_id"] is None
 
 
 def test_context_propagates_across_create_task(tmp_path: Path) -> None:

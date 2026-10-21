@@ -37,7 +37,15 @@ from arm_backend.identity.sources.registry import (
 )
 from arm_backend.makemkv_status import makemkv_state_detail
 from arm_backend.seeders import CONFIG_SINGLETON_ID
-from arm_common import Config, Job, JobStatus, SessionApplication, SessionApplicationStatus, User
+from arm_common import (
+    Config,
+    Job,
+    JobStatus,
+    SessionApplication,
+    SessionApplicationStatus,
+    User,
+    with_log_context,
+)
 from arm_common.config_metadata import CONFIG_FIELD_META
 from arm_common.enums import NON_TERMINAL_JOB_STATUSES, REDRAIN_JOB_STATUSES, PreviouslyRippedAction
 from arm_common.schemas import (
@@ -335,25 +343,29 @@ async def _reresolve_identity(session: AsyncSession, request: Request) -> None:
         if job_status not in _RERESOLVE_IF_UNAPPLIED_STATUSES or job_id not in applied
     ]
     for job_id in job_ids:
-        try:
-            job = (
-                await session.execute(
-                    select(Job).where(col(Job.id) == job_id).with_for_update().execution_options(populate_existing=True)
-                )
-            ).scalar_one_or_none()
-            if job is None:
-                continue
-            resolved = await resolve_job(session, job)
-            await session.commit()
-            if resolved.changed and hub is not None:
-                await emit_identity_resolved(session, hub, job, resolved, sources={})
+        with with_log_context(job_id=job_id):
+            try:
+                job = (
+                    await session.execute(
+                        select(Job)
+                        .where(col(Job.id) == job_id)
+                        .with_for_update()
+                        .execution_options(populate_existing=True)
+                    )
+                ).scalar_one_or_none()
+                if job is None:
+                    continue
+                resolved = await resolve_job(session, job)
                 await session.commit()
-        except Exception:  # noqa: BLE001 - one job must not stop the rest
-            await session.rollback()
-            logger.warning("identity source change: re-resolving job_id=%s failed", job_id, exc_info=True)
-            continue
-        if stage_runner is not None:
-            stage_runner.schedule(job_id)
+                if resolved.changed and hub is not None:
+                    await emit_identity_resolved(session, hub, job, resolved, sources={})
+                    await session.commit()
+            except Exception:  # noqa: BLE001 - one job must not stop the rest
+                await session.rollback()
+                logger.warning("identity source change: re-resolving job_id=%s failed", job_id, exc_info=True)
+                continue
+            if stage_runner is not None:
+                stage_runner.schedule(job_id)
     if job_ids:
         logger.info("identity source change: re-resolved %d live job(s)", len(job_ids))
 
@@ -398,19 +410,20 @@ async def _redrain_parked_applications(session: AsyncSession, request: Request) 
         logger.warning("transcode re-enable: listing parked session_applications failed", exc_info=True)
         return
     for job_id in job_ids:
-        # Load each job fresh: a failed drain rolls the session back, which
-        # expires every job loaded before it.
-        try:
-            job = (
-                await session.execute(
-                    select(Job).where(col(Job.id) == job_id).execution_options(populate_existing=True)
-                )
-            ).scalar_one_or_none()
-            if job is not None:
-                await drain_parked_applications_after_rip(session, job, hub, trigger="transcode re-enable")
-        except Exception:  # noqa: BLE001 - one job must not stop the rest
-            await session.rollback()
-            logger.warning("transcode re-enable: re-draining job_id=%s failed", job_id, exc_info=True)
+        with with_log_context(job_id=job_id):
+            # Load each job fresh: a failed drain rolls the session back, which
+            # expires every job loaded before it.
+            try:
+                job = (
+                    await session.execute(
+                        select(Job).where(col(Job.id) == job_id).execution_options(populate_existing=True)
+                    )
+                ).scalar_one_or_none()
+                if job is not None:
+                    await drain_parked_applications_after_rip(session, job, hub, trigger="transcode re-enable")
+            except Exception:  # noqa: BLE001 - one job must not stop the rest
+                await session.rollback()
+                logger.warning("transcode re-enable: re-draining job_id=%s failed", job_id, exc_info=True)
 
 
 _KEY_ATTR = {"tmdb": "tmdb_api_key", "omdb": "omdb_api_key", "tvdb": "tvdb_api_key", "makemkv": "makemkv_key"}

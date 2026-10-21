@@ -25,6 +25,7 @@ from sqlmodel import col, select
 
 from arm_backend.auth import require_jwt, require_writer
 from arm_backend.db import get_session
+from arm_backend.log_context import job_log_context
 from arm_backend.identity.episode_stage import (
     SourceOutcome,
     StageOptions,
@@ -61,7 +62,7 @@ from arm_common.schemas.identity_api import (
 
 logger = logging.getLogger("arm_backend.routers.identity")
 
-router = APIRouter(prefix="/api/jobs", tags=["identity"])
+router = APIRouter(prefix="/api/jobs", tags=["identity"], dependencies=[Depends(job_log_context)])
 
 # The pin capability this PR uses (spec 7: "a named source sets pin.episode").
 _EPISODE_PIN = "episode"
