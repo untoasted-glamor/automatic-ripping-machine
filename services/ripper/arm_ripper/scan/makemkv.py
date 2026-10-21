@@ -477,3 +477,41 @@ async def scan_disc(device_path: str) -> ScanResult:
         fingerprints=fingerprints,
         bd_meta=probe.bd_meta,
     )
+
+
+async def list_source_titles(source_url: str, *, minlength_seconds: int = 0) -> list[ScanTitle]:
+    """The titles of a disc backup, an ISO or a disc folder, numbered as `mkv`
+    at the same `--minlength` numbers them (backup-then-remux).
+
+    `--noscan`: the drive is listed but its disc is not read; the titles come
+    from `source_url`. Raises ScanError when makemkvcon fails or lists
+    nothing (MakeMKV 2.0.0 exits 10 with no message reading a DVD backup
+    image as `file:`).
+    """
+    cmd = ["makemkvcon", "-r", "--cache=1", "--noscan", f"--minlength={minlength_seconds}", "info", source_url]
+    logger.info("makemkvcon info source=%s minlength=%ds", source_url, minlength_seconds)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as e:
+        raise ScanError("makemkvcon binary not found on PATH") from e
+    try:
+        stdout, stderr, expired = await asyncio.wait_for(_read_makemkvcon_stream(proc), timeout=SCAN_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise ScanError(f"makemkvcon timed out after {SCAN_TIMEOUT_SECONDS}s") from None
+    await proc.wait()
+    if expired:
+        raise MakemkvBinaryExpiredError("makemkvcon refused: binary is past its hard-coded expiry (MSG:5021)")
+    lines = stdout.decode(errors="replace").splitlines()
+    if proc.returncode != 0:
+        detail = stderr.decode(errors="replace").strip() or summarize_empty_scan(lines)
+        raise ScanError(f"makemkvcon exited {proc.returncode} reading {source_url}: {detail}")
+    _, titles, _ = parse_makemkvcon_info(lines)
+    if not titles:
+        raise ScanError(f"makemkvcon listed no titles in {source_url}: {summarize_empty_scan(lines)}")
+    return titles

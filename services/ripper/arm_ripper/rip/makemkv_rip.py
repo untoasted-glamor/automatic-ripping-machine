@@ -30,11 +30,20 @@ Per-title attribution is reconstructed from the robot stream:
 Tracks that were *not* attempted by makemkvcon (below `--minlength`)
 never appear in the result map; the dispatcher decides what to do
 with them (typically: mark FAILED with "skipped: below minlength").
+
+When only some titles are kept, `mkv` can't be told which (it takes one
+title id or `all`), and one `mkv dev:` per title is banned (the drive idles
+between titles; USB-BD drives then autosuspend). Backup-then-remux reads the
+drive once (`makemkv_backup.rip_backup`) and `remux_title` writes each kept
+title from that backup, or from an ISO or folder source, with `--noscan` so
+no remux reads the drive's disc.
 """
 
 import asyncio
 import logging
+import os
 import re
+import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -735,3 +744,75 @@ async def rip_disc(
         )
 
     return RipDiscResult(overall_error=None, titles=titles_out)
+
+
+# Backup-then-remux lists and remuxes every source at this minimum: all its
+# titles, numbered by their rank among all of them, whatever the rip's minimum.
+REMUX_MIN_LENGTH_SECONDS = 0
+
+
+async def remux_title(
+    source_url: str,
+    title_id: int,
+    *,
+    scratch_dir: Path,
+    output_dir: Path,
+    output_index: int,
+    on_progress: OnDiscProgress | None = None,
+) -> RipResult:
+    """Write title `title_id` of `source_url` (a disc backup, an ISO or a disc
+    folder) and move it to `output_dir` as `<prefix>_t{output_index:02d}.mkv`.
+
+    One `makemkvcon --noscan --minlength=0 mkv <source> <id> <scratch_dir>`:
+    `title_id` is in the source's own numbering at minlength 0 (MakeMKV
+    renumbers titles per minimum), so it comes from `list_source_titles` of
+    the same source. `--noscan` keeps MakeMKV from reading the drive's disc
+    at start-up; the title data comes from disk.
+
+    MakeMKV names the file `<prefix>_t<title_id>.mkv` (the prefix differs per
+    title on DVD), so the one `.mkv` that lands in `scratch_dir` is the title.
+    A non-zero exit, no file or more than one is a failure: a missing id
+    exits 12 with no message at all, and `mkv` into a directory that doesn't
+    exist exits 0 with no file (1.18.4), so `scratch_dir` is made first. No
+    sha256: the dispatcher hashes each file like an `mkv all` one.
+    """
+    shutil.rmtree(scratch_dir, ignore_errors=True)
+    scratch_dir.mkdir(parents=True)
+    cmd = [
+        "makemkvcon",
+        "mkv",
+        "--robot",
+        "--progress=-stdout",
+        "--noscan",
+        f"--minlength={REMUX_MIN_LENGTH_SECONDS}",
+        source_url,
+        str(title_id),
+        str(scratch_dir),
+    ]
+    logger.info("makemkvcon mkv source=%s title=%d", source_url, title_id)
+
+    state = _ParserState()
+    # The one save is announced as PRGC:5017 position 0; naming it as the only
+    # eligible title keeps the streamer from warning about it, and with no
+    # per-title callback its progress comes through the disc-level channel.
+    error = await _run_makemkvcon(cmd, state, on_disc_progress=on_progress, eligible_source_indexes=[title_id])
+    if error is not None:
+        return RipResult(ok=False, error=error)
+    produced = sorted(scratch_dir.glob("*.mkv"))
+    if len(produced) != 1:
+        what = "no .mkv" if not produced else f"{len(produced)} .mkv files"
+        return RipResult(
+            ok=False,
+            error=_compose_error(f"makemkvcon exited 0 but produced {what} for title {title_id}", state.diagnostics),
+        )
+    # Named by the disc-scan index, like the `mkv all` files: `B1_t00.mkv`
+    # from a backup whose id for disc title 3 is 0 becomes `B1_t03.mkv`.
+    name = produced[0].name
+    if _OUTPUT_FILE_RE.search(name):
+        renamed = _OUTPUT_FILE_RE.sub(f"_t{output_index:02d}.mkv", name)
+    else:
+        renamed = f"{produced[0].stem}_t{output_index:02d}.mkv"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    final = output_dir / renamed
+    os.replace(produced[0], final)
+    return RipResult(ok=True, output_path=final, size_bytes=final.stat().st_size)

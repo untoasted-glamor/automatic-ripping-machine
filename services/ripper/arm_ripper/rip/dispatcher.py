@@ -11,7 +11,7 @@ from arm_common.schemas import ScanTitle, TrackView
 
 from arm_ripper.rip.abcde_rip import rip_cd
 from arm_ripper.rip.data_rip import rip_data
-from arm_ripper.rip.makemkv_backup import rip_backup
+from arm_ripper.rip.makemkv_backup import BACKUP_DIRNAME, rip_backup
 from arm_ripper.rip.makemkv_rip import (
     _OUTPUT_FILE_RE,
     STOPPED_ERROR,
@@ -21,6 +21,7 @@ from arm_ripper.rip.makemkv_rip import (
     rip_disc,
 )
 from arm_ripper.rip.title_hasher import OnHashed, TitleHasher
+from arm_ripper.source import makemkv_source_url
 
 logger = logging.getLogger("arm_ripper.rip.dispatcher")
 
@@ -98,7 +99,12 @@ async def rip_all(
             if on_track_progress is not None:
                 await on_track_progress(backup, fraction)
 
-        result = await rip_backup(device_path=device_path, output_dir=output_dir, on_progress=_on_backup_progress)
+        result = await rip_backup(
+            makemkv_source_url(device_path),
+            output_dir / BACKUP_DIRNAME,
+            decrypt=True,
+            on_progress=_on_backup_progress,
+        )
         await on_track_done(backup, result)
         return
 

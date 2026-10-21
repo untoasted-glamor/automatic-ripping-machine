@@ -918,13 +918,13 @@ async def test_rip_all_dump_progress_carries_transfer_stats(monkeypatch, tmp_pat
 
 
 async def test_rip_all_disc_backup_track_uses_rip_backup(monkeypatch, tmp_path):
-    backup_calls: list[str] = []
+    backup_calls: list[tuple[str, Path, bool]] = []
 
-    async def fake_rip_backup(*, device_path, output_dir, on_progress=None):
-        backup_calls.append(device_path)
+    async def fake_rip_backup(source, target, *, decrypt, on_progress=None):
+        backup_calls.append((source, target, decrypt))
         if on_progress is not None:
             await on_progress(0.5)
-        return RipResult(ok=True, output_path=output_dir / "backup", size_bytes=7)
+        return RipResult(ok=True, output_path=target, size_bytes=7)
 
     async def must_not_run(**_kwargs):
         raise AssertionError("a disc backup must not reach rip_disc or rip_data")
@@ -953,7 +953,7 @@ async def test_rip_all_disc_backup_track_uses_rip_backup(monkeypatch, tmp_path):
         on_track_done=on_done,
         on_track_progress=on_progress,
     )
-    assert backup_calls == ["/dev/sr0"]
+    assert backup_calls == [("dev:/dev/sr0", tmp_path / "backup", True)]
     assert events == [
         ("start", "trk_0"),
         ("progress", ("trk_0", 0.5, None)),
