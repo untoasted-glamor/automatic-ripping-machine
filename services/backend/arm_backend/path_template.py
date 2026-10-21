@@ -1,7 +1,9 @@
 """Path-template token expansion + save-time validation.
 
 Templates reference `{token}` (required) or `{token?}` (optional: dropped, with
-a wrapping ()/[] pair and one leading space, when its value is empty).
+a wrapping ()/[] pair and one leading space, when its value is empty). A []
+pair may also hold a `label-` prefix, as in Jellyfin's `[imdbid-{imdb_id?}]`,
+which is dropped with it.
 
 The token whitelist per `MediaType` mirrors arch §02 (`docs/developers/architecture/02-job-lifecycle.md`).
 Save-time validation expands the template against a synthetic context that
@@ -14,9 +16,10 @@ import re
 from arm_common.enums import MediaType
 
 _TOKEN_RE = re.compile(r"\{(\w+)(\?)?\}")
-# An optional token, optionally wrapped by one ()/[] pair that contains only it,
-# optionally preceded by one space. Groups 1-3 hold the name for each shape.
-_OPTIONAL_RE = re.compile(r" ?(?:\(\{(\w+)\?\}\)|\[\{(\w+)\?\}\]|\{(\w+)\?\})")
+# An optional token, optionally wrapped by one ()/[] pair that contains only it
+# (a [] pair may also hold a `label-` prefix before it), optionally preceded by
+# one space. Groups 1-3 hold the name for each shape.
+_OPTIONAL_RE = re.compile(r" ?(?:\(\{(\w+)\?\}\)|\[(?:[A-Za-z]+-)?\{(\w+)\?\}\]|\{(\w+)\?\})")
 
 
 class TemplateValidationError(ValueError):
@@ -25,10 +28,11 @@ class TemplateValidationError(ValueError):
 
 # Per-media-type allowed tokens (arch §02 token table).
 _ALLOWED_TOKENS_BY_MEDIA: dict[MediaType, set[str]] = {
-    MediaType.MOVIE: {"title", "year", "track", "duration_human", "transcode_slug", "ext"},
+    MediaType.MOVIE: {"title", "year", "imdb_id", "track", "duration_human", "transcode_slug", "ext"},
     MediaType.TV: {
         "show",
         "year",
+        "imdb_id",
         "season",
         "disc",
         "track",
@@ -50,6 +54,7 @@ _SYNTHETIC_CONTEXTS: dict[MediaType, dict[str, str]] = {
     MediaType.MOVIE: {
         "title": "Iron Man",
         "year": "2008",
+        "imdb_id": "tt0371746",
         "track": "01",
         "duration_human": "02h05m",
         "transcode_slug": "plex-1080p-h265",
@@ -58,6 +63,7 @@ _SYNTHETIC_CONTEXTS: dict[MediaType, dict[str, str]] = {
     MediaType.TV: {
         "show": "Battlestar Galactica",
         "year": "2004",
+        "imdb_id": "tt0407362",
         "season": "01",
         "disc": "01",
         "track": "01",
@@ -206,6 +212,7 @@ _TOKEN_DESCRIPTIONS: dict[str, str] = {
     "title": "Movie/feature title",
     "show": "TV show name",
     "year": "Release year. Write {year?} to drop it, with its brackets, when the year is unknown",
+    "imdb_id": "IMDb id (tt0371746). Write [imdbid-{imdb_id?}] for Jellyfin; dropped, with its brackets, when unknown",
     "season": "Season number, zero-padded",
     "episode": "Episode number, zero-padded (01, or 01-E02 for a two-episode title)",
     "episode_title": "Episode title",

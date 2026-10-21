@@ -562,6 +562,31 @@ def test_jellyfin_tv_session_falls_back_to_the_disc_position(role: TrackRole | N
     assert path == "ACCA (2017)/Season 01/ACCA - S01D02T01 - tv-1080p-h-265.mkv"
 
 
+def _with_imdb(job: Job, imdb: object) -> Job:
+    job.metadata_json = {"identity": {"external_ids": {"imdb": imdb}}}
+    return job
+
+
+def test_jellyfin_tv_session_pins_the_show_folder_to_its_imdb_id() -> None:
+    job = _with_imdb(_box_set_job(season=1, disc_number=1), "tt6401396")
+    path = _jellyfin_path(job, role=TrackRole.EPISODE, episode_number=3)
+    assert path == "ACCA (2017) [imdbid-tt6401396]/Season 01/ACCA - S01E03 - tv-1080p-h-265.mkv"
+
+
+@pytest.mark.parametrize("imdb", [None, "", "6401396", "tt64/01396", 6401396])
+def test_jellyfin_tv_session_drops_a_missing_or_malformed_imdb_id(imdb: object) -> None:
+    job = _with_imdb(_box_set_job(season=1, disc_number=1), imdb)
+    assert _jellyfin_path(job, episode_number=3).startswith("ACCA (2017)/Season 01/")
+
+
+def test_imdb_id_is_dropped_for_a_track_naming_another_title() -> None:
+    """A multi-title disc's track with its own title isn't the job's title, so
+    the job's IMDb id would point at the wrong film."""
+    job = _with_imdb(_box_set_job(season=1, disc_number=1), "tt6401396")
+    assert _jellyfin_path(job, episode_number=3, title="Another Film").startswith("ACCA (2017)/")
+    assert "[imdbid-tt6401396]" in _jellyfin_path(job, episode_number=3, title="ACCA")
+
+
 @pytest.mark.parametrize("columns", [{"disc_number": 1}, {"season": 1}])
 def test_jellyfin_tv_session_without_season_or_fallback_disc_422s(columns: dict[str, int]) -> None:
     with pytest.raises(TemplateValidationError) as exc:

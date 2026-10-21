@@ -15,10 +15,11 @@
 
 	// Valid tokens per media type
 	const TOKENS: Record<MediaType, string[]> = {
-		movie: ['title', 'year', 'track', 'duration_human', 'transcode_slug', 'ext'],
+		movie: ['title', 'year', 'imdb_id', 'track', 'duration_human', 'transcode_slug', 'ext'],
 		tv: [
 			'show',
 			'year',
+			'imdb_id',
 			'season',
 			'disc',
 			'track',
@@ -35,7 +36,7 @@
 	};
 
 	// Tokens that commonly have no value; each gets an extra chip inserting {token?}.
-	const OPTIONAL_CHIPS = new Set(['year']);
+	const OPTIONAL_CHIPS = new Set(['year', 'imdb_id']);
 
 	let expansion = $state<string | null>(null);
 	let expansionWithoutOptional = $state<string | null>(null);

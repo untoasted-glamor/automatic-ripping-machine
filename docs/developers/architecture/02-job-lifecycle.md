@@ -330,6 +330,7 @@ Sessions own the relative path from the media-type root down to the leaf filenam
 | `{title}` | ✓ | — | — | identification |
 | `{year}` | ✓ | ✓ | — | identification |
 | `{show}` | — | ✓ | — | identification |
+| `{imdb_id}` | ✓ | ✓ | — | identification (`identity.external_ids.imdb`, `tt` plus digits); empty when the job has none or the track carries its own title |
 | `{season}` | — | ✓ | — | identification / user input (zero-padded) — usually user input for box sets, since volume labels rarely encode it |
 | `{disc}` | — | ✓ | — | identification / user input (zero-padded) — same caveat as `{season}` |
 | `{track}` | ✓ | ✓ | ✓ | MakeMKV / CD track number (zero-padded) |
@@ -340,7 +341,7 @@ Sessions own the relative path from the media-type root down to the leaf filenam
 | `{transcode_slug}` | ✓ | ✓ | ✓ | transcode preset `name` field, slugified (lowercase, spaces → hyphens, non-alphanumerics stripped). Unavailable when `session.transcode_preset_id IS NULL` (ISO, data-copy). |
 | `{ext}` | ✓ | ✓ | ✓ | transcode preset `container` (`mkv`, `mp4`, `flac`, …) |
 
-A token written `{token?}` is optional: when its value is empty it is dropped, together with a `()` or `[]` pair that wraps only it and one space before it, so `{title} ({year?})` becomes `Iron Man` for a title with no year. Empty path segments left behind are collapsed, and a path that is empty after the drop is rejected. `{ext}` and `{transcode_slug}` cannot be optional. A plain `{token}` that expands to empty fails the apply, with a hint to mark it optional. The built-in session defaults mark `{year}` optional (`{title} ({year?})/...`), so a title with no year gets a clean folder name.
+A token written `{token?}` is optional: when its value is empty it is dropped, together with a `()` or `[]` pair that wraps only it and one space before it, so `{title} ({year?})` becomes `Iron Man` for a title with no year. A `[]` pair may also hold a `label-` prefix, dropped with it: the built-in TV to Jellyfin session names the show folder `{show} ({year?}) [imdbid-{imdb_id?}]`, which pins Jellyfin's series match to the IMDb id and becomes `{show} ({year?})` when the id is unknown. Empty path segments left behind are collapsed, and a path that is empty after the drop is rejected. `{ext}` and `{transcode_slug}` cannot be optional. A plain `{token}` that expands to empty fails the apply, with a hint to mark it optional. The built-in session defaults mark `{year}` optional (`{title} ({year?})/...`), so a title with no year gets a clean folder name.
 
 Templates are validated on session save: the backend expands the template against a synthetic job of the declared `media_type` and rejects the save if any token resolves to empty for a required slot. This is how we keep users from shipping a template that silently produces `/media/Movies/ ().mkv` on a real rip. Templates that reference `{transcode_slug}` are also rejected at save time when the session has no transcode preset attached.
 

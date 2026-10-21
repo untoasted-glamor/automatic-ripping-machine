@@ -4,6 +4,7 @@ export const MEDIA_SAMPLE: Record<MediaType, Record<string, string>> = {
 	movie: {
 		title: 'Fight Club',
 		year: '1999',
+		imdb_id: 'tt0137523',
 		track: '01',
 		duration_human: '2h 19m',
 		transcode_slug: 'h265',
@@ -12,6 +13,7 @@ export const MEDIA_SAMPLE: Record<MediaType, Record<string, string>> = {
 	tv: {
 		show: 'Breaking Bad',
 		year: '2008',
+		imdb_id: 'tt0903747',
 		season: '01',
 		disc: '1',
 		track: '03',

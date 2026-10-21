@@ -400,13 +400,14 @@ SESSIONS: list[dict[str, Any]] = [
     {
         # Jellyfin matches episodes by SxxEyy: {episode_code} gives S01E03 once
         # the episode match has placed a title, and the disc position
-        # S01D01T03 until then.
+        # S01D01T03 until then. [imdbid-...] in the show folder pins the series
+        # match, which a title whose punctuation the path drops (a colon) can miss.
         "id": "ses_builtin_tv_jellyfin_1080p",
         "name": "TV to Jellyfin 1080p H.265",
         "media_type": MediaType.TV,
         "rip_preset_id": "rpr_builtin_tv_all_tracks",
         "transcode_preset_id": "tpr_builtin_tv_plex_1080p_h265",
-        "output_path_template": "{show} ({year?})/Season {season}/{show} - {episode_code} - {transcode_slug}.{ext}",
+        "output_path_template": "{show} ({year?}) [imdbid-{imdb_id?}]/Season {season}/{show} - {episode_code} - {transcode_slug}.{ext}",
     },
     {
         "id": "ses_builtin_music_flac",

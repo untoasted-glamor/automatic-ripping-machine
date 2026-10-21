@@ -58,6 +58,21 @@ class ResolvedTask(NamedTuple):
     output_path: str
 
 
+_IMDB_ID = re.compile(r"tt\d+")
+
+
+def _imdb_id(job: Job, track: Track) -> str:
+    """The job identity's IMDb id (`tt0371746`), or "" when it has none or this
+    track names a different title than the job (its own movie on a multi-title
+    disc), so a folder never carries another title's id."""
+    if track.title is not None and track.title != job.title:
+        return ""
+    identity = (job.metadata_json or {}).get("identity")
+    ids = identity.get("external_ids") if isinstance(identity, dict) else None
+    imdb = ids.get("imdb") if isinstance(ids, dict) else None
+    return imdb if isinstance(imdb, str) and _IMDB_ID.fullmatch(imdb) else ""
+
+
 def _format_duration_human(seconds: int | None) -> str:
     if seconds is None or seconds <= 0:
         return ""
@@ -125,6 +140,7 @@ def _build_track_ctx(
     ctx: dict[str, str] = {
         "title": sanitize_path_component(eff_title),
         "year": str(eff_year) if eff_year is not None else "",
+        "imdb_id": _imdb_id(job, track),
         "show": sanitize_path_component(job.title or ""),
         # Per-track season (set by a disc map or episode match) wins over the
         # job-level season; the metadata.get() fallback remains for pre-G-14 rows.

@@ -117,6 +117,7 @@
 	const TOKEN_WORDS: Record<string, string> = {
 		title: 'a title',
 		year: 'a year',
+		imdb_id: 'an IMDb id',
 		show: 'a show name',
 		season: 'a season',
 		episode: 'an episode number',

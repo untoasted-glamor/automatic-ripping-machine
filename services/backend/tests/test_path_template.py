@@ -168,6 +168,11 @@ def test_music_allows_disc_token() -> None:
         ("{title} ({year?}) /x", {"title": "X", "year": ""}, "X/x"),
         # values are never parsed as syntax
         ("{title} ({year?})", {"title": "What? {year?}", "year": ""}, "What? {year?}"),
+        # a [] pair with a label- prefix (Jellyfin's [imdbid-...]) goes with its token
+        ("{title} [imdbid-{imdb_id?}]/x", {"title": "X", "imdb_id": "tt1"}, "X [imdbid-tt1]/x"),
+        ("{title} ({year?}) [imdbid-{imdb_id?}]/x", {"title": "X", "year": "2017", "imdb_id": ""}, "X (2017)/x"),
+        # a label pair holding more than the token keeps its text
+        ("{title} [id-{imdb_id?} x]", {"title": "X", "imdb_id": ""}, "X [id- x]"),
     ],
 )
 def test_expand_template_optional_tokens(template: str, ctx: dict[str, str], expected: str) -> None:
