@@ -98,20 +98,28 @@ def _length(track: Track) -> int | None:
 
 
 def _eligible(tracks: Sequence[Track]) -> list[TitleIn]:
-    """Selected video titles with a length whose role is unknown or episode
-    (C6). A role this stage itself set on an earlier run (provenance is an
-    episode source, e.g. `extra` for a skipped title) does not count as known,
-    so a re-run can still place that title."""
+    """Video titles with a length whose role is unknown or episode (C6). A
+    role this stage itself set on an earlier run (provenance is an episode
+    source, e.g. `extra` for a skipped title) does not count as known, so a
+    re-run can still place that title.
+
+    Excluded titles are matched too, flagged `excluded`: dropping titles 1-2
+    of a disc must not make title 3 its first episode. Their claims are
+    stored like any other (so re-including one needs no re-run) and are inert
+    while excluded: the ripper never rips an excluded title and
+    `compute_outputs` never names or fans one out. A sibling disc's excluded
+    title still holds its episode number in `_held_numbers`, since that
+    episode is on the sibling disc either way."""
     out: list[TitleIn] = []
     for track in sorted(tracks, key=lambda t: t.index):
-        if track.kind != TrackKind.VIDEO_TITLE or track.excluded:
+        if track.kind != TrackKind.VIDEO_TITLE:
             continue
         role_source = (track.identity_provenance or {}).get("role")
         if track.role not in (None, TrackRole.EPISODE) and role_source not in _EPISODE_SOURCE_IDS:
             continue
         length = _length(track)
         if length:
-            out.append(TitleIn(ref=track.source_ref, seconds=length))
+            out.append(TitleIn(ref=track.source_ref, seconds=length, excluded=track.excluded))
     return out
 
 
@@ -196,12 +204,13 @@ def _siblings(
 
 def _nominal(remaining: Sequence[Episode], titles: Sequence[TitleIn], tolerance: int) -> bool:
     """C4: every known runtime is a whole number of broadcast slots, and fewer
-    than half the titles fit any of them."""
+    than half the kept titles fit any of them."""
     known = {e.runtime_s for e in remaining if e.runtime_s}
     if not known or any(rt % NOMINAL_SLOT_S for rt in known):
         return False
-    fitting = sum(1 for t in titles if any(abs(t.seconds - rt) <= _eff_tol(rt, tolerance) for rt in known))
-    return fitting < len(titles) / 2
+    kept = [t for t in titles if not t.excluded]
+    fitting = sum(1 for t in kept if any(abs(t.seconds - rt) <= _eff_tol(rt, tolerance) for rt in known))
+    return fitting < len(kept) / 2
 
 
 def _mean_cost(result: MatchResult) -> float:
@@ -238,7 +247,8 @@ async def _fit_season(provider: EpisodeListProvider, req: _Request, season: int)
         episodes,
         disc_number=req.disc_number,
         disc_total=req.disc_total,
-        n_titles=len(req.titles),
+        # An estimate of the episodes per disc: excluded titles are mostly extras.
+        n_titles=sum(1 for t in req.titles if not t.excluded),
         siblings=siblings,
     )
     nominal = _nominal(remaining, req.titles, req.tolerance)

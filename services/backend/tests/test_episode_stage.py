@@ -10,7 +10,7 @@ from typing import Any  # noqa: E402
 
 import pytest  # noqa: E402
 
-from arm_common import Config, DiscType, Job, JobStatus, Track, TrackKind  # noqa: E402
+from arm_common import Config, DiscType, Job, JobStatus, Session, Track, TrackKind  # noqa: E402
 from arm_common.enums import MediaType, TrackRole  # noqa: E402
 from arm_common.schemas import ExternalIds  # noqa: E402
 
@@ -25,6 +25,7 @@ from arm_backend.identity.episodes.continuity import SiblingDisc  # noqa: E402
 from arm_backend.identity.episodes.model import Episode  # noqa: E402
 from arm_backend.identity.http import SourceError, SourceMiss  # noqa: E402
 from arm_backend.identity.proposals import claims_of, forget_episode_show_ids, set_pin  # noqa: E402
+from arm_backend.transcode_apply import compute_outputs  # noqa: E402
 from tests._fakes import FakeSession  # noqa: E402
 
 CFG = Config(id=1)
@@ -226,12 +227,12 @@ async def test_extra_and_play_all_titles_get_role_extra_c5() -> None:
     assert [tracks[r].episode for r in "0234"] == [3, 4, 5, 6]
 
 
-async def test_anchor_counts_only_eligible_titles_c6(monkeypatch) -> None:
+async def test_anchor_counts_only_kept_titles_c6(monkeypatch) -> None:
     job = _job(disc_number=2, disc_total=4)
     db = _db(
         job,
         DISC,
-        extra_tracks=[_track(job.id, 10, 1500, excluded=True), _track(job.id, 11, 2880, excluded=True)],
+        extra_tracks=[_track(job.id, 10, 600, excluded=True), _track(job.id, 11, 700, excluded=True)],
     )
     seen: list[int] = []
     real = episode_stage.start_anchor
@@ -248,6 +249,38 @@ async def test_anchor_counts_only_eligible_titles_c6(monkeypatch) -> None:
     assert seen == [4]
     assert outcome.claims.inputs["disc_number"] == 2
     assert [outcome.claims.tracks[r].episode for r in "0123"] == [3, 4, 5, 6]
+    # The excluded extras are matched (and skipped) too, but cost no coverage.
+    assert outcome.claims.extra["skipped"] == ["10", "11"]
+    assert outcome.claims.tracks["10"].role == TrackRole.EXTRA
+    assert outcome.claims.extra["coverage"] == 1.0
+    assert outcome.claims.suggestion is False
+
+
+async def test_excluded_titles_keep_their_disc_positions() -> None:
+    # The disc holds E1-E5, alternating short and long; the operator dropped
+    # titles 0-1. Matched without them, title 2 would fit E1 just as well.
+    job = _job()
+    lengths = [1500, 2880, 1500, 2880, 1500]
+    db = _db(job, [], extra_tracks=[_track(job.id, i, s, excluded=i < 2) for i, s in enumerate(lengths)])
+    provider = FakeProvider(seasons={1: _season(1, [1500, 2880] * 5)})
+
+    [outcome], _ = await run_episode_stage(db, job, [provider], CFG, StageOptions())  # type: ignore[arg-type]
+
+    assert outcome.claims.suggestion is False
+    assert [outcome.claims.tracks[r].episode for r in "01234"] == [1, 2, 3, 4, 5]
+    tracks = _tracks(db, job)
+    assert [tracks[r].episode_number for r in "01234"] == [1, 2, 3, 4, 5]
+    # The excluded titles' episodes stay inert: they are never named or fanned out.
+    tv = Session(
+        id="ses_tv",
+        name="TV",
+        media_type=MediaType.TV,
+        is_builtin=False,
+        rip_preset_id="rpr_x",
+        output_path_template="S{season}E{episode}.mkv",
+    )
+    outputs = compute_outputs(job, list(tracks.values()), tv, None)
+    assert sorted(o.output_path for o in outputs) == ["S01E03.mkv", "S01E04.mkv", "S01E05.mkv"]
 
 
 async def test_eligibility_rules(monkeypatch) -> None:
@@ -260,6 +293,8 @@ async def test_eligibility_rules(monkeypatch) -> None:
         _track(job.id, 7, 1980, role=TrackRole.EXTRA, identity_provenance={"role": "manual"}),
         _track(job.id, 8, None),
         _track(job.id, 9, None, expected_duration_seconds=2400),
+        # An excluded title still holds its disc position.
+        _track(job.id, 10, 2400, excluded=True),
     ]
     db = _db(job, DISC, extra_tracks=extra)
     seen: list[list[str]] = []
@@ -274,7 +309,7 @@ async def test_eligibility_rules(monkeypatch) -> None:
 
     await compute_episode_claims(db, job, [provider], CFG, StageOptions())  # type: ignore[arg-type]
 
-    assert seen == [["0", "1", "2", "3", "6", "9"]]
+    assert seen == [["0", "1", "2", "3", "6", "9", "10"]]
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +495,20 @@ async def test_nominal_runtimes_are_not_applied_c4() -> None:
 async def test_slot_runtimes_that_fit_are_not_nominal() -> None:
     job = _job()
     db = _db(job, [1800, 2700, 1200, 2400])
+    provider = FakeProvider(seasons={1: _season(1, [600, 1800, 2700, 1200, 2400, 3000])})
+
+    [outcome] = await compute_episode_claims(db, job, [provider], CFG, StageOptions())  # type: ignore[arg-type]
+
+    assert outcome.claims.inputs["nominal_runtimes"] is False
+    assert outcome.claims.suggestion is False
+
+
+async def test_excluded_extras_do_not_make_runtimes_nominal_c4() -> None:
+    # Every kept title fits a slot runtime; the excluded 400 s extras fit
+    # none, and would otherwise outnumber them.
+    job = _job()
+    extras = [_track(job.id, i, 400, excluded=True) for i in range(10, 15)]
+    db = _db(job, [1800, 2700, 1200, 2400], extra_tracks=extras)
     provider = FakeProvider(seasons={1: _season(1, [600, 1800, 2700, 1200, 2400, 3000])})
 
     [outcome] = await compute_episode_claims(db, job, [provider], CFG, StageOptions())  # type: ignore[arg-type]

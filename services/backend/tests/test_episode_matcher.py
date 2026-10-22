@@ -337,3 +337,43 @@ def test_is_ambiguous_flags_a_shift_that_fits_much_better_one_sided() -> None:
     episodes = [Episode(season=1, number=1, runtime_s=3000), Episode(season=1, number=2, runtime_s=2900)]
     singles = [(0, 2900)]  # position 0 (E1, rt 3000) matched to a 2900 s title: delta 100
     assert _is_ambiguous(singles, frozenset(), episodes, 300, 3000) is True
+
+
+# Excluded titles hold their disc positions but are otherwise left out
+
+
+def test_excluded_title_skipped_costs_no_coverage() -> None:
+    r = align([TitleIn("0", 600, excluded=True), TitleIn("1", 3000), TitleIn("2", 3000)], eps(3000, 3000, 3000))
+    assert r.skipped == ("0",)
+    assert r.coverage == 1.0
+
+
+def test_kept_title_skipped_still_costs_coverage() -> None:
+    r = align([TitleIn("0", 600), TitleIn("1", 3000, excluded=True)], eps(3000, 3000))
+    assert mapping(r) == {"1": (1, None)}
+    assert r.coverage == 0.5
+
+
+def test_reference_runtime_comes_from_kept_titles() -> None:
+    # No provider runtimes: three excluded 300 s extras would pull the median
+    # title length (and so the unknown-runtime window) down to 300 s.
+    disc = [TitleIn(str(i), 2600 if i % 2 else 300, excluded=not i % 2) for i in range(5)]
+    r = align(disc, eps(None, None, None))
+    assert mapping(r) == {"1": (1, None), "3": (2, None)}
+    assert r.skipped == ("0", "2", "4")
+    assert r.coverage == 1.0
+
+
+def test_reference_runtime_falls_back_to_excluded_titles_when_none_are_kept() -> None:
+    disc = [TitleIn("0", 2600, excluded=True), TitleIn("1", 2600, excluded=True)]
+    r = align(disc, eps(None, None))
+    assert mapping(r) == {"0": (1, None), "1": (2, None)}
+    assert r.coverage == 1.0
+
+
+def test_play_all_sum_ignores_excluded_titles() -> None:
+    # 6970 is the two episodes' sum; the excluded 600 s extra must not join it
+    disc = [*titles(3480, 3490, 6970), TitleIn("3", 600, excluded=True)]
+    r = align(disc, eps(3600, 3600, 3600, 3600))
+    assert r.play_all == ("2",)
+    assert mapping(r) == {"0": (1, None), "1": (2, None)}

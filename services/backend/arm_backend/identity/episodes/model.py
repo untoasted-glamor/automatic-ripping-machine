@@ -21,6 +21,10 @@ class Episode:
 class TitleIn:
     ref: str
     seconds: int
+    # A title the operator (or the rip preset) dropped. It still holds its disc
+    # position, so the titles after it keep their episode numbers, but it does
+    # not count against coverage or toward the disc-wide length statistics.
+    excluded: bool = False
 
 
 @dataclass(frozen=True)

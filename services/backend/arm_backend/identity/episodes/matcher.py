@@ -49,9 +49,10 @@ def _eff_tol(reference: int, tolerance: int) -> int:
 def _is_play_all(
     seconds: int, episodes: Sequence[Episode], tolerance: int, ref_rt: int, titles: Sequence[TitleIn], title_idx: int
 ) -> bool:
-    """Check if a title is play-all: matches sum of 3+ consecutive episodes, or sum of the other titles
+    """Check if a title is play-all: matches sum of 3+ consecutive episodes, or sum of the other kept titles
     (within tolerance for 3+ others; within PLAY_ALL_PAIR_WINDOW_S for exactly 2, where a genuine two-part
-    title is otherwise just as likely)."""
+    title is otherwise just as likely). Excluded titles are mostly extras the preset dropped, which would
+    only inflate that sum."""
     # Rule B: in play-all scan, treat unknown runtime as ref_rt
     runtimes = [_known(e.runtime_s) or ref_rt for e in episodes]
 
@@ -67,7 +68,7 @@ def _is_play_all(
                 break
 
     # Rule C: play-all if 3+ other titles and title length matches sum of other titles
-    other_titles = [t for i, t in enumerate(titles) if i != title_idx]
+    other_titles = [t for i, t in enumerate(titles) if i != title_idx and not t.excluded]
     if len(other_titles) >= 3:
         sum_others = sum(t.seconds for t in other_titles)
         if abs(seconds - sum_others) <= _eff_tol(sum_others, tolerance):
@@ -151,13 +152,14 @@ def align(
     if len(refs) != len(set(refs)):
         raise ValueError("title refs must be unique")
 
-    # Rule B: compute ref_rt = median of known runtimes, or median of all title lengths
+    # Rule B: compute ref_rt = median of known runtimes, or median of the kept titles' lengths
+    # (of every title's when all are excluded)
     known_runtimes_list: list[int] = [rt for e in episodes if (rt := _known(e.runtime_s)) is not None]
     if known_runtimes_list:
         ref_rt = int(statistics.median_low(known_runtimes_list))
     else:
-        all_lengths = [t.seconds for t in titles]
-        ref_rt = int(statistics.median_low(all_lengths)) if all_lengths else 0
+        lengths = [t.seconds for t in titles if not t.excluded] or [t.seconds for t in titles]
+        ref_rt = int(statistics.median_low(lengths)) if lengths else 0
 
     # Rule C: play-all detection (now with ref_rt and other-titles support)
     play_all = tuple(
@@ -253,6 +255,9 @@ def align(
         i, j = pi, pj
     matches.reverse()
     skipped.reverse()
-    coverage = len(matches) / m if m else 0.0
+    # An excluded title the alignment skips is an extra the operator already
+    # dropped, not a miss: it only held its disc position.
+    counted = m - sum(1 for t in elig if t.excluded and t.ref in skipped)
+    coverage = len(matches) / counted if counted else 0.0
     ambiguous = _is_ambiguous(singles, frozenset(doubles), episodes, tolerance, ref_rt)
     return MatchResult(tuple(matches), tuple(skipped), play_all, dp[m][best_j], coverage, ambiguous)
