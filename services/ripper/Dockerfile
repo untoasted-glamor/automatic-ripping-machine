@@ -9,6 +9,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # minus HandBrake — that lands in Phase 7 with the transcode container).
 # qtbase5-dev is needed because MakeMKV's OSS configure builds a GUI that we
 # never ship; we only copy makemkvcon out into the runtime stage.
+# No JRE: neither build runs Java (makemkv-bin only copies blues.jar into
+# share/MakeMKV), and the runtime stage ships none.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -25,7 +27,6 @@ RUN apt-get update \
         qtbase5-dev \
         wget \
         zlib1g-dev \
-        openjdk-17-jre-headless \
         libtesseract-dev \
         libleptonica-dev \
     && rm -rf /var/lib/apt/lists/*
