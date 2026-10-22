@@ -97,10 +97,15 @@ def align_runs(
     claimed: frozenset[int],
     tolerance: int = 300,
     anchor: int | None = None,
+    start_known: bool = False,
 ) -> MatchResult:
     """Align within each run of episodes no sibling disc holds (spec 6.3): a
     disc can never span another disc's episodes, while plain gaps in the
     provider's numbering stay inside one run.
+
+    Two runs that fit about equally make the result ambiguous, unless
+    `start_known` (see `align`) and the best result starts at the anchor:
+    a disc known to start there cannot sit in another run.
 
     `remaining` must be a single season (raises `ValueError` otherwise);
     `claimed` is that season's sibling-held episode numbers."""
@@ -116,10 +121,17 @@ def align_runs(
             and (start <= anchor < start + len(eps) or (order == last and anchor == start + len(eps)))
             else None
         )
-        results.append((order, align(titles, eps, tolerance=tolerance, anchor=local)))
+        results.append((order, align(titles, eps, tolerance=tolerance, anchor=local, start_known=start_known)))
     ranked = sorted(results, key=lambda r: (-r[1].coverage, -len(r[1].matches), r[1].cost, r[0]))
     best = ranked[0][1]
-    if len(ranked) > 1:
+    starts_at_anchor = (
+        start_known
+        and anchor is not None
+        and anchor < len(remaining)
+        and bool(best.matches)
+        and best.matches[0].episode == remaining[anchor].number
+    )
+    if len(ranked) > 1 and not starts_at_anchor:
         second = ranked[1][1]
         if (
             second.coverage == best.coverage

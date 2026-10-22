@@ -48,4 +48,6 @@ class MatchResult:
     # True when shifting every single-episode match one list position either
     # way is also valid and fits about as well (within AMBIGUITY_WINDOW_S):
     # the positions were decided by the anchor / list order, not by runtimes.
+    # Not set when the disc is known to start at its first match, a single
+    # (`align`'s `start_known`).
     ambiguous: bool = False

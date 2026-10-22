@@ -377,3 +377,32 @@ def test_play_all_sum_ignores_excluded_titles() -> None:
     r = align(disc, eps(3600, 3600, 3600, 3600))
     assert r.play_all == ("2",)
     assert mapping(r) == {"0": (1, None), "1": (2, None)}
+
+
+# A known start (disc 1 at the season's first episode) cannot shift
+
+
+def test_known_start_at_the_anchor_is_not_ambiguous() -> None:
+    # +1 (E2-E6) fits identical runtimes as well, but the disc starts at E1
+    r = align(titles(*[3000] * 5), eps(*[3000] * 10), anchor=0, start_known=True)
+    assert [m.episode for m in r.matches] == [1, 2, 3, 4, 5]
+    assert r.ambiguous is False
+    assert align(titles(*[3000] * 5), eps(*[3000] * 10), anchor=0).ambiguous is True
+
+
+def test_known_start_the_match_does_not_begin_at_is_still_ambiguous() -> None:
+    # Nothing fits E1, so the disc starts at E2, where +1 fits as well
+    r = align(titles(3000, 3000, 3000), eps(1300, *[3000] * 9), anchor=0, start_known=True)
+    assert [m.episode for m in r.matches] == [2, 3, 4]
+    assert r.ambiguous is True
+
+
+def test_known_start_under_a_two_episode_match_is_still_ambiguous() -> None:
+    # The double holds the known start; shifting the single E3 to E4 still fits
+    r = align(titles(6000, 3000), eps(3000, 3000, 3000, 3000, 3000), anchor=0, start_known=True)
+    assert mapping(r) == {"0": (1, 2), "1": (3, None)}
+    assert r.ambiguous is True
+
+
+def test_known_start_without_an_anchor_changes_nothing() -> None:
+    assert align(titles(3000, 3000), eps(3000, 3000, 3000, 3000), start_known=True).ambiguous is True

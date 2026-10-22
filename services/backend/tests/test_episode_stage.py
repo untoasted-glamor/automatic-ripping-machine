@@ -331,6 +331,64 @@ async def test_identical_runtimes_are_a_suggestion_and_not_applied_c2() -> None:
     assert all(t.episode_number is None and t.role is None for t in _tracks(db, job).values())
 
 
+async def test_disc_one_starting_at_the_first_episode_is_applied() -> None:
+    # Identical runtimes: only the disc number places the disc, and disc 1
+    # starts at E1, so "it starts at E2" is no real alternative.
+    job = _job(disc_number=1)
+    db = _db(job, [2580] * 4)
+    provider = FakeProvider(seasons={1: _season(1, [2580] * 10)})
+
+    [outcome], _ = await run_episode_stage(db, job, [provider], CFG, StageOptions())  # type: ignore[arg-type]
+
+    assert outcome.claims.extra["ambiguous"] is False
+    assert outcome.claims.suggestion is False
+    assert [t.episode_number for t in sorted(_tracks(db, job).values(), key=lambda t: t.index)] == [1, 2, 3, 4]
+
+
+@pytest.mark.parametrize("disc_number", [None, 2])
+async def test_identical_runtimes_off_disc_one_stay_ambiguous(disc_number: int | None) -> None:
+    job = _job(disc_number=disc_number)
+    db = _db(job, [2580] * 4)
+    provider = FakeProvider(seasons={1: _season(1, [2580] * 10)})
+
+    [outcome] = await compute_episode_claims(db, job, [provider], CFG, StageOptions())  # type: ignore[arg-type]
+
+    assert outcome.claims.extra["ambiguous"] is True
+    assert outcome.claims.suggestion is True
+
+
+async def test_disc_one_beside_a_later_sibling_is_not_ambiguous() -> None:
+    # Disc 3 holds E9-E12, splitting the season into two runs that fit the
+    # identical runtimes equally; disc 1 can only sit in the first.
+    job = _job(disc_number=1)
+    sibling = _job("job_3", disc_number=3)
+    sibling_tracks = [_track("job_3", i, 2580, episode_number=9 + i) for i in range(4)]
+    db = _db(job, [2580] * 4, sibling, extra_tracks=sibling_tracks)
+    provider = FakeProvider(seasons={1: _season(1, [2580] * 20)})
+
+    [outcome] = await compute_episode_claims(db, job, [provider], CFG, StageOptions())  # type: ignore[arg-type]
+
+    assert [outcome.claims.tracks[r].episode for r in "0123"] == [1, 2, 3, 4]
+    assert outcome.claims.extra["ambiguous"] is False
+    assert outcome.claims.suggestion is False
+
+
+async def test_disc_one_whose_first_episode_a_sibling_holds_stays_ambiguous() -> None:
+    # Disc 2 claims E1-E4, so this disc 1 cannot start at the season's first
+    # episode and its start is a guess like any other disc's.
+    job = _job(disc_number=1)
+    sibling = _job("job_2", disc_number=2)
+    sibling_tracks = [_track("job_2", i, 2580, episode_number=1 + i) for i in range(4)]
+    db = _db(job, [2580] * 4, sibling, extra_tracks=sibling_tracks)
+    provider = FakeProvider(seasons={1: _season(1, [2580] * 10)})
+
+    [outcome] = await compute_episode_claims(db, job, [provider], CFG, StageOptions())  # type: ignore[arg-type]
+
+    assert [outcome.claims.tracks[r].episode for r in "0123"] == [5, 6, 7, 8]
+    assert outcome.claims.extra["ambiguous"] is True
+    assert outcome.claims.suggestion is True
+
+
 async def test_auto_apply_off_makes_every_result_a_suggestion() -> None:
     cfg = Config(episode_auto_apply=False)
     job = _job()

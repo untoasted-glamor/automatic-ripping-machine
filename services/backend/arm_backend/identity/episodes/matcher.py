@@ -9,7 +9,9 @@ start toward the position cross-disc continuity predicts.
 
 When shifting the single-episode matches one position either way fits about as
 well, the result is flagged `ambiguous`: its positions came from the anchor or
-list order, not from runtimes.
+list order, not from runtimes. With `start_known` the anchor is a fact, not a
+prediction (disc 1 starts at the season's first episode): a mapping whose first
+match is a single at the anchor cannot shift, so it is never ambiguous.
 """
 
 from __future__ import annotations
@@ -142,6 +144,7 @@ def align(
     *,
     tolerance: int = 300,
     anchor: int | None = None,
+    start_known: bool = False,
 ) -> MatchResult:
     # Rule E: raise ValueError for invalid tolerance
     if tolerance < 1:
@@ -259,5 +262,7 @@ def align(
     # dropped, not a miss: it only held its disc position.
     counted = m - sum(1 for t in elig if t.excluded and t.ref in skipped)
     coverage = len(matches) / counted if counted else 0.0
-    ambiguous = _is_ambiguous(singles, frozenset(doubles), episodes, tolerance, ref_rt)
+    # `singles` runs back to front, so a single first match is `singles[-1]`.
+    pinned = start_known and bool(matches) and matches[0].episode_end is None and singles[-1][0] == anchor
+    ambiguous = not pinned and _is_ambiguous(singles, frozenset(doubles), episodes, tolerance, ref_rt)
     return MatchResult(tuple(matches), tuple(skipped), play_all, dp[m][best_j], coverage, ambiguous)

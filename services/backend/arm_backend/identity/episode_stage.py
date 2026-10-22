@@ -237,6 +237,13 @@ class _Request:
     tolerance: int
 
 
+def _starts_season(episodes: Sequence[Episode], remaining: Sequence[Episode], anchor: int | None) -> bool:
+    """Whether `anchor` is the season's first regular episode: where disc 1
+    is known to start, rather than predicted to."""
+    first = next((e for e in episodes if not e.special), None)
+    return first is not None and anchor is not None and anchor < len(remaining) and remaining[anchor] == first
+
+
 async def _fit_season(provider: EpisodeListProvider, req: _Request, season: int) -> _SeasonFit | None:
     try:
         episodes = await provider.season(req.show_id, season)
@@ -251,11 +258,14 @@ async def _fit_season(provider: EpisodeListProvider, req: _Request, season: int)
         n_titles=sum(1 for t in req.titles if not t.excluded),
         siblings=siblings,
     )
+    start_known = req.disc_number == 1 and _starts_season(episodes, remaining, anchor)
     nominal = _nominal(remaining, req.titles, req.tolerance)
     if nominal:
         remaining = [replace(e, runtime_s=None) for e in remaining]
     claimed = frozenset().union(*(s.episodes for s in siblings)) if siblings else frozenset()
-    result = align_runs(req.titles, remaining, claimed=claimed, tolerance=req.tolerance, anchor=anchor)
+    result = align_runs(
+        req.titles, remaining, claimed=claimed, tolerance=req.tolerance, anchor=anchor, start_known=start_known
+    )
     return _SeasonFit(result, nominal, conflict)
 
 

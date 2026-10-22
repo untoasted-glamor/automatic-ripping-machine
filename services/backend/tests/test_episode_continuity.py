@@ -157,6 +157,17 @@ def test_align_runs_equal_runs_are_ambiguous() -> None:
     assert r.ambiguous is True
 
 
+def test_align_runs_known_start_rules_out_the_other_run() -> None:
+    full = season(15)  # identical runtimes
+    claimed = frozenset(range(6, 11))
+    remaining = [e for e in full if e.number not in claimed]
+    r = align_runs(five_titles(), remaining, claimed=claimed, anchor=0, start_known=True)
+    assert [m.episode for m in r.matches] == [1, 2, 3, 4, 5]
+    assert r.ambiguous is False
+    # Without an anchor the start is not known at all.
+    assert align_runs(five_titles(), remaining, claimed=claimed, start_known=True).ambiguous is True
+
+
 def test_rank_seasons_breaks_coverage_ties_by_match_count() -> None:
     # Minor 2: equal coverage (a play-all excluded in one season shrinks its
     # denominator); more matched titles wins over a lower mean cost.
