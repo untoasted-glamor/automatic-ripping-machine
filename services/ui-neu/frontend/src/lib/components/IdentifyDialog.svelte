@@ -163,7 +163,13 @@
 <div class="modal">
 	<button type="button" class="identify-dialog-backdrop" aria-label="Close dialog" onclick={onclose}></button>
 
-	<div class="modal-panel" data-dialog role="dialog" aria-modal="true" aria-labelledby="identify-dialog-title">
+	<div
+		class="modal-panel identify-dialog-panel"
+		data-dialog
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="identify-dialog-title"
+	>
 		<h3 id="identify-dialog-title" class="modal-title">
 			{isEditMode ? 'Edit identity' : 'Identify this disc'}
 		</h3>
@@ -286,10 +292,18 @@
 		color: var(--color-text-muted);
 	}
 	/* the backdrop click-catcher sits absolutely inside .modal (which already
-	   draws the fixed scrim + centering); it just needs to fill that box */
+	   draws the fixed scrim + centering) and fills that box. The panel must
+	   stack above it: a positioned element paints over an unpositioned one,
+	   so without this every click in the form landed on the backdrop and
+	   closed the dialog (same pattern as ConfirmDialog / ApplySessionDialog). */
 	.identify-dialog-backdrop {
 		position: absolute;
 		inset: 0;
+		z-index: 0;
+	}
+	.identify-dialog-panel {
+		position: relative;
+		z-index: 1;
 	}
 	.identify-dialog-field-wide {
 		flex: 2 1 0%;

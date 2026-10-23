@@ -1193,11 +1193,17 @@
 	.files-page-sort-btn:hover {
 		color: var(--color-text-secondary);
 	}
+	/* the backdrop fills .modal's box; the panel stacks above it, or the
+	   backdrop (positioned, and z-index 50 from .modal-backdrop) takes every
+	   click in the panel and closes the dialog */
 	.files-page-modal-backdrop {
 		position: absolute;
 		inset: 0;
+		z-index: 0;
 	}
 	.files-page-orphan-panel {
+		position: relative;
+		z-index: 1;
 		display: flex;
 		width: 100%;
 		max-width: 32rem;
