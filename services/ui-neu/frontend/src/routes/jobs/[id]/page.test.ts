@@ -177,6 +177,22 @@ describe('Job detail page (v3)', () => {
 		expect(screen.getByRole('columnheader', { name: 'Kind' })).toBeInTheDocument();
 	});
 
+	it('shows a kept raw backup under the tracks, and none when there is none', async () => {
+		renderComponent(Page);
+		await waitFor(() => expect(screen.getByText('Tracks (1)')).toBeInTheDocument());
+		expect(screen.queryByTestId('raw-backup')).toBeNull();
+		cleanup();
+
+		mockFetchJob.mockResolvedValueOnce({
+			job: createJob({ id: 'job_42', status: 'ripped_partial', disc_type: 'bluray' }),
+			tracks: [createTrack({ id: 'trk_1', status: 'failed' })],
+			fingerprints: [],
+			raw_backup: { size_bytes: 1024 ** 3, complete: true }
+		});
+		renderComponent(Page);
+		await waitFor(() => expect(screen.getByTestId('raw-backup-size')).toHaveTextContent('1 GB'));
+	});
+
 	it('renders the JobLogPanel with a link to the full job log', async () => {
 		renderComponent(Page);
 		await waitFor(() => {

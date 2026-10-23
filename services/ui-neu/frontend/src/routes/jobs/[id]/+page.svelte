@@ -18,6 +18,7 @@
 	import ApplySessionDialog from '$lib/components/ApplySessionDialog.svelte';
 	import JobLifecycle from '$lib/components/JobLifecycle.svelte';
 	import ReviewGatePanel from '$lib/components/ReviewGatePanel.svelte';
+	import RawBackupRow from '$lib/components/RawBackupRow.svelte';
 	import { effectiveJobStatus, isPartialComplete } from '$lib/utils/job-status';
 	import { isAwaitingIdentity, isLive, isPostRipStatus } from '$lib/utils/job-status-groups';
 	import { fetchSessions } from '$lib/api/sessions';
@@ -703,6 +704,15 @@
 							</tbody>
 						</table>
 					</div>
+					{#if d.raw_backup}
+						<RawBackupRow
+							jobId={d.job.id}
+							backup={d.raw_backup}
+							ripping={d.job.status === 'ripping'}
+							canDelete={$isAdmin}
+							ondeleted={() => loadJob()}
+						/>
+					{/if}
 				</section>
 			{/if}
 

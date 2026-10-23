@@ -60,6 +60,11 @@ export function deleteJob(id: string, deleteRaw = false): Promise<void> {
 	return apiFetch<void>(`/api/jobs/${id}${qs}`, { method: 'DELETE' });
 }
 
+// The job's raw disc backup (`/raw/<job_id>/.backup/`) only; the rip files and the job stay.
+export function deleteJobBackup(id: string): Promise<void> {
+	return apiFetch<void>(`/api/jobs/${id}/backup`, { method: 'DELETE' });
+}
+
 export function bulkDeleteJobs(params: { job_ids?: string[]; status?: string }): Promise<BulkDeleteJobsResponse> {
 	return apiFetch<BulkDeleteJobsResponse>('/api/jobs', {
 		method: 'DELETE',
