@@ -45,6 +45,7 @@ vi.mock('$lib/api/jobs', () => ({
 		})
 	),
 	updateTrack: vi.fn(() => Promise.resolve()),
+	keepTracks: vi.fn(() => Promise.resolve()),
 	fetchNamingPreview: vi.fn(() => Promise.resolve({ job_output_dir: '', job_output_name: '', items: [] })),
 	resolveJob: vi.fn(() => Promise.resolve({ job: createJob({ id: 'job_42' }), fan_out: [] })),
 	applySession: vi.fn(() => Promise.resolve({ session_application: {}, tasks: [], collisions: [], idempotent: false })),
@@ -110,7 +111,7 @@ vi.mock('$lib/api/settings', () => ({
 	fetchSettings: vi.fn(() => Promise.resolve({ transcoder_config: { config: {} } }))
 }));
 
-import { fetchJob, updateTrack, fetchNamingPreview, setJobMediaType, startWaitingJob } from '$lib/api/jobs';
+import { fetchJob, updateTrack, fetchNamingPreview, setJobMediaType, startWaitingJob, keepTracks } from '$lib/api/jobs';
 import { dashboard } from '$lib/stores/dashboard';
 import * as authStore from '$lib/stores/auth';
 import { fetchIdentity } from '$lib/api/identity';
@@ -118,11 +119,14 @@ import { ApiError } from '$lib/api/client';
 const mockFetchJob = vi.mocked(fetchJob);
 const mockUpdateTrack = vi.mocked(updateTrack);
 const mockFetchNamingPreview = vi.mocked(fetchNamingPreview);
+const defaultFetchJob = mockFetchJob.getMockImplementation()!;
 
 describe('Job detail page (v3)', () => {
 	afterEach(() => {
 		cleanup();
 		vi.clearAllMocks();
+		// A test's own job never leaks into the next one.
+		mockFetchJob.mockImplementation(defaultFetchJob);
 	});
 
 	it('renders the job title from the JobDetailView job', async () => {
@@ -175,6 +179,53 @@ describe('Job detail page (v3)', () => {
 		});
 		// Source column was replaced by Kind + Filename; assert on the Kind header.
 		expect(screen.getByRole('columnheader', { name: 'Kind' })).toBeInTheDocument();
+	});
+
+	it('before the rip: the last kept title is locked, Keep all keeps the rest, Start needs one kept', async () => {
+		mockFetchJob.mockResolvedValue({
+			job: createJob({ id: 'job_42', status: 'awaiting_review', disc_type: 'bluray' }),
+			tracks: [
+				createTrack({ id: 'trk_1', index: 0, status: 'queued', expected_duration_seconds: 1500 }),
+				createTrack({ id: 'trk_2', index: 1, status: 'queued', excluded: true })
+			],
+			fingerprints: []
+		});
+		renderComponent(Page);
+		const kept = await screen.findByRole('checkbox', { name: 'Keep track 0' });
+		expect(kept).toBeDisabled();
+		expect(kept.getAttribute('title')).toBe('At least one title has to be kept');
+		expect(screen.getByTestId('keep-summary')).toHaveTextContent('Keeping 1 of 2 titles');
+		expect(screen.getByTestId('review-gate-start')).not.toBeDisabled();
+		await fireEvent.click(screen.getByRole('button', { name: 'Keep all' }));
+		expect(vi.mocked(keepTracks)).toHaveBeenCalledWith('job_42', ['trk_2']);
+	});
+
+	it('the gate Start waits while every title is left out', async () => {
+		mockFetchJob.mockResolvedValue({
+			job: createJob({ id: 'job_42', status: 'awaiting_review', disc_type: 'bluray' }),
+			tracks: [createTrack({ id: 'trk_1', status: 'queued', excluded: true })],
+			fingerprints: []
+		});
+		renderComponent(Page);
+		expect(await screen.findByTestId('review-gate-nothing-kept')).toBeInTheDocument();
+		expect(screen.getByTestId('review-gate-start')).toBeDisabled();
+	});
+
+	it('while ripping the boxes are locked; after it a title left out shows Skipped', async () => {
+		mockFetchJob.mockResolvedValue({
+			job: createJob({ id: 'job_42', status: 'ripping', disc_type: 'bluray' }),
+			tracks: [
+				createTrack({ id: 'trk_1', index: 0, status: 'in_progress' }),
+				createTrack({ id: 'trk_2', index: 1, status: 'queued', excluded: true })
+			],
+			fingerprints: []
+		});
+		renderComponent(Page);
+		const box = await screen.findByRole('checkbox', { name: 'Keep track 1' });
+		expect(box).toBeDisabled();
+		expect(box.getAttribute('title')).toBe("Titles can't be changed while the disc is ripping");
+		expect(screen.getByText('Skipped')).toBeInTheDocument();
+		expect(screen.queryByRole('button', { name: 'Keep all' })).toBeNull();
 	});
 
 	it('shows a kept raw backup under the tracks, and none when there is none', async () => {

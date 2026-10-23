@@ -2,12 +2,24 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderComponent, screen, fireEvent, waitFor, cleanup } from '$lib/test-utils';
 
 vi.mock('$lib/api/jobs', () => ({
-	updateTrack: vi.fn()
+	updateTrack: vi.fn(),
+	keepTracks: vi.fn(() => Promise.resolve({}))
 }));
-import { updateTrack } from '$lib/api/jobs';
+vi.mock('$lib/stores/auth', async () => {
+	const { derived, writable } = await import('svelte/store');
+	const _role = writable<string | null>('admin');
+	return {
+		isAdmin: derived(_role, (r) => r === 'admin'),
+		__setRole: (r: string | null) => _role.set(r)
+	};
+});
+import { keepTracks, updateTrack } from '$lib/api/jobs';
+import * as auth from '$lib/stores/auth';
 import ReviewTracksTable from './ReviewTracksTable.svelte';
 
 const mockUpdateTrack = vi.mocked(updateTrack);
+const mockKeepTracks = vi.mocked(keepTracks);
+const setRole = (auth as unknown as { __setRole: (r: string | null) => void }).__setRole;
 
 function track(overrides: Record<string, unknown> = {}) {
 	return {
@@ -128,5 +140,67 @@ describe('ReviewTracksTable', () => {
 		// (isVideo: true also renders a second dash in the episode column, so use getAllByText)
 		await fireEvent.click(screen.getAllByText('-')[0]);
 		expect(screen.queryByPlaceholderText('Title...')).not.toBeInTheDocument();
+	});
+});
+
+describe('Keep column (track-select S11)', () => {
+	const held = { id: 'job_1', title: 'X', year: 2000, status: 'awaiting_review' } as any;
+	const two = [
+		track({ id: 'trk_1', index: 1, expected_size_bytes: 1024 ** 3 }),
+		track({ id: 'trk_2', index: 2, excluded: true, source_ref: 't01' })
+	];
+
+	afterEach(() => {
+		setRole('admin');
+		mockKeepTracks.mockClear();
+	});
+
+	it('leaves a title out with one PATCH and says what is kept', async () => {
+		const onrefresh = vi.fn();
+		renderComponent(ReviewTracksTable, {
+			props: { job: held, tracks: [two[0], track({ id: 'trk_2', index: 2 })], isVideo: true, isMusic: false, onrefresh }
+		});
+		await fireEvent.click(screen.getByRole('checkbox', { name: 'Keep track 2' }));
+		await waitFor(() => expect(mockUpdateTrack).toHaveBeenCalledWith('job_1', 'trk_2', { excluded: true }));
+		expect(onrefresh).toHaveBeenCalled();
+		expect(screen.getByTestId('review-keep-summary')).toHaveTextContent('Keeping 2 of 2 titles');
+	});
+
+	it('the last kept title cannot be left out before the rip', () => {
+		renderComponent(ReviewTracksTable, { props: { job: held, tracks: two, isVideo: true, isMusic: false } });
+		expect(screen.getByRole('checkbox', { name: 'Keep track 1' })).toBeDisabled();
+		expect(screen.getByRole('checkbox', { name: 'Keep track 2' })).not.toBeDisabled();
+		expect(screen.getByTestId('review-keep-summary')).toHaveTextContent('Keeping 1 of 2 titles, ~1 GB, 1:00:00');
+	});
+
+	it('Keep all keeps every left-out title', async () => {
+		renderComponent(ReviewTracksTable, { props: { job: held, tracks: two, isVideo: true, isMusic: false } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Keep all' }));
+		expect(mockKeepTracks).toHaveBeenCalledWith('job_1', ['trk_2']);
+	});
+
+	it('a 409 reverts the box and shows why', async () => {
+		mockUpdateTrack.mockRejectedValueOnce(new Error('track trk_2 has no ripped file'));
+		renderComponent(ReviewTracksTable, {
+			props: { job: { ...held, status: 'ripped' }, tracks: two, isVideo: true, isMusic: false }
+		});
+		const box = screen.getByRole('checkbox', { name: 'Keep track 2' }) as HTMLInputElement;
+		await fireEvent.click(box);
+		await waitFor(() => expect(screen.getByText(/track trk_2 has no ripped file/)).toBeInTheDocument());
+		expect(box.checked).toBe(false);
+		expect(screen.queryByRole('button', { name: 'Keep all' })).toBeNull();
+	});
+
+	it('a reader sees Kept / Left out, and scanned titles have no Keep column', () => {
+		setRole(null);
+		renderComponent(ReviewTracksTable, { props: { job: held, tracks: two, isVideo: true, isMusic: false } });
+		expect(screen.queryByRole('checkbox')).toBeNull();
+		expect(screen.getByText('Left out')).toBeInTheDocument();
+		cleanup();
+		renderComponent(ReviewTracksTable, {
+			props: { job: held, tracks: [], scanTitles: [scanTitle()], isVideo: true, isMusic: false }
+		});
+		expect(screen.queryByRole('columnheader', { name: 'Keep' })).toBeNull();
+		expect(screen.queryByTestId('review-keep-summary')).toBeNull();
 	});
 });

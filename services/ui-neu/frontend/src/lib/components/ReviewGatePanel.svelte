@@ -17,11 +17,13 @@
 		waitSeconds: number;
 		/** Global ripping pause. */
 		paused?: boolean;
+		/** Kept tracks, when the job has track rows: none kept, nothing to rip. */
+		keptCount?: number | null;
 		/** The job changed (started, or its countdown paused): reload it. */
 		onchanged?: () => void;
 	}
 
-	let { job, requiresConfirm, waitSeconds, paused = false, onchanged }: Props = $props();
+	let { job, requiresConfirm, waitSeconds, paused = false, keptCount = null, onchanged }: Props = $props();
 
 	let busy = $state(false);
 	let error = $state<string | null>(null);
@@ -40,6 +42,7 @@
 						? 'The countdown is paused for this disc.'
 						: 'The rip starts by itself when the countdown ends.'
 	);
+	const nothingKept = $derived(keptCount === 0 && !previousRip);
 	const startLabel = $derived(previousRip ? 'Rip again' : awaitingConfirm ? 'Confirm & start rip' : 'Start rip now');
 
 	async function run(action: () => Promise<unknown>, failure: string) {
@@ -74,12 +77,23 @@
 		{/if}
 	</div>
 	<p class="review-gate-panel-text">{message}</p>
+	{#if nothingKept}
+		<p class="review-gate-panel-error" data-testid="review-gate-nothing-kept">
+			Keep at least one title to start the rip.
+		</p>
+	{/if}
 	{#if error}
 		<p class="review-gate-panel-error" role="alert">{error}</p>
 	{/if}
 	{#if $isAdmin}
 		<div>
-			<button type="button" class="btn btn-primary" data-testid="review-gate-start" onclick={start} disabled={busy}>
+			<button
+				type="button"
+				class="btn btn-primary"
+				data-testid="review-gate-start"
+				onclick={start}
+				disabled={busy || nothingKept}
+			>
 				{busy ? 'Working...' : startLabel}
 			</button>
 		</div>

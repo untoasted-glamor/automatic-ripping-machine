@@ -96,6 +96,24 @@ const POST_RIP: Record<JobStatus, boolean> = {
 	failed: false
 };
 
+const PRE_RIP: Record<JobStatus, boolean> = {
+	created: true,
+	awaiting_user_id: true,
+	identified: true,
+	awaiting_review: true,
+	ripping: false,
+	ripped: false,
+	ripped_partial: false,
+	ripped_awaiting_identify: false,
+	abandoned: false,
+	failed: false
+};
+
+/** The rip hasn't started: which titles get ripped can still change. */
+export function isPreRipStatus(status: string): boolean {
+	return PRE_RIP[status as JobStatus] === true;
+}
+
 /** The rip has finished (the disc is post-rip, whatever happens next). */
 export function isPostRipStatus(status: string): boolean {
 	return POST_RIP[status as JobStatus] === true;

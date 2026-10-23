@@ -117,6 +117,11 @@ export function updateTrack(
 	return patchJob(jobId, { tracks: [{ track_id: trackId, ...data }] });
 }
 
+// Keep every listed track again (the Keep all action), in one PATCH.
+export function keepTracks(jobId: string, trackIds: string[]): Promise<JobView> {
+	return patchJob(jobId, { tracks: trackIds.map((track_id) => ({ track_id, excluded: false })) });
+}
+
 // Job-level edit. v3 only accepts poster_url_manual on the JOB (title/year live
 // behind identify/resolve). Pass through whatever maps; the rest is dropped.
 export function updateJobTitle(jobId: string, data: { poster_url_manual?: string | null }): Promise<JobView> {

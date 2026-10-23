@@ -180,6 +180,18 @@ describe('DiscReviewWidget', () => {
 			await waitFor(() => expect(mockStart).toHaveBeenCalledWith('job_9'));
 		});
 
+		it('Start rip waits while every track is left out', async () => {
+			mockFetchJob.mockResolvedValue(
+				detail({ title: 'Test Movie', disc_type: 'bluray', status: 'awaiting_review' }, [
+					createTrack({ id: 'trk_1', excluded: true })
+				])
+			);
+			renderWidget({ id: 'job_9', status: 'awaiting_review', title: 'Test Movie' });
+			const btn = await screen.findByRole('button', { name: 'Start rip' });
+			await waitFor(() => expect(btn).toBeDisabled());
+			expect(btn.getAttribute('title')).toBe('Keep at least one title to start the rip');
+		});
+
 		it('Start rip saves (resolveJob) before starting an awaiting_user_id job', async () => {
 			const { resolveJob } = await import('$lib/api/jobs');
 			const mockResolve = vi.mocked(resolveJob);

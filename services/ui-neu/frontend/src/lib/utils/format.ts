@@ -167,7 +167,9 @@ const STATUS_LABELS: Record<string, string> = {
 	cancelled: 'Cancelled',
 	waiting_identify: 'Waiting to identify',
 	running: 'Running',
-	done_partial: 'Done (partial)'
+	done_partial: 'Done (partial)',
+	// a track left out before the rip, so never ripped (job page)
+	skipped: 'Skipped'
 };
 
 export function statusLabel(status: string | null | undefined): string {

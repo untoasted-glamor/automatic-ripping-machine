@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
-	import { fetchJob, fetchNamingPreview, updateTrack } from '$lib/api/jobs';
+	import { fetchJob, fetchNamingPreview, keepTracks } from '$lib/api/jobs';
 	import { ApiError } from '$lib/api/client';
 	import { posterSrc, posterFallback, jobPoster } from '$lib/utils/poster';
 	import PosterImage from '$lib/components/PosterImage.svelte';
@@ -20,7 +20,9 @@
 	import ReviewGatePanel from '$lib/components/ReviewGatePanel.svelte';
 	import RawBackupRow from '$lib/components/RawBackupRow.svelte';
 	import { effectiveJobStatus, isPartialComplete } from '$lib/utils/job-status';
-	import { isAwaitingIdentity, isLive, isPostRipStatus } from '$lib/utils/job-status-groups';
+	import { isAwaitingIdentity, isLive, isPostRipStatus, isPreRipStatus } from '$lib/utils/job-status-groups';
+	import { keepLockedReason, keepSummary, trackRipStatus } from '$lib/utils/track-keep';
+	import TrackKeepToggle from '$lib/components/TrackKeepToggle.svelte';
 	import { fetchSessions } from '$lib/api/sessions';
 	import { buildMetadataFields, readJobMetadata } from '$lib/utils/job-fields';
 	import { extractMusicTracks } from '$lib/utils/music-tracks';
@@ -63,7 +65,7 @@
 		matchingTimer = null;
 	}
 	let editingTrackId = $state<string | null>(null);
-	// Why the last Include toggle was refused (shown above the Tracks table).
+	// Why the last Keep change was refused (shown above the Tracks table).
 	let trackError = $state<string | null>(null);
 	let previewItems = $state<NamingPreviewItem[]>([]);
 	// The last preview answered 409 (no routed session, so no template). The
@@ -148,23 +150,14 @@
 		loadJob();
 	}
 
-	async function toggleExcluded(trackId: string, input: HTMLInputElement) {
-		const excluded = !input.checked;
+	async function keepAll(trackIds: string[]) {
 		trackError = null;
 		try {
-			await updateTrack($page.params.id ?? '', trackId, { excluded });
+			await keepTracks($page.params.id ?? '', trackIds);
 		} catch (e) {
-			// e.g. a 409 for re-including a track that has no ripped file. Show the
-			// backend's reason, and undo the click directly: the server value is
-			// unchanged, so the refetch below re-renders nothing to restore the box.
-			trackError = `Could not update the track: ${e instanceof Error ? e.message : 'unknown error'}`;
-			// Checked means included and the refused request was `excluded`, so the
-			// pre-click state is checked === excluded.
-			input.checked = excluded;
+			trackError = `Could not update the tracks: ${e instanceof Error ? e.message : 'unknown error'}`;
 		} finally {
-			// Refetch regardless: on success to pick up new naming/derived state,
-			// on failure to pick up anything else that changed meanwhile.
-			await loadJob();
+			loadJob();
 		}
 	}
 
@@ -308,6 +301,10 @@
 	{#snippet ready(d)}
 		{@const job = d.job}
 		{@const tracks = d.tracks}
+		{@const keptCount = tracks.filter((t) => !t.excluded).length}
+		{@const preRip = isPreRipStatus(job.status)}
+		{@const ripStarted = job.status === 'ripping' || isPostRipStatus(job.status)}
+		{@const keepNoun = job.disc_type === 'cd' ? 'tracks' : 'titles'}
 		<div class="stack-lg stack">
 			<!-- Breadcrumb -->
 			<nav class="job-detail-breadcrumb">
@@ -496,6 +493,7 @@
 					requiresConfirm={$dashboard.review_requires_confirm ?? false}
 					waitSeconds={$dashboard.manual_wait_seconds ?? 60}
 					paused={!$dashboard.ripping_enabled}
+					keptCount={tracks.length > 0 ? keptCount : null}
 					onchanged={() => loadJob()}
 				/>
 			{/if}
@@ -547,7 +545,7 @@
 									<th class="table-header">Filename</th>
 									<th class="table-header">Length</th>
 									<th class="table-header">Size</th>
-									<th class="table-header">Include</th>
+									<th class="table-header">Keep</th>
 									<th class="table-header">Rip</th>
 									<th class="table-header">Transcode</th>
 								</tr>
@@ -646,23 +644,24 @@
 											{:else}-{/if}
 										</td>
 										<td class="table-cell job-detail-track-kind" data-label="Size">{trackSizeLabel(track)}</td>
-										<td class="table-cell" data-label="Include">
+										<td class="table-cell" data-label="Keep">
 											{#if $isAdmin}
-												<input
-													type="checkbox"
-													checked={!track.excluded}
-													onchange={(e) => toggleExcluded(track.id, e.currentTarget as HTMLInputElement)}
-													title="Include this track. A title excluded before the rip starts is not ripped; one excluded later is left out of transcodes."
-													class="job-detail-track-checkbox"
+												<TrackKeepToggle
+													jobId={job.id}
+													{track}
+													lockedReason={keepLockedReason(job.status)}
+													lastKept={preRip && keptCount === 1}
+													onchanged={() => loadJob()}
+													onerror={(message) => (trackError = message)}
 												/>
 											{:else}
-												<span class="job-detail-track-untitled">{track.excluded ? 'Excluded' : 'Included'}</span>
+												<span class="job-detail-track-untitled">{track.excluded ? 'Left out' : 'Kept'}</span>
 											{/if}
 										</td>
 										<!-- Rip outcome -->
 										<td class="table-cell" data-label="Rip">
 											<span class="flex items-center gap-1">
-												<StatusBadge status={track.status} />
+												<StatusBadge status={trackRipStatus(track, ripStarted)} />
 												{#if track.attempts > 1}
 													<span class="job-detail-track-attempts" title="Rip attempts">x{track.attempts}</span>
 												{/if}
@@ -703,6 +702,18 @@
 								{/each}
 							</tbody>
 						</table>
+					</div>
+					<div class="job-detail-keep-footer">
+						<span data-testid="keep-summary">{keepSummary(tracks, keepNoun)}</span>
+						{#if $isAdmin && preRip && keptCount < tracks.length}
+							<button
+								type="button"
+								class="btn job-detail-keep-all"
+								onclick={() => keepAll(tracks.filter((t) => t.excluded).map((t) => t.id))}
+							>
+								Keep all
+							</button>
+						{/if}
 					</div>
 					{#if d.raw_backup}
 						<RawBackupRow
@@ -1088,11 +1099,18 @@
 		max-width: 260px;
 		color: var(--color-text-secondary);
 	}
-	.job-detail-track-checkbox {
-		width: 1rem;
-		height: 1rem;
-		border-radius: var(--radius-sm);
-		accent-color: var(--color-primary);
+	.job-detail-keep-footer {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+		margin-top: 0.75rem;
+		font-size: 0.875rem;
+		color: var(--color-text-muted);
+	}
+	.job-detail-keep-all {
+		padding: 0.25rem 0.625rem;
+		font-size: 0.75rem;
 	}
 	.job-detail-track-attempts {
 		font-size: 10px;

@@ -1,7 +1,11 @@
 <script lang="ts">
 	import type { JobView, TrackView, ScanTitle } from '$lib/types/api.gen';
-	import { updateTrack } from '$lib/api/jobs';
+	import { keepTracks, updateTrack } from '$lib/api/jobs';
+	import { isAdmin } from '$lib/stores/auth';
+	import { isPreRipStatus } from '$lib/utils/job-status-groups';
 	import { trackToRow, scanTitleToRow } from '$lib/utils/review-rows';
+	import { keepLockedReason, keepSummary } from '$lib/utils/track-keep';
+	import TrackKeepToggle from './TrackKeepToggle.svelte';
 	import TrackTitleSearch from './TrackTitleSearch.svelte';
 
 	interface Props {
@@ -19,6 +23,25 @@
 
 	let openSearchTrackIds = $state<Set<string>>(new Set());
 	let errorMessage = $state<string | null>(null);
+
+	// The Keep column needs track rows; scanned titles are read-only.
+	let trackById = $derived(new Map(tracks.map((t) => [t.id, t])));
+	let keptCount = $derived(tracks.filter((t) => !t.excluded).length);
+	let preRip = $derived(isPreRipStatus(job.status));
+
+	async function keepAll() {
+		errorMessage = null;
+		try {
+			await keepTracks(
+				job.id,
+				tracks.filter((t) => t.excluded).map((t) => t.id)
+			);
+		} catch (e) {
+			errorMessage = `Failed to update tracks: ${e instanceof Error ? e.message : 'Unknown error'}`;
+		} finally {
+			onrefresh?.();
+		}
+	}
 
 	async function handleTrackFieldUpdate(
 		trackId: string,
@@ -80,6 +103,7 @@
 				<table class="table review-tracks-table">
 					<thead>
 						<tr>
+							{#if tracks.length}<th class="table-header w-8">Keep</th>{/if}
 							<th class="table-header">#</th>
 							<th class="table-header">{isMusic ? 'Name' : 'Title'}</th>
 							{#if isVideo}<th class="table-header review-tracks-table-center">Episode</th>{/if}
@@ -91,6 +115,24 @@
 					<tbody>
 						{#each rows as row (row.trackId ?? `scan-${row.index}`)}
 							<tr class="table-row" data-disabled={row.excluded}>
+								{#if tracks.length}
+									<td class="table-cell">
+										{#if row.trackId && trackById.get(row.trackId)}
+											{#if $isAdmin}
+												<TrackKeepToggle
+													jobId={job.id}
+													track={trackById.get(row.trackId)!}
+													lockedReason={keepLockedReason(job.status)}
+													lastKept={preRip && keptCount === 1}
+													onchanged={() => onrefresh?.()}
+													onerror={(message) => (errorMessage = message)}
+												/>
+											{:else}
+												<span class="review-tracks-table-faint">{row.excluded ? 'Left out' : 'Kept'}</span>
+											{/if}
+										{/if}
+									</td>
+								{/if}
 								<td class="table-cell mono">{row.index}</td>
 								<td
 									class="table-cell {isVideo && row.trackId ? 'review-tracks-table-clickable' : ''}"
@@ -167,6 +209,14 @@
 					</tbody>
 				</table>
 			</div>
+			{#if tracks.length}
+				<div class="review-tracks-table-keep">
+					<span data-testid="review-keep-summary">{keepSummary(tracks, isMusic ? 'tracks' : 'titles')}</span>
+					{#if $isAdmin && preRip && keptCount < tracks.length}
+						<button type="button" class="btn review-tracks-table-keep-all" onclick={keepAll}>Keep all</button>
+					{/if}
+				</div>
+			{/if}
 		</div>
 	{:else}
 		<p class="review-tracks-table-empty">No tracks yet.</p>
@@ -177,6 +227,19 @@
 	.review-tracks-table-wrap {
 		border-top: 1px solid var(--color-border);
 		padding: 1rem;
+	}
+	.review-tracks-table-keep {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+		margin-top: 0.5rem;
+		font-size: 0.75rem;
+		color: var(--color-text-muted);
+	}
+	.review-tracks-table-keep-all {
+		padding: 0.125rem 0.5rem;
+		font-size: 0.75rem;
 	}
 	.review-tracks-table-scroll {
 		border: 1px solid var(--color-border);

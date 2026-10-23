@@ -73,6 +73,8 @@
 	let errorMessage = $state<string | null>(null);
 
 	let tracks = $derived<TrackView[]>(data?.tracks ?? []);
+	// Every track left out: nothing to rip, so Start waits for one to be kept.
+	let nothingKept = $derived(tracks.length > 0 && tracks.every((t) => t.excluded));
 	// Same cut as the backend's Track rows: titles under the scan's minimum are hidden.
 	let scanTitles = $derived(listedScanTitles(data?.job?.metadata_json?.scan_result));
 
@@ -469,9 +471,13 @@
 			{#if canStart && $isAdmin}
 				<button
 					onclick={handleStartRip}
-					disabled={starting}
+					disabled={starting || (nothingKept && !previousId)}
 					class="btn disc-review-widget-success-btn"
-					title={previousId ? 'Rip this disc again' : 'Save the metadata and start ripping this disc'}
+					title={previousId
+						? 'Rip this disc again'
+						: nothingKept
+							? 'Keep at least one title to start the rip'
+							: 'Save the metadata and start ripping this disc'}
 				>
 					{starting ? 'Starting...' : previousId ? 'Rip again' : awaitingConfirm ? 'Confirm & start rip' : 'Start rip'}
 				</button>
