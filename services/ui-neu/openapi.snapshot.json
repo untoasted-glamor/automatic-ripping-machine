@@ -18779,7 +18779,8 @@
           "episode",
           "extra",
           "trailer",
-          "other"
+          "other",
+          "play_all"
         ],
         "title": "TrackRole",
         "description": "What one title on a disc is. Set by identity sources via the resolver\n(arm_backend.identity) or by the operator; replaces the old free-text\nrole and the per-track video_type."

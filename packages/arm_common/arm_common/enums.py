@@ -198,6 +198,9 @@ class TrackRole(StrEnum):
     EXTRA = "extra"
     TRAILER = "trailer"
     OTHER = "other"
+    # Plays other titles back to back. Set by the review gate's detector
+    # (arm_backend.track_selection) or the operator; starts left out.
+    PLAY_ALL = "play_all"
 
 
 class MediaType(StrEnum):

@@ -4954,7 +4954,7 @@ export type TrackKind = 'video_title' | 'audio_track' | 'data_dump' | 'disc_back
  * (arm_backend.identity) or by the operator; replaces the old free-text
  * role and the per-track video_type.
  */
-export type TrackRole = 'main' | 'episode' | 'extra' | 'trailer' | 'other';
+export type TrackRole = 'main' | 'episode' | 'extra' | 'trailer' | 'other' | 'play_all';
 
 /**
  * TrackSelection

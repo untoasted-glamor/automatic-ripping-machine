@@ -1,4 +1,5 @@
 from arm_common import TrackStatus, DiscType, OutputMode, RipPreset, Track, TrackKind, TrackSelection
+from arm_common.enums import TrackRole
 from arm_common.schemas import ScanResult, ScanTitle, TrackFilters
 
 MAIN_FEATURE_MIN_SECONDS = 45 * 60
@@ -172,6 +173,75 @@ def select_tracks(job_id: str, scan: ScanResult, rip_preset: RipPreset) -> list[
     raise TrackSelectionError(f"cannot select tracks for disc_type={scan.disc_type}")
 
 
+# A play-all plays other titles back to back, so ripping it duplicates them.
+# In review it starts left out with `role=play_all` (track-select plan S12);
+# the provenance names no identity source, so the resolver leaves the role
+# alone until a source (e.g. TheDiscDB) or the operator says otherwise.
+PLAY_ALL_DETECTOR = "play_all_detector"
+# Share of a play-all's length its parts must cover (Blu-ray clip lists).
+_PLAY_ALL_MIN_COVERAGE = 0.95
+# Without clip lists: a title whose length matches the sum of the others,
+# all of them or those at least this long (so short extras don't spoil it).
+_PLAY_ALL_PART_MIN_SECONDS = 10 * 60
+_PLAY_ALL_TOLERANCE_SECONDS = 30
+_PLAY_ALL_TOLERANCE_SHARE = 0.01
+
+
+def _clip_list(title: ScanTitle) -> list[int] | None:
+    """A Blu-ray title's clips in play order (TINFO 26, `14,15,16`), or None.
+    A DVD's cell map (`1-6,7-12`) doesn't compare across titles."""
+    if not title.segment_map:
+        return None
+    try:
+        return [int(part) for part in title.segment_map.split(",")]
+    except ValueError:
+        return None
+
+
+def _plays_others_by_clips(title: ScanTitle, others: list[ScanTitle]) -> bool:
+    """Two or more other titles' clip lists appear in `title`'s, each as an
+    in-order run, not overlapping, and cover most of its length."""
+    clips = _clip_list(title)
+    if clips is None or title.duration_seconds is None:
+        return False
+    spans: list[tuple[int, int, int]] = []
+    for other in others:
+        part = _clip_list(other)
+        if not part or len(part) >= len(clips) or other.duration_seconds is None:
+            continue
+        n = len(part)
+        start = next((i for i in range(len(clips) - n + 1) if clips[i : i + n] == part), None)
+        if start is not None:
+            spans.append((start, start + n, other.duration_seconds))
+    covered, count, end = 0, 0, 0
+    for start, stop, seconds in sorted(spans):
+        if start >= end:
+            covered, count, end = covered + seconds, count + 1, stop
+    return count >= 2 and covered >= _PLAY_ALL_MIN_COVERAGE * title.duration_seconds
+
+
+def _plays_others_by_length(title: ScanTitle, others: list[ScanTitle]) -> bool:
+    """`title` lasts as long as two or more of the others together: all of
+    them, or those of at least `_PLAY_ALL_PART_MIN_SECONDS`."""
+    if title.duration_seconds is None:
+        return False
+    known = [o.duration_seconds for o in others if o.duration_seconds is not None]
+    tolerance = max(_PLAY_ALL_TOLERANCE_SHARE * title.duration_seconds, _PLAY_ALL_TOLERANCE_SECONDS)
+    for parts in (known, [s for s in known if s >= _PLAY_ALL_PART_MIN_SECONDS]):
+        if len(parts) >= 2 and abs(sum(parts) - title.duration_seconds) <= tolerance:
+            return True
+    return False
+
+
+def play_all_indexes(disc_type: DiscType, titles: list[ScanTitle]) -> set[int]:
+    """The titles that look like play-alls. A Blu-ray with clip lists is
+    judged by them alone; any other disc by length. A title of unknown
+    length never matches."""
+    by_clips = disc_type == DiscType.BLURAY and any(_clip_list(t) for t in titles)
+    plays_others = _plays_others_by_clips if by_clips else _plays_others_by_length
+    return {t.index for t in titles if plays_others(t, [o for o in titles if o.index != t.index])}
+
+
 def select_tracks_for_review(job_id: str, scan: ScanResult, rip_preset: RipPreset) -> list[Track]:
     """Persist EVERY scanned title as a Track for the timed review gate, marking
     preset-rejected titles `excluded=True` (the default keep/drop set) so the
@@ -183,6 +253,10 @@ def select_tracks_for_review(job_id: str, scan: ScanResult, rip_preset: RipPrese
 
     A whole-disc track (a DATA disc, the ISO dump, the FOLDER backup) has no
     per-title list: review persistence is the single track `select_tracks` makes.
+
+    A likely play-all (`play_all_indexes`) starts left out whatever the
+    preset says, with `role=play_all` so the review UI can say why. Only
+    here: with the review gate off nobody would see the call (plan S12, Q1).
     """
     whole = _whole_disc_tracks(job_id, scan, rip_preset)
     if whole is not None:
@@ -190,9 +264,15 @@ def select_tracks_for_review(job_id: str, scan: ScanResult, rip_preset: RipPrese
 
     kept_refs = {t.source_ref for t in select_tracks(job_id, scan, rip_preset)}
     is_cd = scan.disc_type == DiscType.CD
+    titles = scan.titles if is_cd else _listed_video_titles(scan)
+    play_alls = set() if is_cd else play_all_indexes(scan.disc_type, titles)
     rows: list[Track] = []
-    for title in scan.titles if is_cd else _listed_video_titles(scan):
+    for title in titles:
         track = _audio_track(job_id, title) if is_cd else _video_track(job_id, title)
         track.excluded = str(title.index) not in kept_refs
+        if title.index in play_alls:
+            track.excluded = True
+            track.role = TrackRole.PLAY_ALL
+            track.identity_provenance = {"role": PLAY_ALL_DETECTOR}
         rows.append(track)
     return rows
