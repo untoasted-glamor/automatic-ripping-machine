@@ -23,7 +23,9 @@ import errno
 import hashlib
 import logging
 import os
+import shutil as shutil_module
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -43,6 +45,25 @@ from arm_ripper.rip.dispatcher import rip_all
 from arm_ripper.rip.makemkv_rip import RipDiscResult, RipResult
 from arm_ripper.scan.disc_probe import DiscProbe
 from tests._makemkvcon_fake import ACCA_DVD, HANAKO_BD, SINTEL_ISO, Recording, file_size, install
+
+
+_GB = 1_000_000_000
+
+
+def _set_free_space(monkeypatch, free: int) -> None:
+    """`/raw`'s free space as the OS reports it (S8's preflight reads it)."""
+
+    def disk_usage(_path: Any) -> Any:
+        return SimpleNamespace(total=10 * free, used=9 * free, free=free)
+
+    monkeypatch.setattr(shutil_module, "disk_usage", disk_usage)
+
+
+@pytest.fixture(autouse=True)
+def _plenty_of_space(monkeypatch):
+    """A roomy `/raw`, so no test depends on the host's disk (the recorded
+    Blu-ray backs up ~46 GB); S8's tests set their own."""
+    _set_free_space(monkeypatch, 10_000 * _GB)
 
 
 def _track(idx: int, source_ref: str | None = None, duration_seconds: int | None = 1800) -> TrackView:
@@ -2279,3 +2300,102 @@ async def test_a_cd_with_every_track_excluded_runs_no_abcde(monkeypatch, tmp_pat
     assert abcde.argvs == []
     assert started == []
     assert reports == {"trk_1": [], "trk_2": []}
+
+
+# --- disk-space preflight before a backup (S8) --------------------------------
+
+
+async def test_not_enough_space_fails_the_kept_tracks_before_the_drive_is_read(monkeypatch, tmp_path):
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    _set_free_space(monkeypatch, 20 * _GB)
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+
+    reports, _ = await _rip_tracks(tracks, tmp_path / "job", scan_titles=scan.titles)
+
+    results = _results(reports)
+    assert set(results) == {t.id for t in tracks if t.index != 7}
+    for result in results.values():
+        assert result.ok is False
+        assert (result.error or "").startswith(f"not enough space on {tmp_path}: need ~")
+        assert "have 20.0 GB free" in (result.error or "")
+    assert fake.invocations == []
+    assert not (tmp_path / "job" / ".backup").exists()
+
+
+async def test_a_play_all_is_not_counted_twice(monkeypatch, tmp_path):
+    """The Hanako-kun titles add up to 92.5 GB, but the play-all holds the
+    episodes' clips: the backup needs about the disc (46.5 GB), so 60 GB
+    free is enough for it plus one 6.6 GB episode."""
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    _set_free_space(monkeypatch, 60 * _GB)
+    assert sum(t.size_bytes or 0 for t in scan.titles) > 90 * _GB
+    tracks = _exclude(_rip_start_tracks(scan), 1, 2, 3, 4, 5, 6, 7)
+
+    reports, _ = await _rip_tracks(tracks, tmp_path / "job", scan_titles=scan.titles)
+
+    assert _results(reports)["trk_0"].ok is True, _results(reports)["trk_0"].error
+    assert [inv.command for inv in fake.drive_reads] == ["backup"]
+
+
+async def test_the_space_message_names_backups_other_jobs_keep(monkeypatch, tmp_path):
+    _, scan = await _bd_job(monkeypatch, tmp_path)
+    _set_free_space(monkeypatch, 30 * _GB)
+    other = tmp_path / "job_older" / ".backup" / "disc" / "BDMV" / "STREAM"
+    other.mkdir(parents=True)
+    with (other / "00014.m2ts").open("wb") as f:
+        f.truncate(25 * _GB)  # sparse: costs nothing here
+    (tmp_path / "job_folder" / "backup").mkdir(parents=True)  # a FOLDER preset's output is not scratch
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+
+    reports, _ = await _rip_tracks(tracks, tmp_path / "job", scan_titles=scan.titles)
+
+    error = _results(reports)["trk_0"].error or ""
+    assert "1 other job(s) keep a disc backup in <job>/.backup/" in error
+    assert "job_older (25.0 GB)" in error
+    assert "job_folder" not in error
+
+
+async def test_a_resume_checks_the_space_of_the_job_not_its_resume_folder(monkeypatch, tmp_path):
+    """A resume rips into `<job>/resume-N` with the backup in `<job>/.backup`:
+    the message names `/raw`, and the job's own unfinished backup is cleared
+    first so it isn't listed as another job's."""
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    _set_free_space(monkeypatch, 20 * _GB)
+    job = tmp_path / "job"
+    (job / ".backup" / "disc").mkdir(parents=True)  # cut short by the drive drop: no `.complete`
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+
+    reports, _ = await _rip_tracks(tracks, job / "resume-1", scan_titles=scan.titles, backup_dir=job / ".backup")
+
+    error = _results(reports)["trk_0"].error or ""
+    assert error.startswith(f"not enough space on {tmp_path}: need ~")
+    assert "other job" not in error
+    assert fake.invocations == []
+
+
+async def test_a_folder_preset_backup_is_refused_when_the_disc_wont_fit(monkeypatch, tmp_path):
+    """W6: upstream's FOLDER backup gets the same check (the backup alone)."""
+    _, scan = await _bd_job(monkeypatch, tmp_path)
+    fake = install(monkeypatch, disc=HANAKO_BD)
+    _set_free_space(monkeypatch, 40 * _GB)
+    backup = _track(0, source_ref="full").model_copy(update={"kind": TrackKind.DISC_BACKUP})
+
+    reports, started = await _rip_tracks([backup], tmp_path / "job", scan_titles=scan.titles)
+
+    (result,) = reports[backup.id]
+    assert result.ok is False
+    assert "(disc backup ~46.5 GB + kept titles ~0.0 GB), have 40.0 GB free" in (result.error or "")
+    assert started == [backup.id]
+    assert fake.invocations == []
+
+
+async def test_a_folder_preset_backup_with_room_proceeds(monkeypatch, tmp_path):
+    _, scan = await _bd_job(monkeypatch, tmp_path)
+    fake = install(monkeypatch, disc=HANAKO_BD)
+    _set_free_space(monkeypatch, 60 * _GB)
+    backup = _track(0, source_ref="full").model_copy(update={"kind": TrackKind.DISC_BACKUP})
+
+    reports, _ = await _rip_tracks([backup], tmp_path / "job", scan_titles=scan.titles)
+
+    assert reports[backup.id][0].ok is True, reports[backup.id][0].error
+    assert [inv.command for inv in fake.drive_reads] == ["backup"]

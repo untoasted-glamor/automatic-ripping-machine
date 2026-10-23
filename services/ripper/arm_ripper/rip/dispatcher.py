@@ -29,6 +29,7 @@ from arm_ripper.rip.makemkv_rip import (
     remux_title,
     rip_disc,
 )
+from arm_ripper.rip.preflight import check_backup_space
 from arm_ripper.rip.title_hasher import OnHashed, TitleHasher
 from arm_ripper.rip.title_map import match_titles
 from arm_ripper.scan.makemkv import ScanError, list_source_titles
@@ -131,7 +132,7 @@ async def rip_all(
       (`ARM_BACKUP_FULL_SELECTIONS`) sends full selections from a drive
       down this path too.
     - Any disc whose tracks are all DISC_BACKUP: one `makemkvcon backup --decrypt disc:<N>` (`rip_backup`) for the
-      first track.
+      first track, once `/raw` is shown to have room for it (when a scan is stored).
     - CD: mark the kept tracks IN_PROGRESS, run abcde once with them as its
       track list, then emit DONE/FAILED per track from the bulk result.
       Excluded tracks are never read and get no callbacks, as on DVD/BD.
@@ -145,6 +146,20 @@ async def rip_all(
             if on_track_progress is not None:
                 await on_track_progress(backup, fraction)
 
+        # Room for the whole disc before the drive is touched; with no stored
+        # scan there is nothing to estimate from.
+        if scan_titles is not None:
+            shortfall = check_backup_space(
+                output_dir,
+                titles=scan_titles,
+                disc_type=disc_type,
+                kept_bytes=0,
+                backup_dirname=SELECTION_BACKUP_DIRNAME,
+            )
+            if shortfall is not None:
+                logger.warning("not backing up the disc: %s", shortfall)
+                await on_track_done(backup, RipResult(ok=False, error=shortfall))
+                return
         # MakeMKV's `backup` takes a drive only as `disc:<N>` (`dev:` is refused).
         try:
             source = await backup_source(device_path)
@@ -711,7 +726,9 @@ async def _rip_kept_titles(
     """Backup-then-remux (track-select plan D1): rip only the kept titles.
 
     1. A drive is read once: `rip_backup` of the whole disc into
-       `backup_dir`, taken as `selection_backup` says, and marked complete.
+       `backup_dir`, taken as `selection_backup` says, and marked complete,
+       after checking `/raw` has room for it and the kept titles
+       (`check_backup_space`; short, every kept track fails with the numbers).
        A backup an earlier pass of this job finished is reused, so a resume
        reads the drive no more. An ISO or folder source is read directly.
     2. The source's titles are listed and each kept disc-scan title is found
@@ -772,6 +789,25 @@ async def _rip_kept_titles(
             source_url = reused
             logger.info("remuxing %d title(s) from the finished disc backup %s; no drive read", len(to_rip), reused)
         else:
+            # An unfinished backup from an earlier pass is no use; its space
+            # counts as free for the check below.
+            shutil.rmtree(backup_dir, ignore_errors=True)
+            # Room for the whole disc plus the kept titles, before the drive
+            # is touched: running out mid-backup wastes the read and fills /raw.
+            shortfall = check_backup_space(
+                backup_dir.parent,
+                titles=scan_titles,
+                disc_type=disc_type,
+                kept_bytes=sum(
+                    scan_by_index[idx].size_bytes or pending[idx].expected_size_bytes or 0 for idx in to_rip
+                ),
+                backup_dirname=SELECTION_BACKUP_DIRNAME,
+            )
+            if shortfall is not None:
+                logger.warning("not backing up the disc: %s", shortfall)
+                for idx in to_rip:
+                    await fail(idx, shortfall)
+                return
             try:
                 choice = await selection_backup(disc_type, device_path, backup_dir)
             except BackupSourceError as exc:
@@ -779,7 +815,6 @@ async def _rip_kept_titles(
                 for idx in to_rip:
                     await fail(idx, f"disc backup failed: {exc}")
                 return
-            shutil.rmtree(backup_dir, ignore_errors=True)
             logger.info(
                 "backing up disc %s to %s to rip %d of %d titles",
                 device_path,
