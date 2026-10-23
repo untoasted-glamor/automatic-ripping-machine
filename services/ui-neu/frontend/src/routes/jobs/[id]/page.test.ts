@@ -46,6 +46,7 @@ vi.mock('$lib/api/jobs', () => ({
 	),
 	updateTrack: vi.fn(() => Promise.resolve()),
 	keepTracks: vi.fn(() => Promise.resolve()),
+	retryFailedTitles: vi.fn(() => Promise.resolve({ job: {}, retried: 1, from_backup: true })),
 	fetchNamingPreview: vi.fn(() => Promise.resolve({ job_output_dir: '', job_output_name: '', items: [] })),
 	resolveJob: vi.fn(() => Promise.resolve({ job: createJob({ id: 'job_42' }), fan_out: [] })),
 	applySession: vi.fn(() => Promise.resolve({ session_application: {}, tasks: [], collisions: [], idempotent: false })),
@@ -111,7 +112,15 @@ vi.mock('$lib/api/settings', () => ({
 	fetchSettings: vi.fn(() => Promise.resolve({ transcoder_config: { config: {} } }))
 }));
 
-import { fetchJob, updateTrack, fetchNamingPreview, setJobMediaType, startWaitingJob, keepTracks } from '$lib/api/jobs';
+import {
+	fetchJob,
+	updateTrack,
+	fetchNamingPreview,
+	setJobMediaType,
+	startWaitingJob,
+	keepTracks,
+	retryFailedTitles
+} from '$lib/api/jobs';
 import { dashboard } from '$lib/stores/dashboard';
 import * as authStore from '$lib/stores/auth';
 import { fetchIdentity } from '$lib/api/identity';
@@ -226,6 +235,63 @@ describe('Job detail page (v3)', () => {
 		expect(box.getAttribute('title')).toBe("Titles can't be changed while the disc is ripping");
 		expect(screen.getByText('Skipped')).toBeInTheDocument();
 		expect(screen.queryByRole('button', { name: 'Keep all' })).toBeNull();
+	});
+
+	it('retries the failed kept titles and says how the retry starts', async () => {
+		const partial = {
+			job: createJob({ id: 'job_42', status: 'ripped_partial', disc_type: 'bluray' }),
+			tracks: [
+				createTrack({ id: 'trk_1', index: 0, status: 'done' }),
+				createTrack({ id: 'trk_2', index: 1, status: 'failed', last_error: 'remux failed' }),
+				createTrack({ id: 'trk_3', index: 2, status: 'failed', excluded: true })
+			],
+			fingerprints: []
+		};
+		mockFetchJob.mockResolvedValue(partial);
+		renderComponent(Page);
+		await fireEvent.click(await screen.findByRole('button', { name: 'Retry failed titles (1)' }));
+		expect(vi.mocked(retryFailedTitles)).toHaveBeenCalledWith('job_42');
+		expect(await screen.findByTestId('retry-note')).toHaveTextContent(
+			'Retrying 1 title from the kept disc backup. No disc needed.'
+		);
+		cleanup();
+
+		vi.mocked(retryFailedTitles).mockResolvedValueOnce({ job: partial.job, retried: 2, from_backup: false });
+		renderComponent(Page);
+		await fireEvent.click(await screen.findByRole('button', { name: 'Retry failed titles (1)' }));
+		expect(await screen.findByTestId('retry-note')).toHaveTextContent(
+			'Put the disc back in the drive: ARM retries 2 titles as soon as it goes in.'
+		);
+	});
+
+	it('an armed job waits for its disc and offers no second retry', async () => {
+		mockFetchJob.mockResolvedValue({
+			job: createJob({
+				id: 'job_42',
+				status: 'ripped_partial',
+				disc_type: 'bluray',
+				metadata_json: { flags: { retry_armed: true } }
+			}),
+			tracks: [createTrack({ id: 'trk_2', status: 'queued' }), createTrack({ id: 'trk_3', status: 'failed' })],
+			fingerprints: []
+		});
+		renderComponent(Page);
+		expect(await screen.findByTestId('retry-armed')).toBeInTheDocument();
+		expect(screen.queryByRole('button', { name: /Retry failed titles/ })).toBeNull();
+	});
+
+	it('a refused retry shows why', async () => {
+		vi.mocked(retryFailedTitles).mockRejectedValueOnce(new Error('the drive is busy with another disc'));
+		mockFetchJob.mockResolvedValue({
+			job: createJob({ id: 'job_42', status: 'failed', disc_type: 'bluray' }),
+			tracks: [createTrack({ id: 'trk_2', status: 'failed' })],
+			fingerprints: []
+		});
+		renderComponent(Page);
+		await fireEvent.click(await screen.findByRole('button', { name: 'Retry failed titles (1)' }));
+		expect(await screen.findByTestId('track-error')).toHaveTextContent(
+			'Could not retry the failed titles: the drive is busy with another disc'
+		);
 	});
 
 	it('shows a kept raw backup under the tracks, and none when there is none', async () => {

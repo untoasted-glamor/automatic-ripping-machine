@@ -17,6 +17,7 @@ import type {
 	ApplySessionResponse,
 	ManualTriggerRequest,
 	ManualTriggerResponse,
+	RetryFailedResponse,
 	RipAgainResponse
 } from '$lib/types/api.gen';
 import { apiFetch, post } from './client';
@@ -299,6 +300,11 @@ export function fetchNamingVariables(): Promise<NamingVariablesResponse> {
 // Transitions AWAITING_REVIEW -> RIPPING and unblocks the parked ripper.
 // on_previously_ripped: rip a ripped job's disc again. Starts a held copy of
 // the disc if one is waiting, otherwise lets the next insert through once.
+// Queue a ripped job's failed titles again (POST /api/jobs/{id}/retry-failed).
+export function retryFailedTitles(id: string): Promise<RetryFailedResponse> {
+	return apiFetch<RetryFailedResponse>(`/api/jobs/${id}/retry-failed`, { method: 'POST' });
+}
+
 export function ripAgain(id: string): Promise<RipAgainResponse> {
 	return apiFetch<RipAgainResponse>(`/api/jobs/${id}/rip-again`, { method: 'POST' });
 }

@@ -24,3 +24,9 @@ export function keepLockedReason(status: string): string | null {
 export function trackRipStatus(track: TrackView, ripStarted: boolean): string {
 	return ripStarted && track.excluded && track.status === 'queued' ? 'skipped' : track.status;
 }
+
+/** POST /retry-failed armed the job and its retry hasn't started yet. */
+export function isRetryArmed(metadata: Record<string, unknown> | null | undefined): boolean {
+	const flags = metadata?.flags;
+	return typeof flags === 'object' && flags !== null && (flags as Record<string, unknown>).retry_armed === true;
+}

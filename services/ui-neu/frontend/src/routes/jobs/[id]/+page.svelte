@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
-	import { fetchJob, fetchNamingPreview, keepTracks } from '$lib/api/jobs';
+	import { fetchJob, fetchNamingPreview, keepTracks, retryFailedTitles } from '$lib/api/jobs';
 	import { ApiError } from '$lib/api/client';
 	import { posterSrc, posterFallback, jobPoster } from '$lib/utils/poster';
 	import PosterImage from '$lib/components/PosterImage.svelte';
@@ -21,7 +21,7 @@
 	import RawBackupRow from '$lib/components/RawBackupRow.svelte';
 	import { effectiveJobStatus, isPartialComplete } from '$lib/utils/job-status';
 	import { isAwaitingIdentity, isLive, isPostRipStatus, isPreRipStatus } from '$lib/utils/job-status-groups';
-	import { keepLockedReason, keepSummary, trackRipStatus } from '$lib/utils/track-keep';
+	import { isRetryArmed, keepLockedReason, keepSummary, trackRipStatus } from '$lib/utils/track-keep';
 	import TrackKeepToggle from '$lib/components/TrackKeepToggle.svelte';
 	import PlayAllBadge from '$lib/components/PlayAllBadge.svelte';
 	import { fetchSessions } from '$lib/api/sessions';
@@ -149,6 +149,28 @@
 	function handleTrackTitleApply() {
 		editingTrackId = null;
 		loadJob();
+	}
+
+	// What the last Retry failed titles click started (shown under the Tracks table).
+	let retryNote = $state<string | null>(null);
+	let retrying = $state(false);
+
+	async function retryFailed(jobId: string) {
+		retrying = true;
+		trackError = null;
+		retryNote = null;
+		try {
+			const res = await retryFailedTitles(jobId);
+			const titles = res.retried === 1 ? '1 title' : `${res.retried} titles`;
+			retryNote = res.from_backup
+				? `Retrying ${titles} from the kept disc backup. No disc needed.`
+				: `Put the disc back in the drive: ARM retries ${titles} as soon as it goes in.`;
+		} catch (e) {
+			trackError = `Could not retry the failed titles: ${e instanceof Error ? e.message : 'unknown error'}`;
+		} finally {
+			retrying = false;
+			loadJob();
+		}
 	}
 
 	async function keepAll(trackIds: string[]) {
@@ -306,6 +328,8 @@
 		{@const preRip = isPreRipStatus(job.status)}
 		{@const ripStarted = job.status === 'ripping' || isPostRipStatus(job.status)}
 		{@const keepNoun = job.disc_type === 'cd' ? 'tracks' : 'titles'}
+		{@const failedKept = tracks.filter((t) => t.status === 'failed' && !t.excluded).length}
+		{@const retryArmed = isRetryArmed(job.metadata_json)}
 		<div class="stack-lg stack">
 			<!-- Breadcrumb -->
 			<nav class="job-detail-breadcrumb">
@@ -716,7 +740,25 @@
 								Keep all
 							</button>
 						{/if}
+						{#if $isAdmin && (job.status === 'ripped_partial' || job.status === 'failed') && failedKept > 0 && !retryArmed}
+							<button
+								type="button"
+								class="btn job-detail-keep-all"
+								disabled={retrying}
+								title="Rip the titles that failed again: from the kept disc backup if there is one, else when the disc goes back in"
+								onclick={() => retryFailed(job.id)}
+							>
+								{retrying ? 'Working...' : `Retry failed titles (${failedKept})`}
+							</button>
+						{/if}
 					</div>
+					{#if retryNote}
+						<p class="job-detail-retry-note" data-testid="retry-note">{retryNote}</p>
+					{:else if retryArmed && job.status !== 'ripping' && !d.raw_backup?.complete}
+						<p class="job-detail-retry-note" data-testid="retry-armed">
+							Waiting for the disc: put it back in the drive to retry the failed titles.
+						</p>
+					{/if}
 					{#if d.raw_backup}
 						<RawBackupRow
 							jobId={d.job.id}
@@ -1107,6 +1149,11 @@
 		align-items: center;
 		gap: 0.5rem;
 		margin-top: 0.75rem;
+		font-size: 0.875rem;
+		color: var(--color-text-muted);
+	}
+	.job-detail-retry-note {
+		margin-top: 0.5rem;
 		font-size: 0.875rem;
 		color: var(--color-text-muted);
 	}

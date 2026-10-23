@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createTrack } from '$lib/components/__fixtures__/job';
-import { keepLockedReason, keepSummary, trackRipStatus } from './track-keep';
+import { isRetryArmed, keepLockedReason, keepSummary, trackRipStatus } from './track-keep';
 
 const GB = 1024 ** 3;
 
@@ -41,5 +41,15 @@ describe('trackRipStatus', () => {
 		expect(trackRipStatus(left, false)).toBe('queued');
 		expect(trackRipStatus(createTrack({ excluded: true, status: 'done' }), true)).toBe('done');
 		expect(trackRipStatus(createTrack({ excluded: false, status: 'queued' }), true)).toBe('queued');
+	});
+});
+
+describe('isRetryArmed', () => {
+	it('reads the job flag', () => {
+		expect(isRetryArmed({ flags: { retry_armed: true } })).toBe(true);
+		expect(isRetryArmed({ flags: { retry_armed: false } })).toBe(false);
+		expect(isRetryArmed({ flags: 'x' })).toBe(false);
+		expect(isRetryArmed({})).toBe(false);
+		expect(isRetryArmed(null)).toBe(false);
 	});
 });
