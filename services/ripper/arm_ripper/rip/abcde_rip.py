@@ -57,15 +57,29 @@ def _abcde_config(output_dir: Path) -> str:
     )
 
 
+def _track_args(track_indexes: list[int]) -> list[str]:
+    """abcde's track arguments for `track_indexes`, runs collapsed:
+    `[1, 2, 3, 5]` -> `["1-3", "5"]`. abcde expands `N-M` itself."""
+    runs: list[list[int]] = []
+    for idx in sorted(set(track_indexes)):
+        if runs and idx == runs[-1][1] + 1:
+            runs[-1][1] = idx
+        else:
+            runs.append([idx, idx])
+    return [str(first) if first == last else f"{first}-{last}" for first, last in runs]
+
+
 async def rip_cd(
     device_path: str,
     output_dir: Path,
     track_indexes: list[int],
     on_track_done: OnAbcdeTrackDone | None = None,
 ) -> dict[int, RipResult]:
-    """Rip a whole audio CD via abcde and map outputs back to track indexes.
+    """Rip the tracks in `track_indexes` via abcde and map outputs back to them.
 
-    abcde rips the entire disc in one pass; we stream its stdout so that as
+    abcde reads every requested track in one pass (one invocation, the
+    track list as trailing arguments, so the drive never sits idle between
+    tracks) and never reads the others. We stream its stdout so that as
     soon as each `trackNN.wav` file appears on disk we can build a per-track
     `RipResult` (size + sha256) and fire `on_track_done`. The dispatcher
     plumbs that callback into the per-track WS lifecycle so the UI sees
@@ -77,14 +91,18 @@ async def rip_cd(
     whether the rip succeeded, the file went missing, abcde failed, or
     `abcde` itself wasn't on PATH.
     """
+    if not track_indexes:
+        # abcde with no track arguments rips the whole disc.
+        return {}
     output_dir.mkdir(parents=True, exist_ok=True)
 
     with NamedTemporaryFile("w", suffix=".abcde.conf", delete=False) as conf:
         conf.write(_abcde_config(output_dir))
         conf_path = Path(conf.name)
 
-    cmd = ["abcde", "-d", device_path, "-c", str(conf_path), "-N", "-n", "-j", "1"]
-    logger.info("abcde rip device=%s output_dir=%s", device_path, output_dir)
+    tracks = _track_args(track_indexes)
+    cmd = ["abcde", "-d", device_path, "-c", str(conf_path), "-N", "-n", "-j", "1", *tracks]
+    logger.info("abcde rip device=%s output_dir=%s tracks=%s", device_path, output_dir, " ".join(tracks))
 
     results: dict[int, RipResult] = {}
 

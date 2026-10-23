@@ -100,7 +100,7 @@ async def rip_all(
     which title, and to find each kept title again in a backup; None falls
     back to the tracks' own durations and the `mkv all` path.
 
-    Excluded DVD/BD tracks are never reported on (no start, no done): they
+    Excluded tracks are never reported on (no start, no done): they
     stay `queued`, and the UI shows them as skipped.
 
     DVD / BD only: `stop` kills makemkvcon when set (the drive dropped off the
@@ -132,8 +132,9 @@ async def rip_all(
       down this path too.
     - Any disc whose tracks are all DISC_BACKUP: one `makemkvcon backup --decrypt disc:<N>` (`rip_backup`) for the
       first track.
-    - CD: mark all tracks IN_PROGRESS, run abcde once for the whole disc,
-      then emit DONE/FAILED per track from the bulk result.
+    - CD: mark the kept tracks IN_PROGRESS, run abcde once with them as its
+      track list, then emit DONE/FAILED per track from the bulk result.
+      Excluded tracks are never read and get no callbacks, as on DVD/BD.
     - DATA: a single dd dump assigned to the first (only) track.
     """
     if tracks and all(t.kind == TrackKind.DISC_BACKUP for t in tracks):
@@ -179,6 +180,12 @@ async def rip_all(
         return
 
     if disc_type == DiscType.CD:
+        excluded_cd = sorted(t.index for t in tracks if t.excluded)
+        if excluded_cd:
+            logger.info("not ripping excluded tracks %s", excluded_cd)
+        tracks = [t for t in tracks if not t.excluded]
+        if not tracks:
+            return
         for track in tracks:
             await on_track_start(track)
         track_by_index = {t.index: t for t in tracks}

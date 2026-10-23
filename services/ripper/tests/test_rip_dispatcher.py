@@ -11,6 +11,9 @@ Two surfaces:
     fires, then a per-title RipResult comes back); the dispatcher
     fans the lifecycle hooks out to the right TrackView and handles
     skipped-by-minlength + disc-level failures.
+
+(3) `rip_all` for CDs — a fake `abcde` that reads only the tracks on its
+    command line, so excluded tracks are shown never to be read.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import arm_ripper.drive_status as drive_status_module
+import arm_ripper.rip.abcde_rip as abcde_rip_module
 import arm_ripper.rip.dispatcher as dispatcher_module
 import arm_ripper.rip.makemkv_rip as makemkv_rip_module
 import arm_ripper.scan.makemkv as scan_makemkv_module
@@ -2188,3 +2192,90 @@ async def test_a_resume_remuxes_from_the_finished_backup_with_no_drive_read(monk
     assert fake.drive_reads == []
     assert [inv.command for inv in fake.invocations] == ["info", "mkv"]
     assert not (job / ".backup").exists()
+
+
+class _FakeAbcde:
+    """abcde as `rip_cd` runs it: expands its trailing track arguments (`N` or
+    `N-M`) the way abcde does, writes `trackNN.wav` for each of those tracks
+    on a disc of `disc_tracks`, and prints the read-done lines."""
+
+    def __init__(self, monkeypatch, disc_tracks: int) -> None:
+        self.argvs: list[list[str]] = []
+        self.read: list[int] = []
+        self._disc_tracks = disc_tracks
+        monkeypatch.setattr(abcde_rip_module.asyncio, "create_subprocess_exec", self._exec)
+
+    async def _exec(self, *argv: str, cwd: str, **_kw: Any) -> Any:
+        self.argvs.append(list(argv))
+        queue: list[int] = []
+        for arg in argv[argv.index("-j") + 2 :]:
+            first, _, last = arg.partition("-")
+            queue.extend(range(int(first), int(last or first) + 1))
+        lines = []
+        for idx in sorted(set(queue)):
+            if idx > self._disc_tracks:
+                continue
+            (Path(cwd) / f"track{idx:02d}.wav").write_bytes(b"RIFF" + bytes([idx]) * 16)
+            self.read.append(idx)
+            lines.append(f"[wavencode] Track {idx:02d}: Reading audio from sectors 1-2...done\n".encode())
+        return _AbcdeProc(lines)
+
+
+class _AbcdeProc:
+    def __init__(self, lines: list[bytes]) -> None:
+        self.stdout = asyncio.StreamReader()
+        self.stdout.feed_data(b"".join(lines))
+        self.stdout.feed_eof()
+        self.stderr = asyncio.StreamReader()
+        self.stderr.feed_eof()
+        self.returncode: int | None = None
+
+    async def wait(self) -> int:
+        self.returncode = 0
+        return 0
+
+    def kill(self) -> None:  # pragma: no cover - the fake always exits on its own
+        self.returncode = -9
+
+
+def _cd_tracks(count: int) -> list[TrackView]:
+    return [_track(i).model_copy(update={"kind": TrackKind.AUDIO_TRACK}) for i in range(1, count + 1)]
+
+
+async def test_a_cd_with_a_track_excluded_reads_only_the_kept_tracks_in_one_abcde(monkeypatch, tmp_path):
+    abcde = _FakeAbcde(monkeypatch, disc_tracks=5)
+    tracks = _exclude(_cd_tracks(5), 4)
+
+    reports, started = await _rip_tracks(tracks, tmp_path, disc_type=DiscType.CD)
+
+    assert len(abcde.argvs) == 1
+    assert abcde.argvs[0][-2:] == ["1-3", "5"]
+    assert abcde.read == [1, 2, 3, 5]
+    assert sorted(p.name for p in tmp_path.glob("*.wav")) == [
+        "track01.wav",
+        "track02.wav",
+        "track03.wav",
+        "track05.wav",
+    ]
+    assert started == ["trk_1", "trk_2", "trk_3", "trk_5"]
+    assert reports["trk_4"] == []
+    assert all(len(reports[t]) == 1 and reports[t][0].ok for t in ("trk_1", "trk_2", "trk_3", "trk_5"))
+
+
+async def test_a_cd_with_nothing_excluded_lists_every_track(monkeypatch, tmp_path):
+    abcde = _FakeAbcde(monkeypatch, disc_tracks=3)
+
+    reports, _ = await _rip_tracks(_cd_tracks(3), tmp_path, disc_type=DiscType.CD)
+
+    assert [argv[-1] for argv in abcde.argvs] == ["1-3"]
+    assert all(r[0].ok for r in reports.values())
+
+
+async def test_a_cd_with_every_track_excluded_runs_no_abcde(monkeypatch, tmp_path):
+    abcde = _FakeAbcde(monkeypatch, disc_tracks=2)
+
+    reports, started = await _rip_tracks(_exclude(_cd_tracks(2), 1, 2), tmp_path, disc_type=DiscType.CD)
+
+    assert abcde.argvs == []
+    assert started == []
+    assert reports == {"trk_1": [], "trk_2": []}

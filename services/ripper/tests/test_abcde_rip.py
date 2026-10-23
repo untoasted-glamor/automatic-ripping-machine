@@ -434,3 +434,42 @@ async def test_rip_cd_clean_exit_but_wav_missing_yields_failure(monkeypatch, tmp
     )
     assert results[1].ok is False
     assert "did not produce" in (results[1].error or "")
+
+
+@pytest.mark.parametrize(
+    ("indexes", "args"),
+    [
+        ([1, 2, 3, 5], ["1-3", "5"]),
+        ([7], ["7"]),
+        ([5, 1, 2, 2], ["1-2", "5"]),
+        ([2, 4, 6], ["2", "4", "6"]),
+    ],
+)
+def test_track_args_collapse_consecutive_tracks_into_ranges(indexes, args):
+    assert abcde_rip._track_args(indexes) == args
+
+
+@pytest.mark.asyncio
+async def test_rip_cd_passes_the_track_list_after_every_option(monkeypatch, tmp_path):
+    """abcde reads its tracks from the arguments left after `getopts`, so
+    the list goes last; without it abcde rips the whole disc."""
+    captured: list[tuple[Any, ...]] = []
+
+    async def fake_create(*argv: Any, **_kw: Any) -> _FakeProc:
+        captured.append(argv)
+        return _FakeProc([])
+
+    monkeypatch.setattr(abcde_rip.asyncio, "create_subprocess_exec", fake_create)
+    await rip_cd(device_path="/dev/sr0", output_dir=tmp_path, track_indexes=[1, 2, 3, 5])
+    argv = list(captured[0])
+    assert argv[0] == "abcde"
+    assert argv[argv.index("-j") :] == ["-j", "1", "1-3", "5"]
+
+
+@pytest.mark.asyncio
+async def test_rip_cd_with_no_tracks_runs_nothing(monkeypatch, tmp_path):
+    async def fake_create(*_a: Any, **_kw: Any) -> _FakeProc:  # pragma: no cover - must not run
+        raise AssertionError("abcde with no track list rips the whole disc")
+
+    monkeypatch.setattr(abcde_rip.asyncio, "create_subprocess_exec", fake_create)
+    assert await rip_cd(device_path="/dev/sr0", output_dir=tmp_path, track_indexes=[]) == {}
