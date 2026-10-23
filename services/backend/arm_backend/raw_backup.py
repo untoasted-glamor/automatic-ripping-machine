@@ -5,8 +5,9 @@ into this folder (a decrypted backup: one ISO image on DVD, a folder on
 Blu-ray) and remuxes the kept titles from it (`arm_ripper.rip.dispatcher`).
 It is scratch space, never a FOLDER preset's `backup/` output, which this
 module doesn't touch.
-It deletes the backup itself once every kept title has been remuxed. If one
-failed, the backup stays so a retry needs no disc, until the job is deleted
+It deletes the backup itself once every title that has a track is remuxed.
+While one failed or was left out, the backup stays so it can be ripped later
+with no disc (POST /api/jobs/{id}/retry-failed), until the job is deleted
 (the whole job dir goes) or the operator deletes it here. Transcoding never
 reads it: a transcode, or a retry of one, reads the remuxed `.mkv`.
 

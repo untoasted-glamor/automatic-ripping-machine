@@ -21,7 +21,7 @@
 	let { jobId, track, lockedReason = null, lastKept = false, onchanged, onerror }: Props = $props();
 
 	const KEEP_HELP =
-		'Keep this title. One left out before the rip starts is not ripped; one left out later is left out of transcodes.';
+		'Keep this title. One left out before the rip starts is not ripped (keep it afterwards and use Rip remaining titles to rip it then); one left out after it is left out of transcodes.';
 	let lastOne = $derived(lastKept && !track.excluded);
 	let title = $derived(lockedReason ?? (lastOne ? 'At least one title has to be kept' : KEEP_HELP));
 

@@ -85,7 +85,6 @@ from arm_common.schemas import (
 from arm_common.enums import (
     NON_TERMINAL_JOB_STATUSES,
     POST_RIP_JOB_STATUSES,
-    RIP_STARTED_JOB_STATUSES,
     RESOLVABLE_JOB_STATUSES,
     RESOLVABLE_PROMOTE_JOB_STATUSES,
     TERMINAL_JOB_STATUSES,
@@ -596,8 +595,8 @@ async def _start_held_job(db: AsyncSession, hub: WSHub, job: Job) -> None:
     await db.commit()
 
 
-# A retry rips titles that failed again; it never touches what was ripped.
-_RETRYABLE_JOB_STATUSES = frozenset({JobStatus.RIPPED_PARTIAL, JobStatus.FAILED})
+# A retry rips the kept titles that have no file; it never touches what was ripped.
+_RETRYABLE_JOB_STATUSES = frozenset({JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL, JobStatus.FAILED})
 
 
 @router.post("/{job_id}/retry-failed", response_model=RetryFailedResponse)
@@ -607,20 +606,21 @@ async def retry_failed(
     db: AsyncSession = Depends(get_session),
     hub: WSHub = Depends(_get_hub),
 ) -> RetryFailedResponse:
-    """Rip the job's failed kept titles again (track-select plan S15).
+    """Rip the job's kept titles that have no file (track-select plan S15):
+    the ones that failed, and the ones left out before the rip and kept since.
 
-    The failed titles go back to `queued` (their error cleared; `attempts`
-    counts on when the retry starts them), and the job is armed
-    (`retry_armed`). Its DONE titles and their files are left as they are.
+    Failed titles go back to `queued` (their error cleared; `attempts` counts
+    on when the retry starts them), and the job is armed (`retry_armed`). Its
+    DONE titles and their files are left as they are.
 
     With a finished disc backup kept in `/raw/<job_id>/.backup/`, the job's
     drive's ripper is told (`rip.retry`) to remux them from it, with no disc.
     Otherwise the retry starts when the disc goes back in that drive: identify
     finds the armed job by fingerprint and rips it.
 
-    409 unless the job is ripped_partial or failed with a stored scan, ripped
-    on a physical drive that isn't busy with another disc; 422 with no failed
-    kept title.
+    409 unless the job is ripped, ripped_partial or failed with a stored scan,
+    ripped on a physical drive that isn't busy with another disc; 422 when
+    every kept title already has its file.
     """
     job = (await db.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
     if job is None:
@@ -628,7 +628,7 @@ async def retry_failed(
     if job.status not in _RETRYABLE_JOB_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"only a ripped_partial or failed job can retry its titles, got {enum_value_str(job.status)}",
+            detail=f"only a ripped, ripped_partial or failed job can rip its remaining titles, got {enum_value_str(job.status)}",
         )
     if not (job.metadata_json or {}).get("scan_result"):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="job has no stored disc scan to retry from")
@@ -656,11 +656,15 @@ async def retry_failed(
             detail=f"the drive is busy with another disc (job {busy.id}); retry once it is done",
         )
     tracks = list((await db.execute(select(Track).where(col(Track.job_id) == job.id))).scalars().all())
-    failed = [t for t in tracks if t.status == TrackStatus.FAILED and not t.excluded]
-    if not failed:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="no failed kept title to retry")
+    remaining = [
+        t
+        for t in tracks
+        if not t.excluded and (t.status == TrackStatus.FAILED or (t.status == TrackStatus.QUEUED and not t.output_path))
+    ]
+    if not remaining:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="every kept title is ripped")
 
-    for track in failed:
+    for track in remaining:
         track.status = TrackStatus.QUEUED
         track.last_error = None
         db.add(track)
@@ -681,10 +685,10 @@ async def retry_failed(
     logger.info(
         "retry-failed job_id=%s titles=%d %s",
         job.id,
-        len(failed),
+        len(remaining),
         "remuxing from the kept disc backup" if from_backup else "armed until the disc goes back in",
     )
-    return RetryFailedResponse(job=JobView.model_validate(job), retried=len(failed), from_backup=from_backup)
+    return RetryFailedResponse(job=JobView.model_validate(job), retried=len(remaining), from_backup=from_backup)
 
 
 @router.post("/{job_id}/rip-again", response_model=RipAgainResponse)
@@ -1201,20 +1205,17 @@ async def update_job(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"unknown track_id {edit.track_id} for job {job_id}",
                 )
-            # Re-including a track once ripping has started is only safe if it
-            # has a file: the ripper took its keep/drop set at rip-start, so an
-            # excluded title that has no file yet won't get one, and a session
-            # applied afterwards would have nothing to transcode for it.
-            # Excluding stays allowed in every status ("skip at transcode").
-            if (
-                edit.excluded is False
-                and track.excluded
-                and job.status in RIP_STARTED_JOB_STATUSES
-                and not track.output_path
-            ):
+            # Re-including a track with no file is refused while the disc rips:
+            # the ripper took its keep/drop set at rip-start, so it wouldn't get
+            # one. After the rip it is allowed and means "rip it later": the
+            # track stays queued with no file (never fanned out to a session)
+            # until POST /retry-failed rips it, from the kept disc backup or
+            # when the disc goes back in. Excluding is allowed in every status
+            # ("skip at transcode").
+            if edit.excluded is False and track.excluded and job.status == JobStatus.RIPPING and not track.output_path:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail=f"track {track.index} has no ripped file; re-rip the disc to include it",
+                    detail=f"track {track.index} has no ripped file; keep it once the rip ends to rip it then",
                 )
 
     job_fields = req.model_dump(exclude_unset=True, exclude={"tracks"})

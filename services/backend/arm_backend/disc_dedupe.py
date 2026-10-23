@@ -6,8 +6,8 @@ Caller (identify) supplies the scan's (algo, value) fingerprints. We look up the
 drive's non-terminal jobs and match by any shared fingerprint:
   - pre-rip status  -> reuse  (refresh scan, preserve identity + pending_session_id)
   - ripping         -> in_flight (restart-race; return the live job)
-  - armed retry     -> retry (a ripped_partial / failed job whose failed titles
-                       the operator asked to retry, waiting for its disc)
+  - armed retry     -> retry (a ripped job whose remaining titles the operator
+                       asked to rip, waiting for its disc)
   - no match        -> None  (caller creates a fresh Job)
 
 FakeSession can't evaluate a multi-table JOIN, so we fetch candidate jobs by
@@ -32,7 +32,7 @@ logger = logging.getLogger("arm_backend")
 
 
 # A job in one of these is a candidate only while armed (`retry_armed`).
-_RETRY_JOB_STATUSES = (JobStatus.RIPPED_PARTIAL, JobStatus.FAILED)
+_RETRY_JOB_STATUSES = (JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL, JobStatus.FAILED)
 
 
 class ReuseDecision(NamedTuple):

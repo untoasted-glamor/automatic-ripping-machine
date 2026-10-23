@@ -1804,7 +1804,11 @@ async def test_a_blu_ray_with_the_play_all_excluded_rips_only_the_episodes(monke
 
     episodes = [t for t in tracks if t.index != 7]
     _assert_own_titles(reports, episodes, scan, out)
-    assert sorted(p.name for p in out.iterdir()) == [f"ToiletBound HanakoKun D1_t{i:02d}.mkv" for i in range(7)]
+    assert sorted(p.name for p in out.iterdir()) == [".backup"] + [
+        f"ToiletBound HanakoKun D1_t{i:02d}.mkv" for i in range(7)
+    ]
+    # The play-all is left out, so the backup stays: keeping it later rips it from there.
+    assert (out / ".backup" / ".complete").is_file()
     assert reports["trk_7"] == [] and "trk_7" not in started
     assert [inv.command for inv in fake.drive_reads] == ["backup"]
     assert all(not inv.probes_drive for inv in fake.invocations if inv.command != "backup")
@@ -1866,7 +1870,7 @@ async def test_a_dvd_at_minimum_0_with_a_clip_excluded_backs_up_to_one_image(mon
     assert [inv.command for inv in fake.drive_reads] == ["backup"]
     image = f"iso:{out / '.backup' / 'disc.iso'}"
     assert {inv.source for inv in _work(fake) if inv.command in ("info", "mkv")} == {image}
-    assert not (out / ".backup").exists()
+    assert (out / ".backup" / ".complete").is_file()  # a clip is left out
 
 
 async def test_kept_tracks_get_their_sha256_and_start_only_when_their_remux_does(monkeypatch, tmp_path):
@@ -2145,7 +2149,7 @@ async def test_a_drop_during_the_backup_reruns_it_on_the_resume(monkeypatch, tmp
 
     _assert_own_titles(second, [t for t in tracks if t.index != 7], scan, job / "resume-1")
     assert [inv.command for inv in fake.drive_reads] == ["backup", "backup"]
-    assert not (job / ".backup").exists()
+    assert (job / ".backup" / ".complete").is_file()  # the play-all is left out
 
 
 async def test_a_backup_that_finished_after_the_drive_dropped_does_not_count(monkeypatch, tmp_path):
@@ -2212,7 +2216,7 @@ async def test_a_resume_remuxes_from_the_finished_backup_with_no_drive_read(monk
     _assert_own_titles(second, [tracks[1]], scan, job / "resume-1")
     assert fake.drive_reads == []
     assert [inv.command for inv in fake.invocations] == ["info", "mkv"]
-    assert not (job / ".backup").exists()
+    assert (job / ".backup" / ".complete").is_file()  # the play-all is left out
 
 
 class _FakeAbcde:
@@ -2561,7 +2565,7 @@ async def test_a_retry_remuxes_only_the_failed_title_from_the_kept_backup(monkey
     assert Path(final["output_path"]).parent == job / "retry-1"
     assert {track_id: done[track_id].output_path.read_bytes() for track_id in before} == before
     assert client.completed == [job_id]
-    assert not (job / ".backup").exists()  # every kept title is ripped now
+    assert (job / ".backup" / ".complete").is_file()  # the play-all is still left out
     assert not controller.drive_released
 
 
@@ -2615,3 +2619,28 @@ async def test_the_rip_retry_command_starts_the_retry(monkeypatch, tmp_path):
     await asyncio.sleep(0)
 
     assert started == ["job_retry"]
+
+
+async def test_the_backup_goes_once_no_title_is_left_out_or_failed(monkeypatch, tmp_path):
+    """A retry that rips the last titles left out (kept since the rip) from the
+    kept backup removes it; nothing is left to rip from it."""
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    job = tmp_path / "job"
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    first, _ = await _rip_tracks(tracks, job, scan_titles=scan.titles, backup_dir=job / ".backup")
+    assert (job / ".backup" / ".complete").is_file()
+    fake.invocations.clear()
+
+    done = {track_id: r for track_id, r in _results(first).items() if r.ok}
+    # The episodes are had (a retry passes them as left out, status DONE); the play-all is kept now.
+    retry = [
+        t.model_copy(update={"excluded": True, "status": TrackStatus.DONE, "output_path": str(done[t.id].output_path)})
+        if t.id in done
+        else t.model_copy(update={"excluded": False})
+        for t in tracks
+    ]
+    second, started = await _rip_tracks(retry, job / "retry-1", scan_titles=scan.titles, backup_dir=job / ".backup")
+
+    assert started == ["trk_7"] and _results(second)["trk_7"].ok
+    assert fake.drive_reads == []
+    assert not (job / ".backup").exists()

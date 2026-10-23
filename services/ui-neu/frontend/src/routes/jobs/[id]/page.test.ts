@@ -252,7 +252,7 @@ describe('Job detail page (v3)', () => {
 		await fireEvent.click(await screen.findByRole('button', { name: 'Retry failed titles (1)' }));
 		expect(vi.mocked(retryFailedTitles)).toHaveBeenCalledWith('job_42');
 		expect(await screen.findByTestId('retry-note')).toHaveTextContent(
-			'Retrying 1 title from the kept disc backup. No disc needed.'
+			'Ripping 1 title from the kept disc backup. No disc needed.'
 		);
 		cleanup();
 
@@ -260,8 +260,24 @@ describe('Job detail page (v3)', () => {
 		renderComponent(Page);
 		await fireEvent.click(await screen.findByRole('button', { name: 'Retry failed titles (1)' }));
 		expect(await screen.findByTestId('retry-note')).toHaveTextContent(
-			'Put the disc back in the drive: ARM retries 2 titles as soon as it goes in.'
+			'Put the disc back in the drive: ARM rips 2 titles as soon as it goes in.'
 		);
+	});
+
+	it('a ripped job rips the titles kept after the rip from its backup', async () => {
+		mockFetchJob.mockResolvedValue({
+			job: createJob({ id: 'job_42', status: 'ripped', disc_type: 'bluray' }),
+			tracks: [
+				createTrack({ id: 'trk_1', index: 0, status: 'done', output_path: '/raw/j/t00.mkv' }),
+				createTrack({ id: 'trk_2', index: 1, status: 'queued', output_path: null }),
+				createTrack({ id: 'trk_3', index: 2, status: 'queued', output_path: null, excluded: true })
+			],
+			fingerprints: [],
+			raw_backup: { size_bytes: 1024 ** 3, complete: true }
+		});
+		renderComponent(Page);
+		await fireEvent.click(await screen.findByRole('button', { name: 'Rip remaining titles (1)' }));
+		expect(vi.mocked(retryFailedTitles)).toHaveBeenCalledWith('job_42');
 	});
 
 	it('an armed job waits for its disc and offers no second retry', async () => {
@@ -290,7 +306,7 @@ describe('Job detail page (v3)', () => {
 		renderComponent(Page);
 		await fireEvent.click(await screen.findByRole('button', { name: 'Retry failed titles (1)' }));
 		expect(await screen.findByTestId('track-error')).toHaveTextContent(
-			'Could not retry the failed titles: the drive is busy with another disc'
+			'Could not rip the remaining titles: the drive is busy with another disc'
 		);
 	});
 

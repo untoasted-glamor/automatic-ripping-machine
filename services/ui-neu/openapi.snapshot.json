@@ -1901,7 +1901,7 @@
           "jobs"
         ],
         "summary": "Retry Failed",
-        "description": "Rip the job's failed kept titles again (track-select plan S15).\n\nThe failed titles go back to `queued` (their error cleared; `attempts`\ncounts on when the retry starts them), and the job is armed\n(`retry_armed`). Its DONE titles and their files are left as they are.\n\nWith a finished disc backup kept in `/raw/<job_id>/.backup/`, the job's\ndrive's ripper is told (`rip.retry`) to remux them from it, with no disc.\nOtherwise the retry starts when the disc goes back in that drive: identify\nfinds the armed job by fingerprint and rips it.\n\n409 unless the job is ripped_partial or failed with a stored scan, ripped\non a physical drive that isn't busy with another disc; 422 with no failed\nkept title.",
+        "description": "Rip the job's kept titles that have no file (track-select plan S15):\nthe ones that failed, and the ones left out before the rip and kept since.\n\nFailed titles go back to `queued` (their error cleared; `attempts` counts\non when the retry starts them), and the job is armed (`retry_armed`). Its\nDONE titles and their files are left as they are.\n\nWith a finished disc backup kept in `/raw/<job_id>/.backup/`, the job's\ndrive's ripper is told (`rip.retry`) to remux them from it, with no disc.\nOtherwise the retry starts when the disc goes back in that drive: identify\nfinds the armed job by fingerprint and rips it.\n\n409 unless the job is ripped, ripped_partial or failed with a stored scan,\nripped on a physical drive that isn't busy with another disc; 422 when\nevery kept title already has its file.",
         "operationId": "retry_failed_api_jobs__job_id__retry_failed_post",
         "parameters": [
           {
@@ -16816,7 +16816,7 @@
           "from_backup"
         ],
         "title": "RetryFailedResponse",
-        "description": "POST /api/jobs/{id}/retry-failed. `retried` failed titles are queued\nagain. `from_backup`: the job keeps a finished disc backup and its drive's\nripper was told to remux them from it, with no disc; otherwise the job is\narmed and the retry starts when the disc goes back in that drive."
+        "description": "POST /api/jobs/{id}/retry-failed. `retried` kept titles with no file\n(failed, or left out before the rip and kept since) are queued to rip.\n`from_backup`: the job keeps a finished disc backup and its drive's ripper\nwas told to remux them from it, with no disc; otherwise the job is armed\nand the retry starts when the disc goes back in that drive."
       },
       "RipAgainResponse": {
         "properties": {

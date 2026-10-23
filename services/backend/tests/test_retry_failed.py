@@ -220,11 +220,27 @@ def test_unknown_job_is_404(raw_root: Path) -> None:
     assert _retry(_db(), _Hub(), job_id="job_01JZXR7K3M5Q8N4VWA0000000Z").status_code == 404
 
 
-@pytest.mark.parametrize("status", [JobStatus.RIPPED, JobStatus.RIPPING, JobStatus.AWAITING_REVIEW])
-def test_only_a_partial_or_failed_rip_retries(raw_root: Path, status: JobStatus) -> None:
+@pytest.mark.parametrize("status", [JobStatus.RIPPING, JobStatus.AWAITING_REVIEW, JobStatus.ABANDONED])
+def test_only_a_ripped_job_rips_its_remaining_titles(raw_root: Path, status: JobStatus) -> None:
     r = _retry(_db(status), _Hub())
     assert r.status_code == 409
-    assert "ripped_partial or failed" in r.json()["detail"]
+    assert "ripped, ripped_partial or failed" in r.json()["detail"]
+
+
+def test_a_title_kept_after_the_rip_is_ripped_with_the_failed_ones(raw_root: Path) -> None:
+    """A ripped job whose left-out title the operator kept since (queued, no
+    file) rips it from the kept backup, alongside any failed one."""
+    _backup(raw_root, complete=True)
+    db, hub = _db(JobStatus.RIPPED), _Hub()
+    db.rows["tracks"][1].status = TrackStatus.DONE
+    db.rows["tracks"][1].output_path = f"/raw/{JOB_ID}/D1_t01.mkv"
+    db.rows["tracks"].append(_track(3, TrackStatus.QUEUED))  # kept after the rip
+    db.rows["tracks"].append(_track(4, TrackStatus.QUEUED, excluded=True))  # still left out
+
+    body = _retry(db, hub).json()
+
+    assert body["retried"] == 1 and body["from_backup"] is True
+    assert [e["event_type"] for e in hub.events] == ["rip.retry"]
 
 
 def test_a_job_with_no_stored_scan_is_refused(raw_root: Path) -> None:
@@ -270,10 +286,11 @@ def test_a_busy_drive_is_refused(raw_root: Path) -> None:
     assert {t.id: t.status for t in db.rows["tracks"]}["trk_1"] == TrackStatus.FAILED
 
 
-def test_nothing_failed_and_kept_is_422(raw_root: Path) -> None:
+def test_nothing_left_to_rip_is_422(raw_root: Path) -> None:
     db = _db()
     db.rows["tracks"] = [t for t in db.rows["tracks"] if t.id != "trk_1"]
-    assert _retry(db, _Hub()).status_code == 422
+    r = _retry(db, _Hub())
+    assert r.status_code == 422 and r.json()["detail"] == "every kept title is ripped"
 
 
 # --- rip-start ------------------------------------------------------------------
@@ -360,7 +377,7 @@ def _identify(db: FakeSession) -> Any:
     )
 
 
-@pytest.mark.parametrize("status", [JobStatus.RIPPED_PARTIAL, JobStatus.FAILED])
+@pytest.mark.parametrize("status", [JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL, JobStatus.FAILED])
 def test_the_disc_of_an_armed_job_goes_straight_to_its_retry(raw_root: Path, status: JobStatus) -> None:
     db = _armed_db(status)
 

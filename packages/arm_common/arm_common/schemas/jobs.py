@@ -86,10 +86,11 @@ class RipAgainResponse(BaseModel):
 
 
 class RetryFailedResponse(BaseModel):
-    """POST /api/jobs/{id}/retry-failed. `retried` failed titles are queued
-    again. `from_backup`: the job keeps a finished disc backup and its drive's
-    ripper was told to remux them from it, with no disc; otherwise the job is
-    armed and the retry starts when the disc goes back in that drive."""
+    """POST /api/jobs/{id}/retry-failed. `retried` kept titles with no file
+    (failed, or left out before the rip and kept since) are queued to rip.
+    `from_backup`: the job keeps a finished disc backup and its drive's ripper
+    was told to remux them from it, with no disc; otherwise the job is armed
+    and the retry starts when the disc goes back in that drive."""
 
     job: JobView
     retried: int

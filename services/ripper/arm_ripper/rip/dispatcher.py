@@ -2,12 +2,12 @@ import asyncio
 import logging
 import shutil
 import time
-from collections.abc import Awaitable, Callable, Collection
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from pathlib import Path
 from typing import NotRequired, Protocol, TypedDict
 
 from arm_common import DiscType
-from arm_common.enums import TrackKind
+from arm_common.enums import TrackKind, TrackStatus
 from arm_common.schemas import ScanTitle, TrackView
 
 from arm_ripper.rip.abcde_rip import rip_cd
@@ -41,8 +41,9 @@ logger = logging.getLogger("arm_ripper.rip.dispatcher")
 # folder so job delete, abandon and the boot probe's wipe remove it with
 # everything else. Never upstream's `backup/` (a FOLDER preset's finished
 # output). `.remux/<index>/` is removed after each run; `.backup/` once every
-# kept title it was read for is remuxed, else it stays for a retry with no
-# disc until the job or the backup is deleted.
+# title with a track is remuxed. While one failed or was left out it stays,
+# so it can be ripped later with no disc, until the job or the backup is
+# deleted.
 SELECTION_BACKUP_DIRNAME = ".backup"
 REMUX_DIRNAME = ".remux"
 # Written into `.backup/` once a backup finished; holds the URL that reads it
@@ -364,6 +365,9 @@ async def _rip_optical(
             output_dir=output_dir,
             backup_dir=backup_dir,
             on_backup_done=on_backup_done,
+            # A title left out (not one a retry already has) can be kept and
+            # ripped later from the backup, so the backup stays for it.
+            left_out=[idx for idx in excluded if track_by_index[idx].status != TrackStatus.DONE],
             on_track_start=on_track_start,
             on_track_done=on_track_done,
             on_track_progress=on_track_progress,
@@ -724,6 +728,7 @@ async def _rip_kept_titles(
     output_dir: Path,
     backup_dir: Path,
     on_backup_done: OnBackupDone | None = None,
+    left_out: Sequence[int] = (),
     on_track_start: OnTrackStart,
     on_track_done: OnTrackDone,
     on_track_progress: OnTrackProgress | None,
@@ -754,8 +759,9 @@ async def _rip_kept_titles(
     deleted; one remux failure, or a title not found in the source, fails
     only that track. Kept tracks below the rip's minimum are FAILED "below
     minlength", as on the `mkv all` path. `.remux/` goes at the end, and
-    `.backup/` too once every title it was read for is remuxed; if one
-    wasn't, the backup stays so a retry needs no disc.
+    `.backup/` too once every title it was read for is remuxed and none is
+    `left_out`; otherwise the backup stays, so the rest can be ripped later
+    (POST /api/jobs/{id}/retry-failed) with no disc.
     """
     scan_by_index = {t.index: t for t in scan_titles}
     pending = {idx: t for idx, t in kept.items() if t.id not in skip_track_ids}
@@ -926,11 +932,15 @@ async def _rip_kept_titles(
 
     if file_source:
         return
-    if failed:
-        logger.info("keeping the disc backup %s: titles %s failed and can be retried from it", backup_dir, failed)
+    if failed or left_out:
+        logger.info(
+            "keeping the disc backup %s: titles %s can be ripped from it later",
+            backup_dir,
+            sorted({*failed, *left_out}),
+        )
     else:
         shutil.rmtree(backup_dir, ignore_errors=True)
-        logger.info("every kept title remuxed; removed the disc backup %s", backup_dir)
+        logger.info("every title remuxed; removed the disc backup %s", backup_dir)
 
 
 def _report_after_hash(on_track_done: OnTrackDone, track: TrackView, result: RipResult) -> OnHashed:

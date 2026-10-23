@@ -1431,10 +1431,10 @@ def test_update_job_track_unknown_track_404(signing_key: bytes) -> None:
     assert db.rows["tracks"][0].title is None
 
 
-def test_update_job_refuses_reincluding_a_track_with_no_ripped_file(signing_key: bytes) -> None:
-    """After the rip, an excluded track with no file can't be re-included: a
-    session applied afterwards would have nothing to transcode for it. The whole
-    edit is refused, job fields included."""
+def test_update_job_keeps_a_fileless_track_after_the_rip_to_rip_later(signing_key: bytes) -> None:
+    """After the rip, keeping an excluded track with no file is allowed: it
+    stays queued with no file until POST /retry-failed rips it (from the kept
+    disc backup, or when the disc goes back in)."""
     db = FakeSession()
     _seed_job_with_track(db)
     db.rows["tracks"][0].excluded = True
@@ -1448,17 +1448,16 @@ def test_update_job_refuses_reincluding_a_track_with_no_ripped_file(signing_key:
             },
             headers=_auth(token),
         )
-    assert r.status_code == 409
-    assert r.json()["detail"] == "track 1 has no ripped file; re-rip the disc to include it"
-    assert db.rows["jobs"][0].poster_url_manual is None
-    assert db.rows["tracks"][0].excluded is True
-    assert db.rows["tracks"][0].title is None
+    assert r.status_code == 200, r.text
+    assert db.rows["tracks"][0].excluded is False
+    assert db.rows["tracks"][0].output_path is None
+    assert db.rows["jobs"][0].poster_url_manual == "http://img/p.jpg"
 
 
 def test_update_job_refuses_reincluding_a_fileless_track_mid_rip(signing_key: bytes) -> None:
     """The ripper took the keep/drop set at rip-start: re-including an
     excluded title that has no file while the job is ripping can't get it
-    ripped, so it is refused like after the rip."""
+    ripped. The whole edit is refused, job fields included."""
     db = FakeSession()
     _seed_job_with_track(db)
     db.rows["jobs"][0].status = JobStatus.RIPPING
@@ -1468,12 +1467,17 @@ def test_update_job_refuses_reincluding_a_fileless_track_mid_rip(signing_key: by
     with TestClient(app) as c:
         r = c.patch(
             f"/api/jobs/{_JOB_ID_A}",
-            json={"tracks": [{"track_id": _TRK_ID_A, "excluded": False}]},
+            json={
+                "poster_url_manual": "http://img/p.jpg",
+                "tracks": [{"track_id": _TRK_ID_A, "excluded": False, "title": "Pilot"}],
+            },
             headers=_auth(token),
         )
     assert r.status_code == 409
-    assert r.json()["detail"] == "track 1 has no ripped file; re-rip the disc to include it"
+    assert r.json()["detail"] == "track 1 has no ripped file; keep it once the rip ends to rip it then"
+    assert db.rows["jobs"][0].poster_url_manual is None
     assert db.rows["tracks"][0].excluded is True
+    assert db.rows["tracks"][0].title is None
 
 
 @pytest.mark.parametrize(

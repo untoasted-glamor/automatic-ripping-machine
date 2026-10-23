@@ -16,11 +16,11 @@
 
 	let { jobId, backup, ripping, canDelete, ondeleted }: Props = $props();
 
-	// The ripper keeps this copy only while a kept title still needs it.
+	// The ripper keeps this copy while any title still needs it.
 	const INFO =
 		'A decrypted copy of the disc (an .iso for DVD, a folder for Blu-ray) that the kept titles are ' +
-		'extracted from before transcoding. It is deleted automatically once every kept title is ' +
-		'extracted; until then, failed titles can be retried from it without the disc.';
+		'extracted from before transcoding. It is deleted automatically once every title is extracted; ' +
+		'until then, titles that failed or were left out can be ripped from it without the disc.';
 
 	let confirming = $state(false);
 	let deleting = $state(false);

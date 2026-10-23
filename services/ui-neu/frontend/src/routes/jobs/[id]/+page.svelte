@@ -163,10 +163,10 @@
 			const res = await retryFailedTitles(jobId);
 			const titles = res.retried === 1 ? '1 title' : `${res.retried} titles`;
 			retryNote = res.from_backup
-				? `Retrying ${titles} from the kept disc backup. No disc needed.`
-				: `Put the disc back in the drive: ARM retries ${titles} as soon as it goes in.`;
+				? `Ripping ${titles} from the kept disc backup. No disc needed.`
+				: `Put the disc back in the drive: ARM rips ${titles} as soon as it goes in.`;
 		} catch (e) {
-			trackError = `Could not retry the failed titles: ${e instanceof Error ? e.message : 'unknown error'}`;
+			trackError = `Could not rip the remaining titles: ${e instanceof Error ? e.message : 'unknown error'}`;
 		} finally {
 			retrying = false;
 			loadJob();
@@ -328,7 +328,10 @@
 		{@const preRip = isPreRipStatus(job.status)}
 		{@const ripStarted = job.status === 'ripping' || isPostRipStatus(job.status)}
 		{@const keepNoun = job.disc_type === 'cd' ? 'tracks' : 'titles'}
-		{@const failedKept = tracks.filter((t) => t.status === 'failed' && !t.excluded).length}
+		{@const remaining = tracks.filter(
+			(t) => !t.excluded && (t.status === 'failed' || (t.status === 'queued' && !t.output_path))
+		)}
+		{@const onlyFailed = remaining.every((t) => t.status === 'failed')}
 		{@const retryArmed = isRetryArmed(job.metadata_json)}
 		<div class="stack-lg stack">
 			<!-- Breadcrumb -->
@@ -740,15 +743,17 @@
 								Keep all
 							</button>
 						{/if}
-						{#if $isAdmin && (job.status === 'ripped_partial' || job.status === 'failed') && failedKept > 0 && !retryArmed}
+						{#if $isAdmin && (job.status === 'ripped' || job.status === 'ripped_partial' || job.status === 'failed') && remaining.length > 0 && !retryArmed}
 							<button
 								type="button"
 								class="btn job-detail-keep-all"
 								disabled={retrying}
-								title="Rip the titles that failed again: from the kept disc backup if there is one, else when the disc goes back in"
+								title="Rip the kept titles that have no file yet: from the kept disc backup if there is one, else when the disc goes back in"
 								onclick={() => retryFailed(job.id)}
 							>
-								{retrying ? 'Working...' : `Retry failed titles (${failedKept})`}
+								{retrying
+									? 'Working...'
+									: `${onlyFailed ? 'Retry failed titles' : 'Rip remaining titles'} (${remaining.length})`}
 							</button>
 						{/if}
 					</div>
@@ -756,7 +761,7 @@
 						<p class="job-detail-retry-note" data-testid="retry-note">{retryNote}</p>
 					{:else if retryArmed && job.status !== 'ripping' && !d.raw_backup?.complete}
 						<p class="job-detail-retry-note" data-testid="retry-armed">
-							Waiting for the disc: put it back in the drive to retry the failed titles.
+							Waiting for the disc: put it back in the drive to rip the remaining titles.
 						</p>
 					{/if}
 					{#if d.raw_backup}
