@@ -31,7 +31,12 @@ export const SOURCE_LABEL: Record<string, string> = {
 };
 const EPISODE_PREFIX = 'episodes_';
 const RAN = new Set(['ok', 'miss', 'skipped', 'error']);
-const NON_EPISODE: Record<string, string> = { extra: 'Extra', trailer: 'Trailer', other: 'Other' };
+const NON_EPISODE: Record<string, string> = {
+	extra: 'Extra',
+	trailer: 'Trailer',
+	other: 'Other',
+	play_all: 'Play-all'
+};
 
 const pad = (n: number) => String(n).padStart(2, '0');
 

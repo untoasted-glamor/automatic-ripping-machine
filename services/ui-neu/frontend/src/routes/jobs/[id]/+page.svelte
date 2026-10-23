@@ -23,6 +23,7 @@
 	import { isAwaitingIdentity, isLive, isPostRipStatus, isPreRipStatus } from '$lib/utils/job-status-groups';
 	import { keepLockedReason, keepSummary, trackRipStatus } from '$lib/utils/track-keep';
 	import TrackKeepToggle from '$lib/components/TrackKeepToggle.svelte';
+	import PlayAllBadge from '$lib/components/PlayAllBadge.svelte';
 	import { fetchSessions } from '$lib/api/sessions';
 	import { buildMetadataFields, readJobMetadata } from '$lib/utils/job-fields';
 	import { extractMusicTracks } from '$lib/utils/music-tracks';
@@ -657,6 +658,7 @@
 											{:else}
 												<span class="job-detail-track-untitled">{track.excluded ? 'Left out' : 'Kept'}</span>
 											{/if}
+											<PlayAllBadge {track} />
 										</td>
 										<!-- Rip outcome -->
 										<td class="table-cell" data-label="Rip">

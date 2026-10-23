@@ -5,6 +5,7 @@
 	import { isPreRipStatus } from '$lib/utils/job-status-groups';
 	import { trackToRow, scanTitleToRow } from '$lib/utils/review-rows';
 	import { keepLockedReason, keepSummary } from '$lib/utils/track-keep';
+	import PlayAllBadge from './PlayAllBadge.svelte';
 	import TrackKeepToggle from './TrackKeepToggle.svelte';
 	import TrackTitleSearch from './TrackTitleSearch.svelte';
 
@@ -130,6 +131,7 @@
 											{:else}
 												<span class="review-tracks-table-faint">{row.excluded ? 'Left out' : 'Kept'}</span>
 											{/if}
+											<PlayAllBadge track={trackById.get(row.trackId)!} />
 										{/if}
 									</td>
 								{/if}
