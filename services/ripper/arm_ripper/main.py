@@ -323,6 +323,9 @@ async def poll_loop(controller: JobController, handle: DriveHandle, *, client: B
     detector = InsertDetector(not_ready_rearm_polls=settings.ARM_NOT_READY_REARM_POLLS)
     last_state: DriveState | None = None
     active_task: asyncio.Task[None] | None = None
+    # A disc went in while a rip that had already given its disc back was
+    # finishing; ripped once that rip ends (unless the tray opens again).
+    insert_waiting = False
     last_error_kind: DriveErrorKind | None = None
     # Ticks that have run with the drive already known absent: 0 on the first
     # such tick, so it refreshes and later ones are throttled.
@@ -406,7 +409,20 @@ async def poll_loop(controller: JobController, handle: DriveHandle, *, client: B
 
         # detector.update() must run every poll to track the NOT_READY
         # streak; only act on the True edge when no rip is already running.
-        if detector.update(state) and active_task is None and handle.current is not None:
+        inserted = detector.update(state)
+        if inserted and active_task is not None and controller.drive_released:
+            # The running rip ejected its disc after the backup and a new one
+            # went in while its remuxes run: that one is next.
+            logger.info("disc inserted while the last rip finishes; ripping it next")
+            insert_waiting = True
+        if state in (DriveState.TRAY_OPEN, DriveState.NO_DISC, DriveState.ABSENT):
+            insert_waiting = False
+        if (
+            (inserted or (insert_waiting and state is DriveState.DISC_OK))
+            and active_task is None
+            and handle.current is not None
+        ):
+            insert_waiting = False
             active_task = asyncio.create_task(controller.handle_disc_inserted(handle.current))
 
         await asyncio.sleep(settings.POLL_INTERVAL_SECONDS)

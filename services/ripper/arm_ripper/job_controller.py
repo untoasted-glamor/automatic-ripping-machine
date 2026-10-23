@@ -217,6 +217,11 @@ class JobController:
         # sync); kept here so overlapping abandon signals don't stack
         # umount/eject subprocess retries. Set inside `_spawn_eject` only.
         self._eject_task: asyncio.Task[None] | None = None
+        # True from the moment a rip gave its disc back after the backup
+        # (backup-then-remux: the remuxes only read the backup) until that
+        # rip ends. The drive is then the operator's: no drop detection, no
+        # second eject, and a disc inserted meanwhile is the next one.
+        self._drive_released = False
 
     @property
     def _device_path(self) -> str | None:
@@ -228,6 +233,11 @@ class JobController:
     @property
     def is_active(self) -> bool:
         return self._active_lock.locked()
+
+    @property
+    def drive_released(self) -> bool:
+        """The running rip has ejected its disc and no longer uses the drive."""
+        return self._drive_released
 
     @property
     def scan_activity(self) -> RipperScanActivity | None:
@@ -357,7 +367,9 @@ class JobController:
         # stale abandon while a DIFFERENT job's rip owns the drive must not
         # pop the tray mid-rip.
         idle = active is None or active.done()
-        if owns or (idle and self._disc_seated()):
+        # A rip that already gave its disc back may have a new disc in the
+        # tray by now; that one isn't this job's to eject.
+        if (owns and not self._drive_released) or (idle and self._disc_seated()):
             self._spawn_eject()
 
     def _disc_seated(self) -> bool:
@@ -909,6 +921,20 @@ class JobController:
         device_path: str,
         rip_start: RipStartResponse,
     ) -> None:
+        try:
+            await self._rip_and_eject(job_id=job_id, disc_type=disc_type, device_path=device_path, rip_start=rip_start)
+        finally:
+            # Also on an abandon (cancel): the next job owns the drive again.
+            self._drive_released = False
+
+    async def _rip_and_eject(
+        self,
+        *,
+        job_id: str,
+        disc_type: DiscType,
+        device_path: str,
+        rip_start: RipStartResponse,
+    ) -> None:
         output_dir = RAW_ROOT / job_id
         output_dir.mkdir(parents=True, exist_ok=True)
         tracks = list(rip_start.tracks)
@@ -956,7 +982,7 @@ class JobController:
                         result.size_bytes,
                         result.duration_seconds,
                     )
-                elif resumable and (lost.is_set() or self._drive_gone(rip_path)):
+                elif resumable and not self._drive_released and (lost.is_set() or self._drive_gone(rip_path)):
                     # Not this title's fault: the drive went away under it.
                     # Leave it for the resume rather than failing it.
                     lost.set()
@@ -1001,6 +1027,18 @@ class JobController:
         rip_dir = output_dir
         skip: set[str] = set()
         resumes = 0
+        watcher: asyncio.Task[None] | None = None
+
+        async def on_backup_done() -> None:
+            # Backup-then-remux has read the disc; the remuxes only read the
+            # backup. Give the disc back now, and stop watching the drive so
+            # an open tray or a new disc is never taken for a drop.
+            self._drive_released = True
+            if watcher is not None:
+                watcher.cancel()
+            logger.info("disc backup finished; ejecting before the remuxes")
+            await self._eject_with_retry(self._device_path or rip_path)
+
         while True:
             watcher = asyncio.create_task(self._watch_drive(rip_path, lost)) if resumable else None
             try:
@@ -1021,6 +1059,7 @@ class JobController:
                     # The job's, whichever folder this pass rips into, so a
                     # resume remuxes from a backup an earlier pass finished.
                     backup_dir=output_dir / SELECTION_BACKUP_DIRNAME,
+                    on_backup_done=on_backup_done,
                 )
             finally:
                 if watcher is not None:
@@ -1058,6 +1097,9 @@ class JobController:
         completed = await self._rip_complete_with_retry(job_id)
         logger.info("rip-complete job_id=%s status=%s", job_id, completed.status.value)
 
+        if self._drive_released:
+            # Ejected after the backup; the tray may hold the next disc by now.
+            return
         # Eject the node the drive is at NOW — it may have renumbered during
         # the rip (USB replug); the path captured at rip start is a hint only.
         await self._eject_with_retry(self._device_path or device_path)

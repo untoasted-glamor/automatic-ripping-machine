@@ -26,6 +26,7 @@ class _Controller:
     def __init__(self) -> None:
         self.inserted: list[str] = []
         self.idle = True
+        self.drive_released = False
 
     def is_idle(self) -> bool:
         return self.idle
@@ -350,3 +351,59 @@ async def test_a_node_that_answers_enxio_still_refreshes_the_hint(monkeypatch) -
     await s.run()
     assert not s.handle.absent  # the handle kept the node
     assert s.client.get_drive_calls == 1  # ...and the hint was refreshed anyway
+
+
+_real_sleep = asyncio.sleep
+
+
+class _ReleasingController(_Controller):
+    """The first disc's rip ejects it after the backup (S9) and keeps
+    remuxing until tick `ends_at`; later inserts return at once."""
+
+    def __init__(self, script: "Script", ends_at: int, *, releases: bool = True) -> None:
+        super().__init__()
+        self.script = script
+        self.ends_at = ends_at
+        self.releases = releases
+
+    async def handle_disc_inserted(self, device: str) -> None:
+        self.inserted.append(device)
+        if len(self.inserted) > 1:
+            return
+        self.drive_released = self.releases
+        while self.script.i < self.ends_at:
+            await _real_sleep(0)
+        self.drive_released = False
+
+
+def _swap_during_remux(*after: DriveState) -> list[tuple[ResolvedDevice | None, object]]:
+    return [
+        (SR0, DriveState.DISC_OK),  # disc A: rip starts
+        (SR0, DriveState.TRAY_OPEN),  # ejected after its backup
+        (SR0, DriveState.NOT_READY),  # disc B goes in
+        (SR0, DriveState.DISC_OK),  # B seated while A's remuxes run
+        *[(SR0, state) for state in after],
+    ]
+
+
+async def test_a_disc_inserted_while_a_released_rip_remuxes_is_ripped_next(monkeypatch, caplog) -> None:
+    caplog.set_level(logging.INFO, logger="arm_ripper")
+    s = Script(monkeypatch, _swap_during_remux(*[DriveState.DISC_OK] * 6))
+    s.controller = _ReleasingController(s, ends_at=6)
+    await s.run()
+    assert s.controller.inserted == ["/dev/sr0", "/dev/sr0"]
+    assert any("disc inserted while the last rip finishes" in r.message for r in caplog.records)
+
+
+async def test_a_disc_taken_out_again_before_the_rip_ends_is_not_ripped(monkeypatch) -> None:
+    s = Script(monkeypatch, _swap_during_remux(DriveState.TRAY_OPEN, DriveState.NO_DISC, *[DriveState.NO_DISC] * 6))
+    s.controller = _ReleasingController(s, ends_at=8)
+    await s.run()
+    assert s.controller.inserted == ["/dev/sr0"]
+
+
+async def test_an_insert_during_a_rip_that_holds_its_disc_is_still_ignored(monkeypatch) -> None:
+    s = Script(monkeypatch, _swap_during_remux(*[DriveState.DISC_OK] * 6))
+    s.controller = _ReleasingController(s, ends_at=6, releases=False)
+    await s.run()
+    assert s.controller.inserted == ["/dev/sr0"]

@@ -56,6 +56,8 @@ BACKUP_PROGRESS_SHARE = 0.9
 
 OnTrackStart = Callable[[TrackView], Awaitable[None]]
 OnTrackDone = Callable[[TrackView, RipResult], Awaitable[None]]
+# Called once a disc backup finished and nothing more will read the drive.
+OnBackupDone = Callable[[], Awaitable[None]]
 
 
 class TransferStats(TypedDict):
@@ -93,6 +95,7 @@ async def rip_all(
     scan_titles: list[ScanTitle] | None = None,
     backup_full_selections: bool = False,
     backup_dir: Path | None = None,
+    on_backup_done: OnBackupDone | None = None,
 ) -> None:
     """Rip every kept track in `tracks` and invoke the lifecycle callbacks.
 
@@ -113,7 +116,9 @@ async def rip_all(
     up, and the skipped tracks get no callbacks (their new files are deleted).
     `backup_dir` is where backup-then-remux keeps its disc backup (default
     `<output_dir>/.backup`); a resume, which rips into a folder of its own,
-    passes the job's so a finished backup is reused.
+    passes the job's so a finished backup is reused. `on_backup_done` runs
+    once backup-then-remux has finished reading a drive (the remuxes only read
+    the backup), so the caller can give the disc back before they run.
 
     Per disc_type:
     - DVD / BD, every title at or above `min_length_seconds` kept: one
@@ -191,6 +196,7 @@ async def rip_all(
             scan_titles=scan_titles,
             backup_full_selections=backup_full_selections,
             backup_dir=output_dir / SELECTION_BACKUP_DIRNAME if backup_dir is None else backup_dir,
+            on_backup_done=on_backup_done,
         )
         return
 
@@ -275,6 +281,7 @@ async def _rip_optical(
     scan_titles: list[ScanTitle] | None = None,
     backup_full_selections: bool = False,
     backup_dir: Path,
+    on_backup_done: OnBackupDone | None = None,
 ) -> None:
     """Pick the DVD/BD strategy: `mkv all` when it rips exactly what is kept,
     backup-then-remux otherwise (track-select plan D1). Tracks with a
@@ -356,6 +363,7 @@ async def _rip_optical(
             eligible_source_indexes=eligible_source_indexes,
             output_dir=output_dir,
             backup_dir=backup_dir,
+            on_backup_done=on_backup_done,
             on_track_start=on_track_start,
             on_track_done=on_track_done,
             on_track_progress=on_track_progress,
@@ -715,6 +723,7 @@ async def _rip_kept_titles(
     eligible_source_indexes: list[int],
     output_dir: Path,
     backup_dir: Path,
+    on_backup_done: OnBackupDone | None = None,
     on_track_start: OnTrackStart,
     on_track_done: OnTrackDone,
     on_track_progress: OnTrackProgress | None,
@@ -729,6 +738,7 @@ async def _rip_kept_titles(
        `backup_dir`, taken as `selection_backup` says, and marked complete,
        after checking `/raw` has room for it and the kept titles
        (`check_backup_space`; short, every kept track fails with the numbers).
+       `on_backup_done` then runs: the drive is no longer needed.
        A backup an earlier pass of this job finished is reused, so a resume
        reads the drive no more. An ISO or folder source is read directly.
     2. The source's titles are listed and each kept disc-scan title is found
@@ -845,6 +855,9 @@ async def _rip_kept_titles(
             source_url = choice.read_back_url()
             (backup_dir / BACKUP_COMPLETE_MARKER).write_text(source_url + "\n")
             logger.info("disc backup done: %s", source_url)
+            if on_backup_done is not None:
+                # Nothing after this reads the drive.
+                await on_backup_done()
 
     try:
         source_titles = await list_source_titles(source_url, minlength_seconds=REMUX_MIN_LENGTH_SECONDS)

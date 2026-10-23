@@ -2399,3 +2399,69 @@ async def test_a_folder_preset_backup_with_room_proceeds(monkeypatch, tmp_path):
 
     assert reports[backup.id][0].ok is True, reports[backup.id][0].error
     assert [inv.command for inv in fake.drive_reads] == ["backup"]
+
+
+# --- give the disc back once its backup is done (S9) ---------------------------
+
+
+async def test_the_disc_is_released_after_the_backup_and_before_any_remux(monkeypatch, tmp_path):
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    seen: list[list[str]] = []
+
+    async def on_backup_done() -> None:
+        seen.append([inv.command for inv in _work(fake)])
+
+    reports, _ = await _rip_tracks(tracks, tmp_path / "job", scan_titles=scan.titles, on_backup_done=on_backup_done)
+
+    assert seen == [["backup"]]
+    after = _work(fake)[1:]
+    assert after and not any(inv.probes_drive for inv in after)
+    assert all(r.ok for r in _results(reports).values())
+
+
+async def test_no_release_without_a_fresh_drive_backup(monkeypatch, tmp_path):
+    """`mkv all` (the post-rip eject follows the rip), a backup the drive
+    already gave (a resume reads no drive), a failed backup and a file source
+    never call it."""
+    released: list[str] = []
+
+    async def on_backup_done() -> None:
+        released.append("released")
+
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    await _rip_tracks(_rip_start_tracks(scan), tmp_path / "all", scan_titles=scan.titles, on_backup_done=on_backup_done)
+
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    fake.fail("mkv", title="00010.mpls")
+    job = tmp_path / "job"
+    await _rip_tracks(tracks, job, scan_titles=scan.titles, backup_dir=job / ".backup", on_backup_done=on_backup_done)
+    assert released == ["released"]  # the first pass's fresh backup
+    fake.clear_failures()
+    settled = {t.id for t in tracks if t.index != 1}
+    await _rip_tracks(
+        tracks,
+        job / "resume-1",
+        scan_titles=scan.titles,
+        skip_track_ids=settled,
+        backup_dir=job / ".backup",
+        on_backup_done=on_backup_done,
+    )
+    assert released == ["released"]
+
+    fake.fail("backup")
+    await _rip_tracks(tracks, tmp_path / "failed", scan_titles=scan.titles, on_backup_done=on_backup_done)
+    assert released == ["released"]
+
+    iso_fake, device = _install_sources(monkeypatch, tmp_path, "dvd-iso")
+    iso_scan = await _scan(monkeypatch, device)
+    iso_tracks = _exclude(_rip_start_tracks(iso_scan), _rip_start_tracks(iso_scan)[1].index)
+    await _rip_tracks(
+        iso_tracks,
+        tmp_path / "iso",
+        disc_type=iso_scan.disc_type,
+        device=device,
+        scan_titles=iso_scan.titles,
+        on_backup_done=on_backup_done,
+    )
+    assert released == ["released"]

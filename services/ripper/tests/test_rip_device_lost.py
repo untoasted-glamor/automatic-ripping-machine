@@ -316,3 +316,110 @@ async def test_a_title_makemkvcon_moved_on_from_is_resumed_not_kept(monkeypatch,
 
 def _absent(_path: str) -> DriveState:
     raise OSError(19, "No such device")  # ENODEV
+
+
+# --- give the disc back once its backup is done (S9) ---------------------------
+
+
+async def test_a_selection_rip_ejects_after_its_backup_and_not_again(monkeypatch, env) -> None:
+    tracks = [_track(0), _track(1)]
+    ejected_before_remux: list[list[str]] = []
+
+    async def only(**kw: Any) -> None:
+        await kw["on_backup_done"]()
+        ejected_before_remux.append(list(env["ejected"]))
+        assert env["controller"].drive_released
+        await _ok(kw, tracks[0], "Disc_t00.mkv")
+        await _ok(kw, tracks[1], "Disc_t01.mkv")
+
+    _script(monkeypatch, [only])
+    await env["controller"]._execute_rip(
+        job_id=_JOB,
+        disc_type=DiscType.BLURAY,
+        device_path="/dev/sr0",
+        rip_start=RipStartResponse(job_id=_JOB, rip_preset_id="rpr", tracks=tracks),
+    )
+    assert ejected_before_remux == [["/dev/sr0"]]
+    assert env["ejected"] == ["/dev/sr0"]
+    assert env["client"].completed == [_JOB]
+    assert not env["controller"].drive_released
+
+
+async def test_after_the_backup_a_drive_that_goes_is_no_drop(monkeypatch, env) -> None:
+    """Once the disc is given back the drive is the operator's: the tray
+    opening, or the drive leaving, doesn't stop the remuxes, and a remux that
+    fails is FAILED, not held for a resume that would wait for the drive."""
+    tracks = [_track(0), _track(1)]
+
+    async def only(**kw: Any) -> None:
+        await kw["on_backup_done"]()
+        env["handle"].set(None)
+        await asyncio.sleep(0.05)  # several watcher intervals
+        assert not kw["stop"].is_set()
+        await _ok(kw, tracks[0], "Disc_t00.mkv")
+        await kw["on_track_start"](tracks[1])
+        await kw["on_track_done"](tracks[1], RipResult(ok=False, error="remux failed"))
+
+    calls = _script(monkeypatch, [only])
+    await env["controller"]._execute_rip(
+        job_id=_JOB,
+        disc_type=DiscType.BLURAY,
+        device_path="/dev/sr0",
+        rip_start=RipStartResponse(job_id=_JOB, rip_preset_id="rpr", tracks=tracks),
+    )
+    assert len(calls) == 1
+    assert env["client"].statuses("trk_1") == [TrackStatus.IN_PROGRESS, TrackStatus.FAILED]
+    assert env["client"].completed == [_JOB]
+
+
+async def test_an_mkv_all_rip_still_ejects_after_rip_complete(monkeypatch, env) -> None:
+    tracks = [_track(0)]
+    ejected_during_rip: list[list[str]] = []
+
+    async def only(**kw: Any) -> None:
+        await _ok(kw, tracks[0], "Disc_t00.mkv")
+        ejected_during_rip.append(list(env["ejected"]))
+
+    _script(monkeypatch, [only])
+    await env["controller"]._execute_rip(
+        job_id=_JOB,
+        disc_type=DiscType.BLURAY,
+        device_path="/dev/sr0",
+        rip_start=RipStartResponse(job_id=_JOB, rip_preset_id="rpr", tracks=tracks),
+    )
+    assert ejected_during_rip == [[]]
+    assert env["ejected"] == ["/dev/sr0"]
+
+
+async def test_abandoning_a_rip_that_gave_its_disc_back_ejects_nothing(monkeypatch, env) -> None:
+    """The tray may hold the next disc by now; it isn't this job's."""
+    tracks = [_track(0)]
+    released = asyncio.Event()
+
+    async def only(**kw: Any) -> None:
+        await kw["on_backup_done"]()
+        released.set()
+        await asyncio.Event().wait()  # remuxing until abandoned
+
+    _script(monkeypatch, [only])
+    controller = env["controller"]
+
+    async def rip() -> None:
+        controller._active_task = asyncio.current_task()
+        controller._active_job_id = _JOB
+        await controller._execute_rip(
+            job_id=_JOB,
+            disc_type=DiscType.BLURAY,
+            device_path="/dev/sr0",
+            rip_start=RipStartResponse(job_id=_JOB, rip_preset_id="rpr", tracks=tracks),
+        )
+
+    task = asyncio.create_task(rip())
+    await asyncio.wait_for(released.wait(), timeout=1.0)
+    env["ejected"].clear()
+    controller._handle_abandon(_JOB, delete_raw=False)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0)
+    assert env["ejected"] == []
+    assert not controller.drive_released
