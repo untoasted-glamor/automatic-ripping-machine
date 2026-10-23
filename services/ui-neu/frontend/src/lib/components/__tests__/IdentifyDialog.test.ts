@@ -2,14 +2,30 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderComponent, screen, fireEvent, cleanup, waitFor } from '$lib/test-utils';
 import IdentifyDialog from '../IdentifyDialog.svelte';
 import { createJob } from '../__fixtures__/job';
-import { resolveJob } from '$lib/api/jobs';
-import type { ResolveResponse } from '$lib/types/api.gen';
+import { resolveJob, searchMetadata, updateJobTitle } from '$lib/api/jobs';
+import type { MetadataCandidate, ResolveResponse } from '$lib/types/api.gen';
 
 vi.mock('$lib/api/jobs', () => ({
-	resolveJob: vi.fn()
+	resolveJob: vi.fn(),
+	searchMetadata: vi.fn(),
+	updateJobTitle: vi.fn(() => Promise.resolve({}))
 }));
 
 const resolveJobMock = vi.mocked(resolveJob);
+const searchMock = vi.mocked(searchMetadata);
+const updateJobTitleMock = vi.mocked(updateJobTitle);
+
+function candidate(overrides: Partial<MetadataCandidate> = {}): MetadataCandidate {
+	return {
+		title: 'ACCA: 13-Territory Inspection Dept.',
+		year: 2017,
+		kind: 'series',
+		poster_url: 'https://img/acca.jpg',
+		provider_id: 'tt6401396',
+		external_ids: { imdb: 'tt6401396', tmdb: '70881', tvdb: null },
+		...overrides
+	} as MetadataCandidate;
+}
 
 function makeResp(): ResolveResponse {
 	return { job: createJob({ status: 'identified' }), fan_out: [] };
@@ -53,6 +69,105 @@ describe('IdentifyDialog', () => {
 				});
 				expect(onidentified).toHaveBeenCalledTimes(1);
 			});
+		});
+	});
+
+	describe('manual search', () => {
+		const held = () =>
+			createJob({
+				id: 'job_s',
+				disc_type: 'bluray',
+				status: 'awaiting_user_id',
+				title: 'ACCA_CS_D1',
+				year: null,
+				media_type: null,
+				poster_url_manual: null
+			});
+
+		it('searches, fills title and year from the pick, and resolves with its type, ids and poster', async () => {
+			searchMock.mockResolvedValue({ candidates: [candidate(), candidate({ title: 'Other', year: 1999 })] } as never);
+			resolveJobMock.mockResolvedValue(makeResp());
+			const onidentified = vi.fn();
+			renderComponent(IdentifyDialog, { props: { job: held(), onclose: vi.fn(), onidentified } });
+
+			await fireEvent.input(screen.getByTestId('identify-search-query'), { target: { value: 'ACCA' } });
+			await fireEvent.change(screen.getByTestId('identify-search-type'), { target: { value: 'tv' } });
+			await fireEvent.click(screen.getByTestId('identify-search-run'));
+			await waitFor(() => expect(screen.getAllByTestId('identify-candidate')).toHaveLength(2));
+			expect(searchMock).toHaveBeenCalledWith('ACCA', 'tv');
+
+			await fireEvent.click(screen.getAllByTestId('identify-candidate')[0]);
+			expect((screen.getByTestId('identify-title') as HTMLInputElement).value).toBe(
+				'ACCA: 13-Territory Inspection Dept.'
+			);
+			expect((screen.getByTestId('identify-year') as HTMLInputElement).value).toBe('2017');
+			await fireEvent.click(screen.getByTestId('identify-submit'));
+
+			await waitFor(() => expect(onidentified).toHaveBeenCalledTimes(1));
+			expect(resolveJobMock).toHaveBeenCalledWith('job_s', {
+				title: 'ACCA: 13-Territory Inspection Dept.',
+				year: 2017,
+				music: undefined,
+				media_type: 'tv',
+				external_ids: { imdb: 'tt6401396', tmdb: '70881' }
+			});
+			expect(updateJobTitleMock).toHaveBeenCalledWith('job_s', { poster_url_manual: 'https://img/acca.jpg' });
+		});
+
+		it('Enter in the search box searches instead of submitting', async () => {
+			searchMock.mockResolvedValue({ candidates: [] } as never);
+			renderComponent(IdentifyDialog, { props: { job: held(), onclose: vi.fn(), onidentified: vi.fn() } });
+
+			await fireEvent.keyDown(screen.getByTestId('identify-search-query'), { key: 'Enter' });
+
+			await waitFor(() => expect(screen.getByTestId('identify-search-error')).toHaveTextContent('No results found'));
+			expect(resolveJobMock).not.toHaveBeenCalled();
+		});
+
+		it('retyping the title drops the pick', async () => {
+			searchMock.mockResolvedValue({ candidates: [candidate()] } as never);
+			resolveJobMock.mockResolvedValue(makeResp());
+			renderComponent(IdentifyDialog, { props: { job: held(), onclose: vi.fn(), onidentified: vi.fn() } });
+
+			await fireEvent.click(screen.getByTestId('identify-search-run'));
+			await fireEvent.click(await screen.findByTestId('identify-candidate'));
+			await fireEvent.input(screen.getByTestId('identify-title'), { target: { value: 'ACCA' } });
+			await fireEvent.click(screen.getByTestId('identify-submit'));
+
+			await waitFor(() =>
+				expect(resolveJobMock).toHaveBeenCalledWith('job_s', { title: 'ACCA', year: 2017, music: undefined })
+			);
+			expect(updateJobTitleMock).not.toHaveBeenCalled();
+		});
+
+		it('shows a failed search and no search for a CD', async () => {
+			searchMock.mockRejectedValue(new Error('TMDb API key is not configured'));
+			renderComponent(IdentifyDialog, { props: { job: held(), onclose: vi.fn(), onidentified: vi.fn() } });
+			await fireEvent.click(screen.getByTestId('identify-search-run'));
+			await waitFor(() =>
+				expect(screen.getByTestId('identify-search-error')).toHaveTextContent('TMDb API key is not configured')
+			);
+			cleanup();
+			renderComponent(IdentifyDialog, {
+				props: {
+					job: createJob({ disc_type: 'cd', status: 'awaiting_user_id' }),
+					onclose: vi.fn(),
+					onidentified: vi.fn()
+				}
+			});
+			expect(screen.queryByTestId('identify-search')).toBeNull();
+		});
+
+		it('a poster that fails to save still identifies the disc', async () => {
+			searchMock.mockResolvedValue({ candidates: [candidate()] } as never);
+			resolveJobMock.mockResolvedValue(makeResp());
+			updateJobTitleMock.mockRejectedValueOnce(new Error('boom'));
+			const onidentified = vi.fn();
+			renderComponent(IdentifyDialog, { props: { job: held(), onclose: vi.fn(), onidentified } });
+			await fireEvent.click(screen.getByTestId('identify-search-run'));
+			await fireEvent.click(await screen.findByTestId('identify-candidate'));
+			await fireEvent.click(screen.getByTestId('identify-submit'));
+			await waitFor(() => expect(onidentified).toHaveBeenCalledTimes(1));
 		});
 	});
 
