@@ -2465,3 +2465,153 @@ async def test_no_release_without_a_fresh_drive_backup(monkeypatch, tmp_path):
         on_backup_done=on_backup_done,
     )
     assert released == ["released"]
+
+
+# --- retry the failed titles from the kept backup (S15) ------------------------
+
+
+class _RetryClient:
+    """The Backend as a retry sees it: rip-start hands back the job's tracks,
+    DONE and queued, marked as a retry."""
+
+    def __init__(self, job_id: str, tracks: list[TrackView], scan: ScanResult) -> None:
+        from arm_common import JobStatus
+        from arm_common.schemas import JobView, RipStartResponse
+
+        self.job = JobView(
+            id=job_id,
+            drive_id="drv_x",
+            disc_type=DiscType.BLURAY,
+            status=JobStatus.RIPPED_PARTIAL,
+            title=None,
+            year=None,
+            metadata_json={},
+            resumed_from_crash=False,
+        )
+        self.start = RipStartResponse(
+            job_id=job_id, rip_preset_id="rpr", tracks=tracks, scan_titles=scan.titles, retry=True
+        )
+        self.patches: list[tuple[str, dict[str, Any]]] = []
+        self.completed: list[str] = []
+
+    async def get_ripper_config(self) -> Any:
+        return SimpleNamespace(makemkv_key=None)
+
+    async def get_job(self, job_id: str) -> Any:
+        return self.job
+
+    async def rip_start(self, job_id: str) -> Any:
+        return self.start
+
+    async def update_track(self, track_id: str, **fields: Any) -> TrackView:
+        self.patches.append((track_id, fields))
+        return self.start.tracks[0]
+
+    async def rip_complete(self, job_id: str) -> Any:
+        self.completed.append(job_id)
+        return self.job
+
+
+async def test_a_retry_remuxes_only_the_failed_title_from_the_kept_backup(monkeypatch, tmp_path):
+    import arm_ripper.job_controller as jc_module
+    from arm_ripper.drive_handle import DriveHandle
+    from arm_ripper.job_controller import JobController
+
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    job_id = "job_retry"
+    job = tmp_path / job_id
+    fake.fail("mkv", title="00010.mpls")  # disc title 1
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    first, _ = await _rip_tracks(tracks, job, scan_titles=scan.titles, backup_dir=job / ".backup")
+    assert _results(first)["trk_1"].ok is False
+    assert (job / ".backup" / ".complete").is_file()
+    fake.clear_failures()
+    fake.invocations.clear()
+
+    done = {track_id: r for track_id, r in _results(first).items() if r.ok}
+    before = {track_id: r.output_path.read_bytes() for track_id, r in done.items() if r.output_path}
+    retry_tracks = [
+        t.model_copy(update={"status": TrackStatus.DONE, "output_path": str(done[t.id].output_path)})
+        if t.id in done
+        else t
+        for t in tracks
+    ]
+    client = _RetryClient(job_id, retry_tracks, scan)
+    monkeypatch.setattr(jc_module, "RAW_ROOT", tmp_path)
+
+    async def no_key(**_kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr(jc_module, "refresh_makemkv_key", no_key)
+    ejected: list[str] = []
+
+    async def eject(self: Any, device_path: str) -> None:
+        ejected.append(device_path)
+
+    monkeypatch.setattr(JobController, "_eject_with_retry", eject)
+    controller = JobController(client, "drv_x", device_path=DriveHandle("/dev/sr0"))  # type: ignore[arg-type]
+
+    await controller.handle_retry(job_id)
+
+    assert fake.drive_reads == []
+    assert ejected == []
+    assert {track_id for track_id, _ in client.patches} == {"trk_1"}
+    final = [f for track_id, f in client.patches if track_id == "trk_1"][-1]
+    assert final["status"] == TrackStatus.DONE
+    assert Path(final["output_path"]).parent == job / "retry-1"
+    assert {track_id: done[track_id].output_path.read_bytes() for track_id in before} == before
+    assert client.completed == [job_id]
+    assert not (job / ".backup").exists()  # every kept title is ripped now
+    assert not controller.drive_released
+
+
+async def test_a_retry_with_no_finished_backup_or_a_busy_drive_does_nothing(monkeypatch, tmp_path):
+    import arm_ripper.job_controller as jc_module
+    from arm_ripper.drive_handle import DriveHandle
+    from arm_ripper.job_controller import JobController
+
+    monkeypatch.setattr(jc_module, "RAW_ROOT", tmp_path)
+    client = AsyncMock()
+    controller = JobController(client, "drv_x", device_path=DriveHandle("/dev/sr0"))
+
+    await controller.handle_retry("job_none")
+    (tmp_path / "job_busy" / ".backup").mkdir(parents=True)
+    (tmp_path / "job_busy" / ".backup" / ".complete").write_text("file:/x\n")
+    async with controller._active_lock:
+        await controller.handle_retry("job_busy")
+
+    client.rip_start.assert_not_called()
+    client.get_job.assert_not_called()
+
+
+async def test_the_rip_retry_command_starts_the_retry(monkeypatch, tmp_path):
+    from datetime import datetime, timezone
+
+    from arm_common.schemas import WSEnvelope
+
+    from arm_ripper.drive_handle import DriveHandle
+    from arm_ripper.job_controller import JobController
+
+    controller = JobController(AsyncMock(), "drv_x", device_path=DriveHandle("/dev/sr0"))
+    started: list[str] = []
+
+    async def handle_retry(job_id: str) -> None:
+        started.append(job_id)
+
+    monkeypatch.setattr(controller, "handle_retry", handle_retry)
+
+    def envelope(payload: dict[str, Any]) -> WSEnvelope:
+        return WSEnvelope(
+            event_id="evt_retry",
+            event_type="rip.retry",
+            emitted_at=datetime.now(timezone.utc),
+            topic="ripper.commands.drv_x",
+            job_id="job_retry",
+            payload=payload,
+        )
+
+    await controller.on_ws_command(envelope({"job_id": "job_retry", "drive_id": "drv_x"}))
+    await controller.on_ws_command(envelope({"drive_id": "drv_x"}))
+    await asyncio.sleep(0)
+
+    assert started == ["job_retry"]

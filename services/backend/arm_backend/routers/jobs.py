@@ -70,6 +70,7 @@ from arm_common.schemas import (
     ManualTriggerRequest,
     ManualTriggerResponse,
     PreviousRipView,
+    RetryFailedResponse,
     RipAgainResponse,
     ResolveFanOutOutcomeView,
     ResolveRequest,
@@ -593,6 +594,97 @@ async def _start_held_job(db: AsyncSession, hub: WSHub, job: Job) -> None:
         session=db,
     )
     await db.commit()
+
+
+# A retry rips titles that failed again; it never touches what was ripped.
+_RETRYABLE_JOB_STATUSES = frozenset({JobStatus.RIPPED_PARTIAL, JobStatus.FAILED})
+
+
+@router.post("/{job_id}/retry-failed", response_model=RetryFailedResponse)
+async def retry_failed(
+    job_id: JobIdParam,
+    _: User = Depends(require_writer),
+    db: AsyncSession = Depends(get_session),
+    hub: WSHub = Depends(_get_hub),
+) -> RetryFailedResponse:
+    """Rip the job's failed kept titles again (track-select plan S15).
+
+    The failed titles go back to `queued` (their error cleared; `attempts`
+    counts on when the retry starts them), and the job is armed
+    (`retry_armed`). Its DONE titles and their files are left as they are.
+
+    With a finished disc backup kept in `/raw/<job_id>/.backup/`, the job's
+    drive's ripper is told (`rip.retry`) to remux them from it, with no disc.
+    Otherwise the retry starts when the disc goes back in that drive: identify
+    finds the armed job by fingerprint and rips it.
+
+    409 unless the job is ripped_partial or failed with a stored scan, ripped
+    on a physical drive that isn't busy with another disc; 422 with no failed
+    kept title.
+    """
+    job = (await db.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")
+    if job.status not in _RETRYABLE_JOB_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"only a ripped_partial or failed job can retry its titles, got {enum_value_str(job.status)}",
+        )
+    if not (job.metadata_json or {}).get("scan_result"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="job has no stored disc scan to retry from")
+    drive = (await db.execute(select(Drive).where(col(Drive.id) == job.drive_id))).scalar_one_or_none()
+    if drive is None or drive.source_kind is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="the job wasn't ripped on a drive that is still enrolled; rip its source again instead",
+        )
+    active = (
+        (
+            await db.execute(
+                select(Job)
+                .where(col(Job.drive_id) == job.drive_id)
+                .where(col(Job.status).in_(tuple(NON_TERMINAL_JOB_STATUSES)))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    busy = next((j for j in active if j.id != job.id), None)
+    if busy is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"the drive is busy with another disc (job {busy.id}); retry once it is done",
+        )
+    tracks = list((await db.execute(select(Track).where(col(Track.job_id) == job.id))).scalars().all())
+    failed = [t for t in tracks if t.status == TrackStatus.FAILED and not t.excluded]
+    if not failed:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="no failed kept title to retry")
+
+    for track in failed:
+        track.status = TrackStatus.QUEUED
+        track.last_error = None
+        db.add(track)
+    job.metadata_json = with_flags(job.metadata_json, retry_armed=True)
+    db.add(job)
+    backup = describe_backup(job.id)
+    from_backup = backup is not None and backup.complete
+    if from_backup:
+        await hub.emit(
+            topic=f"ripper.commands.{job.drive_id}",
+            event_type="rip.retry",
+            payload={"job_id": job.id, "drive_id": job.drive_id},
+            job_id=job.id,
+            session=db,
+        )
+    await db.commit()
+    await db.refresh(job)
+    logger.info(
+        "retry-failed job_id=%s titles=%d %s",
+        job.id,
+        len(failed),
+        "remuxing from the kept disc backup" if from_backup else "armed until the disc goes back in",
+    )
+    return RetryFailedResponse(job=JobView.model_validate(job), retried=len(failed), from_backup=from_backup)
 
 
 @router.post("/{job_id}/rip-again", response_model=RipAgainResponse)

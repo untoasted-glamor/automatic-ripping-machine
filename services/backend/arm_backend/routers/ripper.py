@@ -13,7 +13,12 @@ from arm_backend.auth import (
     require_drive_owner_by_track,
     require_service_token,
 )
-from arm_backend.auto_session import after_rip, cancel_parked_applications, resolve_routed_session_id
+from arm_backend.auto_session import (
+    after_rip,
+    cancel_parked_applications,
+    fan_out_retried_tracks,
+    resolve_routed_session_id,
+)
 from arm_backend.crash_recovery import reset_job_for_recovery
 from arm_backend.db import get_session
 from arm_backend.log_context import job_log_context
@@ -48,7 +53,13 @@ from arm_common import (
     TrackStatus,
     bind_log_context,
 )
-from arm_common.enums import NON_TERMINAL_JOB_STATUSES, DriveKind, DriveSourceKind, PreviouslyRippedAction
+from arm_common.enums import (
+    NON_TERMINAL_JOB_STATUSES,
+    POST_RIP_JOB_STATUSES,
+    DriveKind,
+    DriveSourceKind,
+    PreviouslyRippedAction,
+)
 from arm_common.models import Track
 from arm_common.models._columns import enum_value_str
 from arm_common.schemas import (
@@ -634,6 +645,17 @@ async def identify(
         # Disc re-scanned while its rip is in flight (restart race) — return the
         # live job; in-flight recovery owns it. No new job, no re-identify.
         return decision.job
+    if decision is not None and decision.action == "retry":
+        # The disc of a job armed to retry its failed titles went back in: rip
+        # those now (rip-start consumes the arm). The operator already chose,
+        # so no re-identify and no review hold.
+        job = decision.job
+        job.status = JobStatus.IDENTIFIED
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+        logger.info("identify drive_id=%s: disc of job_id=%s is back; retrying its failed titles", drive.id, job.id)
+        return job
     reuse_job = decision.job if decision is not None and decision.action == "reuse" else None
 
     # A disc ARM already ripped (on any drive) is held, rejected or ripped
@@ -932,6 +954,19 @@ async def rip_start(
         # branch returned early WITHOUT setting RIPPING/started_at, so a
         # pre-persisted-tracks job never transitioned and the rip never completed
         # (audit B2). Tolerate already-RIPPING (Start did it); transition if not.
+        #
+        # A ripped job comes back here only to retry its failed titles
+        # (POST /jobs/{id}/retry-failed armed it). `retrying` lasts until
+        # rip-complete, so a repeated rip-start still says it's a retry.
+        retry = flag_is_set(job.metadata_json, "retry_armed") or flag_is_set(job.metadata_json, "retrying")
+        if job.status in (*POST_RIP_JOB_STATUSES, JobStatus.FAILED) and not retry:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"job already ripped: status={enum_value_str(job.status)}",
+            )
+        if flag_is_set(job.metadata_json, "retry_armed"):
+            job.metadata_json = with_flags(job.metadata_json, retry_armed=False, retrying=True)
+            logger.info("rip-start job_id=%s: retrying its failed titles", job.id)
         if job.status != JobStatus.RIPPING:
             job.status = JobStatus.RIPPING
             if job.started_at is None:
@@ -944,6 +979,7 @@ async def rip_start(
             tracks=[TrackView.model_validate(t) for t in existing],
             min_length_seconds=min_length_seconds,
             scan_titles=_stored_scan_titles(job),
+            retry=retry,
         )
 
     # IDENTIFIED is the normal pre-rip state; AWAITING_REVIEW reaches here only
@@ -1384,6 +1420,9 @@ async def rip_complete(
     else:
         job.status = JobStatus.RIPPED_PARTIAL
 
+    retried = flag_is_set(job.metadata_json, "retrying")
+    if retried:
+        job.metadata_json = with_flags(job.metadata_json, retrying=False)
     job.ripped_at = datetime.now(timezone.utc)
     await session.commit()
     await session.refresh(job)
@@ -1436,5 +1475,9 @@ async def rip_complete(
         # RIPPED_AWAITING_IDENTIFY deliberately skips this — transcode is
         # gated on identity; resolve runs the same hook when it lands.
         await after_rip(session, job, hub)
+        if retried:
+            # The sessions already applied to this job get tasks for the
+            # titles the retry ripped; the auto path adds none to them.
+            await fan_out_retried_tracks(session, job, hub)
 
     return JobView.model_validate(job)

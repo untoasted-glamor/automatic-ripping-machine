@@ -693,6 +693,121 @@ async def cancel_parked_applications(db: AsyncSession, job: Job) -> int:
     return len(parked)
 
 
+# Applications that already fanned out (a parked or cancelled one has no
+# tasks to add to; the parked drain fills those itself).
+_FANNED_OUT_APPLICATION_STATUSES = (
+    SessionApplicationStatus.QUEUED,
+    SessionApplicationStatus.RUNNING,
+    SessionApplicationStatus.DONE,
+    SessionApplicationStatus.DONE_PARTIAL,
+    SessionApplicationStatus.FAILED,
+)
+
+
+async def fan_out_retried_tracks(db: AsyncSession, job: Job, hub: WSHub | None) -> int:
+    """After a retry of failed titles (POST /jobs/{id}/retry-failed): give each
+    session already applied to the job a task for every ripped title it has
+    none for. Neither the auto path (idempotent on an existing application)
+    nor a manual re-apply (collisions with the old outputs) would. A title
+    whose output would collide is left for the operator. Commits. Returns
+    how many tasks were added."""
+    applications = (
+        (
+            await db.execute(
+                select(SessionApplication)
+                .where(col(SessionApplication.job_id) == job.id)
+                .where(col(SessionApplication.status).in_(_FANNED_OUT_APPLICATION_STATUSES))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not applications:
+        return 0
+    tracks = list(
+        (await db.execute(select(Track).where(col(Track.job_id) == job.id).order_by(col(Track.index)))).scalars().all()
+    )
+    ripped = [t for t in tracks if t.status == TrackStatus.DONE and t.output_path]
+    added = 0
+    for application in applications:
+        sess = (await db.execute(select(Session).where(col(Session.id) == application.session_id))).scalar_one_or_none()
+        if sess is None:
+            continue
+        have = {t.source_track_id for t in await _load_tasks(db, application.id)}
+        missing = [t for t in ripped if t.id not in have]
+        if not missing:
+            continue
+        transcode_preset = None
+        if sess.transcode_preset_id is not None:
+            transcode_preset = (
+                await db.execute(select(TranscodePreset).where(col(TranscodePreset.id) == sess.transcode_preset_id))
+            ).scalar_one_or_none()
+        try:
+            resolved = compute_outputs(job, missing, sess, transcode_preset)
+        except TemplateValidationError as exc:
+            logger.warning(
+                "retry fan-out: template error session_application=%s job_id=%s: %s", application.id, job.id, exc
+            )
+            continue
+        colliding = {
+            c.output_path
+            for c in await find_collisions(db, [r.output_path for r in resolved], Path(settings.MEDIA_ROOT))
+        }
+        new_tasks = [
+            TranscodeTask(
+                session_application_id=application.id,
+                source_track_id=r.track_id,
+                status=TranscodeTaskStatus.QUEUED,
+                output_path=r.output_path,
+                attempts=0,
+                progress_pct=0,
+            )
+            for r in resolved
+            if r.output_path not in colliding
+        ]
+        if colliding:
+            logger.warning(
+                "retry fan-out: %d output(s) collide, not queued session_application=%s job_id=%s",
+                len(colliding),
+                application.id,
+                job.id,
+            )
+        if not new_tasks:
+            continue
+        db.add_all(new_tasks)
+        if application.status in (
+            SessionApplicationStatus.FAILED,
+            SessionApplicationStatus.DONE_PARTIAL,
+            SessionApplicationStatus.DONE,
+        ):
+            application.status = SessionApplicationStatus.RUNNING
+            application.completed_at = None
+            db.add(application)
+        added += len(new_tasks)
+        logger.info(
+            "retry fan-out: %d task(s) for retried titles session_application=%s job_id=%s",
+            len(new_tasks),
+            application.id,
+            job.id,
+        )
+        if hub is not None:
+            await hub.emit(
+                topic="session.events",
+                event_type="session.queued",
+                payload={
+                    "session_application_id": application.id,
+                    "session_id": sess.id,
+                    "job_id": job.id,
+                    "source": "auto",
+                    "task_count": len(new_tasks),
+                },
+                job_id=job.id,
+                session=db,
+            )
+    await db.commit()
+    return added
+
+
 async def fan_out_waiting_identify_applications(
     db: AsyncSession,
     *,

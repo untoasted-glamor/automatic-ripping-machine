@@ -85,6 +85,17 @@ class RipAgainResponse(BaseModel):
     armed: bool = False
 
 
+class RetryFailedResponse(BaseModel):
+    """POST /api/jobs/{id}/retry-failed. `retried` failed titles are queued
+    again. `from_backup`: the job keeps a finished disc backup and its drive's
+    ripper was told to remux them from it, with no disc; otherwise the job is
+    armed and the retry starts when the disc goes back in that drive."""
+
+    job: JobView
+    retried: int
+    from_backup: bool
+
+
 class ManualTriggerRequest(BaseModel):
     """POST /api/jobs/manual — kick off a rip on a drive that already has a
     disc in the tray. The ripper picks it up via WS command and runs the
@@ -392,6 +403,10 @@ class RipStartResponse(BaseModel):
     # didn't select have no Track row at all, so `tracks` alone can't say.
     # None when the job has no stored scan.
     scan_titles: list[ScanTitle] | None = None
+    # True when this rip retries the failed titles of a ripped job (POST
+    # /api/jobs/{id}/retry-failed): its DONE tracks are kept as they are, and
+    # the ripper rips the rest into a folder of its own.
+    retry: bool = False
 
 
 # The one definition of apply/fan-out skip reasons — the backend engine

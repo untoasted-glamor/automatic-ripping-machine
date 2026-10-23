@@ -3856,6 +3856,26 @@ export type ResolveResponse = {
 export type RetentionPolicy = 'keep_forever' | 'prune_after_session' | 'custom';
 
 /**
+ * RetryFailedResponse
+ *
+ * POST /api/jobs/{id}/retry-failed. `retried` failed titles are queued
+ * again. `from_backup`: the job keeps a finished disc backup and its drive's
+ * ripper was told to remux them from it, with no disc; otherwise the job is
+ * armed and the retry starts when the disc goes back in that drive.
+ */
+export type RetryFailedResponse = {
+    job: JobView;
+    /**
+     * Retried
+     */
+    retried: number;
+    /**
+     * From Backup
+     */
+    from_backup: boolean;
+};
+
+/**
  * RipAgainResponse
  *
  * POST /api/jobs/{id}/rip-again. `started_job_id` names a held copy of
@@ -4011,6 +4031,10 @@ export type RipStartResponse = {
      * Scan Titles
      */
     scan_titles?: Array<ScanTitle> | null;
+    /**
+     * Retry
+     */
+    retry?: boolean;
 };
 
 /**
@@ -5604,6 +5628,26 @@ export type ResolveResponseWritable = {
     fan_out: Array<ResolveFanOutOutcomeView>;
 };
 
+/**
+ * RetryFailedResponse
+ *
+ * POST /api/jobs/{id}/retry-failed. `retried` failed titles are queued
+ * again. `from_backup`: the job keeps a finished disc backup and its drive's
+ * ripper was told to remux them from it, with no disc; otherwise the job is
+ * armed and the retry starts when the disc goes back in that drive.
+ */
+export type RetryFailedResponseWritable = {
+    job: JobViewWritable;
+    /**
+     * Retried
+     */
+    retried: number;
+    /**
+     * From Backup
+     */
+    from_backup: boolean;
+};
+
 export type HealthApiHealthGetData = {
     body?: never;
     path?: never;
@@ -6672,6 +6716,42 @@ export type RipStartReviewApiJobsJobIdRipStartReviewPostResponses = {
 };
 
 export type RipStartReviewApiJobsJobIdRipStartReviewPostResponse = RipStartReviewApiJobsJobIdRipStartReviewPostResponses[keyof RipStartReviewApiJobsJobIdRipStartReviewPostResponses];
+
+export type RetryFailedApiJobsJobIdRetryFailedPostData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/jobs/{job_id}/retry-failed';
+};
+
+export type RetryFailedApiJobsJobIdRetryFailedPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type RetryFailedApiJobsJobIdRetryFailedPostError = RetryFailedApiJobsJobIdRetryFailedPostErrors[keyof RetryFailedApiJobsJobIdRetryFailedPostErrors];
+
+export type RetryFailedApiJobsJobIdRetryFailedPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: RetryFailedResponse;
+};
+
+export type RetryFailedApiJobsJobIdRetryFailedPostResponse = RetryFailedApiJobsJobIdRetryFailedPostResponses[keyof RetryFailedApiJobsJobIdRetryFailedPostResponses];
 
 export type RipAgainApiJobsJobIdRipAgainPostData = {
     body?: never;

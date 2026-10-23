@@ -26,7 +26,12 @@ from arm_ripper.drive_handle import DriveHandle
 from arm_ripper.makemkv_sdf import refresh_makemkv_sdf
 from arm_ripper.makemkv_key import refresh_makemkv_key
 from arm_ripper.rip import RipResult, rip_all
-from arm_ripper.rip.dispatcher import DEFAULT_MIN_LENGTH_SECONDS, SELECTION_BACKUP_DIRNAME, TransferStats
+from arm_ripper.rip.dispatcher import (
+    BACKUP_COMPLETE_MARKER,
+    DEFAULT_MIN_LENGTH_SECONDS,
+    SELECTION_BACKUP_DIRNAME,
+    TransferStats,
+)
 from arm_ripper.drive_poll import _ABSENT_ERRNOS, DriveState, read_drive_status
 from arm_ripper.scan import ScanError, scan as scan_disc
 from arm_ripper.source import is_file_source
@@ -317,6 +322,13 @@ class JobController:
                 logger.warning("manual.trigger with non-string session_id: %r", session_id)
                 session_id = None
             asyncio.create_task(self.handle_manual_trigger(session_id))
+        elif envelope.event_type == "rip.retry":
+            payload = envelope.payload if isinstance(envelope.payload, dict) else {}
+            job_id = payload.get("job_id")
+            if not isinstance(job_id, str):
+                logger.warning("rip.retry without job_id payload: %s", payload)
+                return
+            asyncio.create_task(self.handle_retry(job_id))
         elif envelope.event_type == "job.abandoned":
             payload = envelope.payload if isinstance(envelope.payload, dict) else {}
             job_id = payload.get("job_id")
@@ -405,6 +417,40 @@ class JobController:
             logger.warning("manual.trigger ignored: no device_path bound to controller")
             return
         await self._run_pipeline(self._device_path, pending_session_id=session_id)
+
+    async def handle_retry(self, job_id: str) -> None:
+        """`rip.retry`: remux a ripped job's failed titles from the disc backup
+        it kept (POST /api/jobs/{id}/retry-failed, track-select plan S15). No
+        disc is read, so none has to be in the drive, and none is ejected. A
+        busy drive ignores it: the job stays armed, and its disc going back in
+        starts the retry instead."""
+        if self.is_active:
+            logger.info("rip.retry for job_id=%s ignored: drive busy", job_id)
+            return
+        if not (RAW_ROOT / job_id / SELECTION_BACKUP_DIRNAME / BACKUP_COMPLETE_MARKER).is_file():
+            logger.warning("rip.retry for job_id=%s ignored: no finished disc backup", job_id)
+            return
+        async with self._active_lock:
+            self._active_task = asyncio.current_task()
+            self._active_job_id = job_id
+            try:
+                with with_log_context(job_id=job_id):
+                    await refresh_makemkv_key(key=await self._configured_makemkv_key())
+                    job = await self._client.get_job(job_id)
+                    rip_start = await self._rip_start_with_retry(job_id)
+                    logger.info("retrying %d title(s) of job_id=%s from its disc backup", len(rip_start.tracks), job_id)
+                    await self._execute_rip(
+                        job_id=job_id,
+                        disc_type=job.disc_type,
+                        device_path=self._device_path or "",
+                        rip_start=rip_start,
+                        drive_free=True,
+                    )
+            except httpx.HTTPStatusError as e:
+                logger.error("rip.retry for job_id=%s refused by the backend (%s)", job_id, e.response.status_code)
+            finally:
+                self._active_task = None
+                self._active_job_id = None
 
     async def handle_disc_inserted(self, device_path: str) -> None:
         if self.is_active:
@@ -920,7 +966,11 @@ class JobController:
         disc_type: DiscType,
         device_path: str,
         rip_start: RipStartResponse,
+        drive_free: bool = False,
     ) -> None:
+        """`drive_free`: the rip reads no drive (a retry from a kept backup),
+        so the drive counts as given back from the start."""
+        self._drive_released = drive_free
         try:
             await self._rip_and_eject(job_id=job_id, disc_type=disc_type, device_path=device_path, rip_start=rip_start)
         finally:
@@ -943,6 +993,7 @@ class JobController:
         # remaining title (D-133). ISO and folder sources have no bus to drop.
         resumable = (
             disc_type in (DiscType.DVD, DiscType.BLURAY)
+            and not self._drive_released
             and not is_file_source(device_path)
             and not all(t.kind in (TrackKind.DISC_BACKUP, TrackKind.DATA_DUMP) for t in tracks)
         )
@@ -950,7 +1001,14 @@ class JobController:
         # Track ids whose title the lost drive left unfinished, and the files
         # of every title that finished (kept across a resume).
         unfinished: set[str] = set()
-        kept: set[Path] = set()
+        # A retry's DONE titles own their files from the first rip.
+        kept: set[Path] = {Path(t.output_path) for t in tracks if t.status == TrackStatus.DONE and t.output_path}
+        if rip_start.retry:
+            # Retry the failed titles only (POST /api/jobs/{id}/retry-failed):
+            # DONE tracks count as left out, so backup-then-remux rips just
+            # the rest, into a folder of its own (a remux names its file by
+            # disc title, which can clash with the first rip's `mkv all` names).
+            tracks = [t.model_copy(update={"excluded": True}) if t.status == TrackStatus.DONE else t for t in tracks]
         # IN_PROGRESS is sent once per track across every pass.
         started: set[str] = set()
 
@@ -1025,6 +1083,11 @@ class JobController:
         )
         rip_path = device_path
         rip_dir = output_dir
+        if rip_start.retry:
+            attempt = 1
+            while (output_dir / f"retry-{attempt}").exists():
+                attempt += 1
+            rip_dir = output_dir / f"retry-{attempt}"
         skip: set[str] = set()
         resumes = 0
         watcher: asyncio.Task[None] | None = None

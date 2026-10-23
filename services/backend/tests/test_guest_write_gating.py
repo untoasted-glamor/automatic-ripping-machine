@@ -126,6 +126,7 @@ _GATED_ROUTES: list[tuple[str, str, dict[str, object]]] = [
     ("DELETE", "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001", {}),
     ("DELETE", "/api/jobs", {}),
     ("DELETE", "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/backup", {}),
+    ("POST", "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/retry-failed", {}),
     ("POST", "/api/jobs/manual", {}),
     ("PATCH", "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001", {}),
     ("POST", "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/resolve", {}),

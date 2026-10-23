@@ -6,6 +6,8 @@ Caller (identify) supplies the scan's (algo, value) fingerprints. We look up the
 drive's non-terminal jobs and match by any shared fingerprint:
   - pre-rip status  -> reuse  (refresh scan, preserve identity + pending_session_id)
   - ripping         -> in_flight (restart-race; return the live job)
+  - armed retry     -> retry (a ripped_partial / failed job whose failed titles
+                       the operator asked to retry, waiting for its disc)
   - no match        -> None  (caller creates a fresh Job)
 
 FakeSession can't evaluate a multi-table JOIN, so we fetch candidate jobs by
@@ -21,16 +23,21 @@ from typing import Literal, NamedTuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
-from arm_common.enums import NON_TERMINAL_JOB_STATUSES, POST_RIP_JOB_STATUSES, PRE_RIP_JOB_STATUSES
+from arm_common.enums import JobStatus, NON_TERMINAL_JOB_STATUSES, POST_RIP_JOB_STATUSES, PRE_RIP_JOB_STATUSES
+from arm_common.schemas.job_metadata import flag_is_set
 from arm_common.models.disc_fingerprint import DiscFingerprint
 from arm_common.models.job import Job
 
 logger = logging.getLogger("arm_backend")
 
 
+# A job in one of these is a candidate only while armed (`retry_armed`).
+_RETRY_JOB_STATUSES = (JobStatus.RIPPED_PARTIAL, JobStatus.FAILED)
+
+
 class ReuseDecision(NamedTuple):
     job: Job
-    action: Literal["reuse", "in_flight"]
+    action: Literal["reuse", "in_flight", "retry"]
 
 
 async def find_reusable_job_for_disc(
@@ -53,18 +60,20 @@ async def find_reusable_job_for_disc(
     if not wanted:
         return None
 
-    # Step 1: candidate jobs — drive_id match + non-terminal status.
-    candidates: Sequence[Job] = (
+    # Step 1: candidate jobs — drive_id match + non-terminal status, plus a
+    # ripped job armed to retry its failed titles.
+    rows: Sequence[Job] = (
         (
             await session.execute(
                 select(Job)
                 .where(col(Job.drive_id) == drive_id)
-                .where(col(Job.status).in_(tuple(NON_TERMINAL_JOB_STATUSES)))
+                .where(col(Job.status).in_((*NON_TERMINAL_JOB_STATUSES, *_RETRY_JOB_STATUSES)))
             )
         )
         .scalars()
         .all()
     )
+    candidates = [j for j in rows if j.status not in _RETRY_JOB_STATUSES or flag_is_set(j.metadata_json, "retry_armed")]
     if not candidates:
         return None
     by_id = {j.id: j for j in candidates}
@@ -86,7 +95,13 @@ async def find_reusable_job_for_disc(
     if matched_job is None:
         return None
 
-    action: Literal["reuse", "in_flight"] = "reuse" if matched_job.status in PRE_RIP_JOB_STATUSES else "in_flight"
+    action: Literal["reuse", "in_flight", "retry"]
+    if matched_job.status in _RETRY_JOB_STATUSES:
+        action = "retry"
+    elif matched_job.status in PRE_RIP_JOB_STATUSES:
+        action = "reuse"
+    else:
+        action = "in_flight"
     return ReuseDecision(job=matched_job, action=action)
 
 
