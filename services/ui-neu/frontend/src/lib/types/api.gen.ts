@@ -2315,6 +2315,7 @@ export type JobDetailView = {
      */
     fingerprints?: Array<DiscFingerprintView>;
     previous_rip?: PreviousRipView | null;
+    raw_backup?: RawBackupView | null;
 };
 
 /**
@@ -3634,6 +3635,24 @@ export type PreviouslyRipped = {
  * (a job in POST_RIP_JOB_STATUSES, on any drive).
  */
 export type PreviouslyRippedAction = 'hold' | 'reject' | 'rip';
+
+/**
+ * RawBackupView
+ *
+ * The job's raw disc backup under `/raw/<job_id>/.backup/`: a decrypted
+ * copy of the disc (an ISO image for a DVD, a folder for a Blu-ray) the
+ * ripper remuxes kept titles from. Kept only while a title still needs it.
+ */
+export type RawBackupView = {
+    /**
+     * Size Bytes
+     */
+    size_bytes: number;
+    /**
+     * Complete
+     */
+    complete: boolean;
+};
 
 /**
  * RegisterRequest
@@ -5494,6 +5513,7 @@ export type JobDetailViewWritable = {
      */
     fingerprints?: Array<DiscFingerprintView>;
     previous_rip?: PreviousRipView | null;
+    raw_backup?: RawBackupView | null;
 };
 
 /**
@@ -6729,6 +6749,42 @@ export type ReviewPauseApiJobsJobIdReviewPausePostResponses = {
 };
 
 export type ReviewPauseApiJobsJobIdReviewPausePostResponse = ReviewPauseApiJobsJobIdReviewPausePostResponses[keyof ReviewPauseApiJobsJobIdReviewPausePostResponses];
+
+export type DeleteJobBackupApiJobsJobIdBackupDeleteData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/jobs/{job_id}/backup';
+};
+
+export type DeleteJobBackupApiJobsJobIdBackupDeleteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeleteJobBackupApiJobsJobIdBackupDeleteError = DeleteJobBackupApiJobsJobIdBackupDeleteErrors[keyof DeleteJobBackupApiJobsJobIdBackupDeleteErrors];
+
+export type DeleteJobBackupApiJobsJobIdBackupDeleteResponses = {
+    /**
+     * Successful Response
+     */
+    204: void;
+};
+
+export type DeleteJobBackupApiJobsJobIdBackupDeleteResponse = DeleteJobBackupApiJobsJobIdBackupDeleteResponses[keyof DeleteJobBackupApiJobsJobIdBackupDeleteResponses];
 
 export type ManualTriggerApiJobsManualPostData = {
     body: ManualTriggerRequest;

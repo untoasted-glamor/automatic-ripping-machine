@@ -31,6 +31,7 @@ from arm_backend.identity.proposals import (
 from arm_backend.identity.stage_runner import EpisodeStageRunner
 from arm_backend.job_abandon import abandon_job_transition
 from arm_backend.path_template import TemplateValidationError
+from arm_backend.raw_backup import delete_backup, describe_backup
 from arm_backend.routers._params import JobIdParam
 from arm_backend.routers.logs import per_job_log_path
 from arm_backend.routers.ripper import persist_review_tracks
@@ -448,6 +449,7 @@ async def get_job_detail(
         tracks=[_track_view(t) for t in tracks],
         fingerprints=[DiscFingerprintView.model_validate(fp) for fp in fingerprints],
         previous_rip=await _previous_rip_view(session, job),
+        raw_backup=describe_backup(job.id),
     )
 
 
@@ -901,6 +903,38 @@ async def delete_job(
         )
     else:
         logger.info("delete job_id=%s delete_raw=False", job_id)
+
+
+@router.delete("/{job_id}/backup", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_job_backup(
+    job_id: JobIdParam,
+    _: User = Depends(require_writer),
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    """Delete the job's raw disc backup (`/raw/{job_id}/.backup/`).
+
+    The ripper keeps it only when a kept title failed to remux, so a retry
+    needs no disc; deleting it frees the space (~25–50 GB for a Blu-ray) at
+    the cost of re-reading the disc for that retry. The rip files and the
+    job stay. Refused while the job is ripping (the ripper is writing or
+    reading the backup); a job with no backup is a no-op.
+    """
+    job = (await db.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")
+    if job.status == JobStatus.RIPPING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="job is ripping; the ripper is using its raw backup",
+        )
+    try:
+        delete_backup(job.id)
+    except OSError as exc:
+        logger.warning("raw backup delete failed job_id=%s: %s", job.id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"could not delete the raw backup: {exc}",
+        ) from exc
 
 
 @router.delete("", response_model=BulkDeleteJobsResponse)
