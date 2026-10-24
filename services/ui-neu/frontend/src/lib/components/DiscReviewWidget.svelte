@@ -20,6 +20,7 @@
 	import SkeletonCard from './SkeletonCard.svelte';
 	import JobInfoForm from './JobInfoForm.svelte';
 	import ReviewTracksTable from './ReviewTracksTable.svelte';
+	import JobTrackPicker from './JobTrackPicker.svelte';
 	import IsoSourceChip from './IsoSourceChip.svelte';
 	import { isAdmin } from '$lib/stores/auth';
 
@@ -210,6 +211,9 @@
 	// awaiting_user_id disc parks it in awaiting_review too, so the resolve's
 	// answer decides, not the status the card was opened with. Then dismiss the
 	// card; the disc is on its way.
+	let trackPicker = $state<JobTrackPicker | null>(null);
+	let showTracks = $state(false);
+
 	async function handleStartRip() {
 		if (!job) return;
 		const j = data?.job ?? job;
@@ -221,6 +225,9 @@
 		starting = true;
 		errorMessage = null;
 		try {
+			// The audio/subtitle choice is saved first: it applies to this
+			// disc's transcodes, which follow the rip.
+			await trackPicker?.save();
 			const resolved = await resolveJob(job.id, {
 				title: startTitle,
 				year: j.year ?? null,
@@ -497,6 +504,13 @@
 			</div>
 		{/if}
 
+		{#if isVideo && canStart && !previousId}
+			<details class="disc-review-widget-panel-top" data-testid="disc-review-tracks" bind:open={showTracks}>
+				<summary class="disc-review-widget-tracks-summary">Audio and subtitle tracks</summary>
+				<JobTrackPicker bind:this={trackPicker} jobId={job.id} variant="review" />
+			</details>
+		{/if}
+
 		{#if showInfo}
 			<JobInfoForm
 				{job}
@@ -542,6 +556,12 @@
 {/if}
 
 <style>
+	.disc-review-widget-tracks-summary {
+		cursor: pointer;
+		font-size: 0.875rem;
+		font-weight: 500;
+		color: var(--color-text-secondary);
+	}
 	/* the widget's own emphasis ring (ring-2 ring-primary) is a stronger
 	   highlight than card's default 1px border, since this card is meant to
 	   grab attention on the dashboard */

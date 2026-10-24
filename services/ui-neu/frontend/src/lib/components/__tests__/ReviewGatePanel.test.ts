@@ -15,10 +15,13 @@ vi.mock('$lib/stores/auth', async () => {
 
 vi.mock('$lib/api/jobs', () => ({
 	startWaitingJob: vi.fn(() => Promise.resolve({})),
-	pauseWaitingJob: vi.fn(() => Promise.resolve({}))
+	pauseWaitingJob: vi.fn(() => Promise.resolve({})),
+	fetchTrackSelection: vi.fn(() => Promise.reject(new Error('not loaded'))),
+	saveTrackSelection: vi.fn()
 }));
 
-import { pauseWaitingJob, startWaitingJob } from '$lib/api/jobs';
+import { fetchTrackSelection, pauseWaitingJob, saveTrackSelection, startWaitingJob } from '$lib/api/jobs';
+import { trackView } from '../__fixtures__/trackSelection';
 import * as authStore from '$lib/stores/auth';
 
 const held = (overrides = {}) =>
@@ -76,5 +79,56 @@ describe('ReviewGatePanel', () => {
 		renderComponent(ReviewGatePanel, { props: { job: held(), requiresConfirm: true, waitSeconds: 60 } });
 		expect(screen.getByTestId('review-wait-confirm')).toBeInTheDocument();
 		expect(screen.queryByTestId('review-gate-start')).not.toBeInTheDocument();
+	});
+});
+
+describe('ReviewGatePanel track choice', () => {
+	it('saves the disc track choice before starting the rip', async () => {
+		vi.mocked(fetchTrackSelection).mockResolvedValue(trackView());
+		const order: string[] = [];
+		vi.mocked(saveTrackSelection).mockImplementation(async () => {
+			order.push('save');
+			return trackView();
+		});
+		vi.mocked(startWaitingJob).mockImplementation(async () => {
+			order.push('start');
+			return {} as never;
+		});
+		renderComponent(ReviewGatePanel, {
+			props: { job: held({ disc_type: 'bluray' }), requiresConfirm: true, waitSeconds: 60 }
+		});
+		await waitFor(() => expect(screen.getByTestId('jtp-custom')).toBeInTheDocument());
+		await fireEvent.click(screen.getByTestId('jtp-custom'));
+		await fireEvent.click(screen.getByTestId('jtp-disc-audio-eng'));
+		await fireEvent.click(screen.getByTestId('review-gate-start'));
+		await waitFor(() => expect(order).toEqual(['save', 'start']));
+		expect(vi.mocked(saveTrackSelection).mock.calls[0][1]).toEqual(
+			expect.objectContaining({ audio_languages: ['jpn'] })
+		);
+	});
+
+	it('does not start when the choice cannot be saved, and starts unchanged without saving', async () => {
+		vi.mocked(fetchTrackSelection).mockResolvedValue(trackView());
+		renderComponent(ReviewGatePanel, {
+			props: { job: held({ disc_type: 'dvd' }), requiresConfirm: true, waitSeconds: 60 }
+		});
+		await waitFor(() => expect(screen.getByTestId('jtp-custom')).toBeInTheDocument());
+		await fireEvent.click(screen.getByTestId('review-gate-start'));
+		await waitFor(() => expect(startWaitingJob).toHaveBeenCalled());
+		expect(saveTrackSelection).not.toHaveBeenCalled();
+
+		vi.mocked(startWaitingJob).mockClear();
+		await fireEvent.click(screen.getByTestId('jtp-custom'));
+		await fireEvent.change(screen.getByTestId('jtp-audio-selection'), { target: { value: 'languages' } });
+		await fireEvent.click(screen.getByTestId('review-gate-start'));
+		await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Add at least one language'));
+		expect(startWaitingJob).not.toHaveBeenCalled();
+	});
+
+	it('shows no track choice for a CD', () => {
+		renderComponent(ReviewGatePanel, {
+			props: { job: held({ disc_type: 'cd' }), requiresConfirm: true, waitSeconds: 60 }
+		});
+		expect(screen.queryByTestId('review-gate-tracks')).toBeNull();
 	});
 });

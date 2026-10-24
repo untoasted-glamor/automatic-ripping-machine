@@ -6,7 +6,8 @@ import { createJob } from '../__fixtures__/job';
 import { fetchSessions } from '$lib/api/sessions';
 import { fetchRipPresets } from '$lib/api/ripPresets';
 import { fetchTranscodePresets } from '$lib/api/transcodePresets';
-import { applySession, fetchNamingPreview } from '$lib/api/jobs';
+import { applySession, fetchNamingPreview, fetchTrackSelection } from '$lib/api/jobs';
+import { trackView } from '../__fixtures__/trackSelection';
 import { ApiError } from '$lib/api/client';
 import { setTranscodeRuntimeEnabled } from '$lib/stores/config';
 import type {
@@ -28,7 +29,9 @@ vi.mock('$lib/api/transcodePresets', () => ({
 }));
 vi.mock('$lib/api/jobs', () => ({
 	applySession: vi.fn(),
-	fetchNamingPreview: vi.fn()
+	fetchNamingPreview: vi.fn(),
+	fetchTrackSelection: vi.fn(() => Promise.reject(new Error('not loaded'))),
+	saveTrackSelection: vi.fn()
 }));
 
 const fetchSessionsMock = vi.mocked(fetchSessions);
@@ -611,5 +614,66 @@ describe('ApplySessionDialog', () => {
 		await waitFor(() => {
 			expect(screen.getByTestId('apply-session-error')).toHaveTextContent(detail);
 		});
+	});
+});
+
+describe('ApplySessionDialog track choice', () => {
+	afterEach(() => {
+		cleanup();
+		vi.clearAllMocks();
+	});
+
+	it('sends the job track choice with the apply, and again with Overwrite', async () => {
+		fetchSessionsMock.mockResolvedValue([createSession({ id: 'ses_movie', name: 'Movie MKV' })]);
+		fetchRipPresetsMock.mockResolvedValue([createRipPreset()]);
+		fetchTranscodePresetsMock.mockResolvedValue([createTranscodePreset()]);
+		fetchNamingPreviewMock.mockResolvedValue({ items: [] } as never);
+		vi.mocked(fetchTrackSelection).mockResolvedValue(trackView());
+		applySessionMock.mockRejectedValueOnce(
+			new ApiError(409, 'collision', {
+				detail: {
+					collisions: [{ output_path: '/m/x.mkv', existing_task_id: null, on_filesystem: true, reason: 'on_disk' }]
+				}
+			})
+		);
+		applySessionMock.mockResolvedValueOnce(makeApplyResp());
+		renderComponent(ApplySessionDialog, {
+			props: { job: createJob({ id: 'job_1', disc_type: 'bluray' }), onclose: vi.fn(), onapplied: vi.fn() }
+		});
+		await waitFor(() => expect(screen.getByText(/Movie MKV/)).toBeInTheDocument());
+		await fireEvent.change(screen.getByTestId('apply-session-select'), { target: { value: 'ses_movie' } });
+		await waitFor(() => expect(fetchTrackSelection).toHaveBeenCalledWith('job_1', 'ses_movie'));
+		await waitFor(() => expect(screen.getByTestId('jtp-custom')).toBeInTheDocument());
+		await fireEvent.click(screen.getByTestId('jtp-custom'));
+		await fireEvent.change(screen.getByTestId('jtp-audio-format'), { target: { value: 'aac_stereo' } });
+		await fireEvent.click(screen.getByTestId('apply-session-apply'));
+		await waitFor(() => expect(screen.getByTestId('apply-session-overwrite')).toBeInTheDocument());
+		await fireEvent.click(screen.getByTestId('apply-session-overwrite'));
+		await waitFor(() => expect(applySessionMock).toHaveBeenCalledTimes(2));
+		for (const call of applySessionMock.mock.calls) {
+			expect(call[1].track_selection).toEqual(expect.objectContaining({ audio_format: 'aac_stereo' }));
+		}
+		expect(applySessionMock.mock.calls[1][1].overwrite).toBe(true);
+	});
+
+	it('refuses to apply a languages choice with no language', async () => {
+		fetchSessionsMock.mockResolvedValue([createSession({ id: 'ses_movie', name: 'Movie MKV' })]);
+		fetchRipPresetsMock.mockResolvedValue([createRipPreset()]);
+		fetchTranscodePresetsMock.mockResolvedValue([createTranscodePreset()]);
+		fetchNamingPreviewMock.mockResolvedValue({ items: [] } as never);
+		vi.mocked(fetchTrackSelection).mockResolvedValue(trackView());
+		renderComponent(ApplySessionDialog, {
+			props: { job: createJob({ id: 'job_1', disc_type: 'bluray' }), onclose: vi.fn(), onapplied: vi.fn() }
+		});
+		await waitFor(() => expect(screen.getByText(/Movie MKV/)).toBeInTheDocument());
+		await fireEvent.change(screen.getByTestId('apply-session-select'), { target: { value: 'ses_movie' } });
+		await waitFor(() => expect(screen.getByTestId('jtp-custom')).toBeInTheDocument());
+		await fireEvent.click(screen.getByTestId('jtp-custom'));
+		await fireEvent.change(screen.getByTestId('jtp-audio-selection'), { target: { value: 'languages' } });
+		await fireEvent.click(screen.getByTestId('apply-session-apply'));
+		await waitFor(() =>
+			expect(screen.getByTestId('apply-session-error')).toHaveTextContent('Add at least one language')
+		);
+		expect(applySessionMock).not.toHaveBeenCalled();
 	});
 });

@@ -169,7 +169,8 @@
 				audio_languages: p.audio_languages,
 				subtitle_selection: p.subtitle_selection,
 				subtitle_languages: p.subtitle_languages,
-				subtitle_output: p.subtitle_output
+				subtitle_output: p.subtitle_output,
+				audio_format: p.audio_format
 			});
 			await data.load();
 		} catch (e) {

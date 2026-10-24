@@ -7,6 +7,7 @@
 	import { ApiError } from '$lib/api/client';
 	import { transcodeRuntimeEnabled } from '$lib/stores/config';
 	import { isPassthroughSession, presetToolMap } from '$lib/utils/sessions';
+	import JobTrackPicker from './JobTrackPicker.svelte';
 	import type {
 		ApplySessionResponse,
 		CollisionInfo,
@@ -16,6 +17,7 @@
 		MediaType,
 		RipPresetView,
 		SessionView,
+		TrackSelectionSettings,
 		TranscodePresetView
 	} from '$lib/types/api.gen';
 
@@ -95,6 +97,8 @@
 	}
 
 	const selectedSession = $derived(sessions.find((s) => s.id === selected) ?? null);
+	let trackPicker = $state<JobTrackPicker | null>(null);
+	let chosenTracks = $state<{ track_selection?: TrackSelectionSettings | null }>({});
 
 	const ripById = $derived(new Map(ripPresets.map((p) => [p.id, p])));
 	const tcById = $derived(new Map(transcodePresets.map((p) => [p.id, p])));
@@ -208,7 +212,20 @@
 		submitting = true;
 		error = null;
 		try {
-			const resp = await applySession(job.id, { session_id: selected, overwrite });
+			if (trackPicker?.loaded()) {
+				if (!trackPicker.valid()) {
+					error = 'Add at least one language to the track choice, or choose all tracks.';
+					return;
+				}
+				// Kept for the Overwrite retry, after which the picker is gone.
+				chosenTracks = { track_selection: trackPicker.value() };
+			}
+			const resp = await applySession(job.id, {
+				session_id: selected,
+				overwrite,
+				// Only an encode session uses the track choice.
+				...chosenTracks
+			});
 			onapplied(resp);
 		} catch (e) {
 			if (e instanceof ApiError && e.status === 409 && e.body && typeof e.body === 'object') {
@@ -303,6 +320,12 @@
 						</div>
 					</dl>
 				</div>
+				{#if selectedTranscodePreset && selectedTranscodePreset.tool === 'handbrake'}
+					<details class="apply-session-tracks" data-testid="apply-session-tracks">
+						<summary class="field-label">Audio and subtitle tracks</summary>
+						<JobTrackPicker bind:this={trackPicker} jobId={job.id} variant="apply" sessionId={selected} />
+					</details>
+				{/if}
 				{#if previewProblem}
 					<p data-testid="recipe-output-problem" class="apply-session-problem">
 						<svg class="apply-session-problem-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -391,6 +414,10 @@
 		border: 0;
 		padding: 0;
 		cursor: default;
+	}
+	.apply-session-tracks summary {
+		cursor: pointer;
+		margin: 0.5rem 0;
 	}
 	.apply-session-panel {
 		position: relative;

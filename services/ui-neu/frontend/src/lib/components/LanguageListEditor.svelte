@@ -13,9 +13,15 @@
 		disabled?: boolean;
 		// Shown under the first entry, e.g. "default track".
 		firstNote?: string;
+		// A note per entry, e.g. "Not on this disc"; null for none.
+		itemNote?: (code: string) => string | null;
 	}
 
-	let { value, onchange, label, testid, disabled = false, firstNote }: Props = $props();
+	let { value, onchange, label, testid, disabled = false, firstNote, itemNote }: Props = $props();
+
+	function notes(code: string, first: boolean): string {
+		return [code, first ? firstNote : null, itemNote?.(code) ?? null].filter(Boolean).join(' | ');
+	}
 
 	let custom = $state('');
 	let error = $state<string | null>(null);
@@ -74,7 +80,7 @@
 				<li class="list-row list-row-compact language-list-row" data-testid="{testid}-item">
 					<div class="list-row-main">
 						<span>{languageLabel(code)}</span>
-						<span>{code}{i === 0 && firstNote ? ` | ${firstNote}` : ''}</span>
+						<span>{notes(code, i === 0)}</span>
 					</div>
 					<div class="list-row-actions">
 						<button

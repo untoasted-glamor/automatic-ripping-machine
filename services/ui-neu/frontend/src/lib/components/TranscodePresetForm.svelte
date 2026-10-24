@@ -8,14 +8,12 @@
 	import { onMount } from 'svelte';
 	import { createTranscodePreset, updateTranscodePreset } from '$lib/api/transcodePresets';
 	import { encodersStore, PRESET_ENCODER_ID } from '$lib/stores/encoders.svelte';
-	import LanguageListEditor from './LanguageListEditor.svelte';
+	import TrackSelectionEditor from './TrackSelectionEditor.svelte';
+	import { DEFAULT_TRACKS, tracksValid, type TrackSettings } from '$lib/utils/track-selection';
 	import type {
-		AudioSelection,
 		ContainerFormat,
 		EncoderAvailabilityView,
 		MediaType,
-		SubtitleOutput,
-		SubtitleSelection,
 		TranscodePresetView,
 		TranscodeTool
 	} from '$lib/types/api.gen';
@@ -108,52 +106,29 @@
 
 	let extraArgs = $state(preset?.extra_args ?? '');
 
-	// Track selection. A new preset keeps every audio track and writes every
-	// subtitle as a separate file (the API's defaults too).
-	let audioSelection = $state<AudioSelection>(preset?.audio_selection ?? 'all');
-	let audioLanguages = $state<string[]>(preset?.audio_languages ?? []);
-	let subtitleSelection = $state<SubtitleSelection>(preset?.subtitle_selection ?? 'all');
-	let subtitleLanguages = $state<string[]>(preset?.subtitle_languages ?? []);
-	let subtitleOutput = $state<SubtitleOutput>(preset?.subtitle_output ?? 'separate');
-
-	let audioListMissing = $derived(audioSelection === 'languages' && audioLanguages.length === 0);
-	let subtitleListMissing = $derived(subtitleSelection === 'languages' && subtitleLanguages.length === 0);
-	let keepsSubtitles = $derived(subtitleSelection === 'all' || subtitleSelection === 'languages');
-
-	let audioHelp = $derived(
-		audioSelection === 'preset'
-			? usesFfmpegVaapi
-				? 'Keeps every audio track.'
-				: 'Keeps what the HandBrake preset keeps: the first audio track only.'
-			: audioSelection === 'all'
-				? 'Keeps every audio track in disc order. The first one is the default track.'
-				: 'Keeps the tracks in these languages, in this order. The first one is the default track. If none of them is on the disc, the first audio track is kept.'
-	);
-	let subtitleHelp = $derived(
-		subtitleSelection === 'preset'
-			? usesFfmpegVaapi
-				? 'Keeps every subtitle track in an MKV, none in an MP4.'
-				: 'Keeps what the HandBrake preset keeps: no subtitles.'
-			: subtitleSelection === 'none'
-				? 'Keeps no subtitles.'
-				: subtitleSelection === 'all'
-					? 'Keeps every subtitle track.'
-					: 'Keeps the subtitle tracks in these languages, in this order.'
+	// Track selection. A new preset keeps every audio language (one track
+	// each: AC-3 copy, else AAC 5.1) and writes every subtitle as a separate
+	// file (the API's defaults too). Rendered by TrackSelectionEditor.
+	let tracks = $state<TrackSettings>(
+		preset
+			? {
+					audio_selection: preset.audio_selection ?? 'all',
+					audio_languages: preset.audio_languages ?? [],
+					subtitle_selection: preset.subtitle_selection ?? 'all',
+					subtitle_languages: preset.subtitle_languages ?? [],
+					subtitle_output: preset.subtitle_output ?? 'separate',
+					audio_format: preset.audio_format ?? 'preset'
+				}
+			: { ...DEFAULT_TRACKS }
 	);
 
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
 
-	const canSubmit = $derived(!submitting && name.trim().length > 0 && !audioListMissing && !subtitleListMissing);
+	const canSubmit = $derived(!submitting && name.trim().length > 0 && tracksValid(tracks));
 
-	function trackFields() {
-		return {
-			audio_selection: audioSelection,
-			audio_languages: audioLanguages,
-			subtitle_selection: subtitleSelection,
-			subtitle_languages: subtitleLanguages,
-			subtitle_output: subtitleOutput
-		};
+	function trackFields(): TrackSettings {
+		return { ...tracks };
 	}
 
 	async function submit(event: Event): Promise<void> {
@@ -319,74 +294,14 @@
 	{#if tool === 'handbrake'}
 		<fieldset class="stack transcode-preset-form-tracks" data-testid="tp-tracks">
 			<legend class="field-label">Tracks</legend>
-
-			<label class="field">
-				<span class="field-label">Audio tracks</span>
-				<select data-testid="tp-audio-selection" bind:value={audioSelection} disabled={isBuiltin}>
-					<option value="preset">As the preset does</option>
-					<option value="all">All tracks</option>
-					<option value="languages">Only these languages</option>
-				</select>
-				<p class="field-help" data-testid="tp-audio-help">{audioHelp}</p>
-			</label>
-			{#if audioSelection === 'languages'}
-				<LanguageListEditor
-					value={audioLanguages}
-					onchange={(v) => (audioLanguages = v)}
-					label="Audio languages"
-					testid="tp-audio-languages"
-					firstNote="default track"
-					disabled={isBuiltin}
-				/>
-				{#if audioListMissing}
-					<p class="field-error" data-testid="tp-audio-missing">Add at least one audio language.</p>
-				{/if}
-			{/if}
-
-			<label class="field">
-				<span class="field-label">Subtitle tracks</span>
-				<select data-testid="tp-subtitle-selection" bind:value={subtitleSelection} disabled={isBuiltin}>
-					<option value="preset">As the preset does</option>
-					<option value="all">All tracks</option>
-					<option value="languages">Only these languages</option>
-					<option value="none">None</option>
-				</select>
-				<p class="field-help" data-testid="tp-subtitle-help">{subtitleHelp}</p>
-			</label>
-			{#if subtitleSelection === 'languages'}
-				<LanguageListEditor
-					value={subtitleLanguages}
-					onchange={(v) => (subtitleLanguages = v)}
-					label="Subtitle languages"
-					testid="tp-subtitle-languages"
-					disabled={isBuiltin}
-				/>
-				{#if subtitleListMissing}
-					<p class="field-error" data-testid="tp-subtitle-missing">Add at least one subtitle language.</p>
-				{/if}
-			{/if}
-
-			{#if keepsSubtitles}
-				<label class="field">
-					<span class="field-label">Subtitles go</span>
-					<select data-testid="tp-subtitle-output" bind:value={subtitleOutput} disabled={isBuiltin}>
-						<option value="separate">Separate files next to the video</option>
-						<option value="embedded">Inside the video file</option>
-						<option value="both">Both</option>
-					</select>
-					{#if subtitleOutput !== 'embedded'}
-						<p class="field-help" data-testid="tp-subtitle-files-note">
-							Subtitle files keep the disc's own format (.sup for Blu-ray, .mks for DVD) and are named for Jellyfin, for
-							example Movie.eng.sup or Movie.eng.forced.sup.
-						</p>
-					{/if}
-					{#if subtitleOutput !== 'separate' && container === 'mp4'}
-						<p class="field-help" data-testid="tp-subtitle-mp4-note">
-							MP4 cannot hold Blu-ray or DVD picture subtitles; only text subtitles go inside the file.
-						</p>
-					{/if}
-				</label>
-			{/if}
+			<TrackSelectionEditor
+				value={tracks}
+				onchange={(v) => (tracks = v)}
+				prefix="tp"
+				disabled={isBuiltin}
+				usesFfmpeg={usesFfmpegVaapi}
+				{container}
+			/>
 		</fieldset>
 	{/if}
 

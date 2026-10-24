@@ -39,7 +39,9 @@ vi.mock('$lib/api/jobs', () => ({
 	clearTrackTitle: vi.fn(() => Promise.resolve(createJob())),
 	fetchNamingVariables: vi.fn(() => Promise.resolve({ variables: {} })),
 	namingPreview: vi.fn(() => Promise.resolve({ rendered: '' })),
-	validatePattern: vi.fn(() => Promise.resolve({ valid: true }))
+	validatePattern: vi.fn(() => Promise.resolve({ valid: true })),
+	fetchTrackSelection: vi.fn(() => Promise.reject(new Error('not loaded'))),
+	saveTrackSelection: vi.fn()
 }));
 
 vi.mock('$lib/api/settings', () => ({
@@ -509,5 +511,37 @@ describe('DiscReviewWidget', () => {
 			await waitFor(() => expect(screen.getByText('Start rip')).toBeInTheDocument());
 			expect(screen.queryByText(/^Session: /)).not.toBeInTheDocument();
 		});
+	});
+});
+
+describe('DiscReviewWidget track choice', () => {
+	afterEach(() => {
+		cleanup();
+		vi.clearAllMocks();
+	});
+
+	it('saves the disc track choice before the resolve and start', async () => {
+		const jobs = await import('$lib/api/jobs');
+		const { trackView } = await import('./__fixtures__/trackSelection');
+		vi.mocked(jobs.fetchTrackSelection).mockResolvedValue(trackView());
+		const order: string[] = [];
+		vi.mocked(jobs.saveTrackSelection).mockImplementation(async () => {
+			order.push('save');
+			return trackView();
+		});
+		vi.mocked(jobs.resolveJob).mockImplementation(async () => {
+			order.push('resolve');
+			return { job: createJob({ id: 'job_9', status: 'awaiting_review' }), fan_out: [] } as never;
+		});
+		mockFetchJob.mockResolvedValue(
+			detail({ id: 'job_9', title: 'Hanako', disc_type: 'bluray', status: 'awaiting_review' })
+		);
+		renderWidget({ id: 'job_9', status: 'awaiting_review', title: 'Hanako', disc_type: 'bluray' });
+		await waitFor(() => expect(screen.getByTestId('disc-review-tracks')).toBeInTheDocument());
+		await waitFor(() => expect(screen.getByTestId('jtp-custom')).toBeInTheDocument());
+		await fireEvent.click(screen.getByTestId('jtp-custom'));
+		await fireEvent.click(screen.getByText('Start rip'));
+		await waitFor(() => expect(mockStart).toHaveBeenCalledWith('job_9'));
+		expect(order).toEqual(['save', 'resolve']);
 	});
 });

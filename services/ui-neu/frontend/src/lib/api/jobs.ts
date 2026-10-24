@@ -18,9 +18,11 @@ import type {
 	ManualTriggerRequest,
 	ManualTriggerResponse,
 	RetryFailedResponse,
-	RipAgainResponse
+	RipAgainResponse,
+	JobTrackSelectionView,
+	TrackSelectionSettings
 } from '$lib/types/api.gen';
-import { apiFetch, post } from './client';
+import { apiFetch, get, post, put } from './client';
 
 // ---------------------------------------------------------------------------
 // Job listing / detail (EXISTS in v3)
@@ -193,12 +195,28 @@ export function triggerManual(body: ManualTriggerRequest): Promise<ManualTrigger
 // Applies a transcode session to the job; `overwrite` defaults to false.
 export function applySession(
 	jobId: string,
-	body: { session_id: string; overwrite?: boolean }
+	body: { session_id: string; overwrite?: boolean; track_selection?: TrackSelectionSettings | null }
 ): Promise<ApplySessionResponse> {
+	// `track_selection` left out keeps the job's own selection; null clears it.
 	return post<ApplySessionResponse>(`/api/jobs/${jobId}/transcode`, {
 		session_id: body.session_id,
-		overwrite: body.overwrite ?? false
+		overwrite: body.overwrite ?? false,
+		...(body.track_selection !== undefined ? { track_selection: body.track_selection } : {})
 	});
+}
+
+/** The job's track selection, its default (from `sessionId` when given) and the disc's languages. */
+export function fetchTrackSelection(jobId: string, sessionId?: string | null): Promise<JobTrackSelectionView> {
+	const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+	return get<JobTrackSelectionView>(`/api/jobs/${jobId}/track-selection${query}`);
+}
+
+/** Set the job's own track selection; null clears it so the preset decides. */
+export function saveTrackSelection(
+	jobId: string,
+	trackSelection: TrackSelectionSettings | null
+): Promise<JobTrackSelectionView> {
+	return put<JobTrackSelectionView>(`/api/jobs/${jobId}/track-selection`, { track_selection: trackSelection });
 }
 
 // ---------------------------------------------------------------------------

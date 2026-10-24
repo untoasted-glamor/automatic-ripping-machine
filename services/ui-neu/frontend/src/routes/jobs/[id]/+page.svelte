@@ -18,6 +18,7 @@
 	import ApplySessionDialog from '$lib/components/ApplySessionDialog.svelte';
 	import JobLifecycle from '$lib/components/JobLifecycle.svelte';
 	import ReviewGatePanel from '$lib/components/ReviewGatePanel.svelte';
+	import JobTrackPicker from '$lib/components/JobTrackPicker.svelte';
 	import RawBackupRow from '$lib/components/RawBackupRow.svelte';
 	import { effectiveJobStatus, isPartialComplete } from '$lib/utils/job-status';
 	import { isAwaitingIdentity, isLive, isPostRipStatus, isPreRipStatus } from '$lib/utils/job-status-groups';
@@ -524,6 +525,14 @@
 					keptCount={tracks.length > 0 ? keptCount : null}
 					onchanged={() => loadJob()}
 				/>
+			{/if}
+
+			{#if (job.disc_type === 'dvd' || job.disc_type === 'bluray') && job.status !== 'awaiting_review'}
+				<!-- A held disc picks its tracks in the review panel above, saved on Start. -->
+				<section class="job-detail-lifecycle-card stack" data-testid="job-tracks-section">
+					<h2 class="job-detail-section-title">Audio and subtitle tracks</h2>
+					<JobTrackPicker jobId={job.id} variant="page" />
+				</section>
 			{/if}
 
 			{#if ripping}

@@ -130,7 +130,8 @@ const DEFAULT_TRACKS = {
 	audio_languages: [],
 	subtitle_selection: 'all',
 	subtitle_languages: [],
-	subtitle_output: 'separate'
+	subtitle_output: 'separate',
+	audio_format: 'ac3_else_aac51'
 };
 
 function resultPreset(): TranscodePresetView {
@@ -270,7 +271,9 @@ describe('TranscodePresetForm', () => {
 					container: 'flac',
 					encoder: 'cpu_h264',
 					extra_args: '-q 5',
-					...DEFAULT_TRACKS
+					...DEFAULT_TRACKS,
+					// a preset with no audio_format keeps its engine's audio
+					audio_format: 'preset'
 				});
 			});
 			const body = updateMock.mock.calls[0][1];
@@ -647,12 +650,14 @@ describe('TranscodePresetForm track selection', () => {
 		await fireEvent.change(subtitles, { target: { value: 'all' } });
 		expect(screen.getByTestId('tp-subtitle-help')).toHaveTextContent('Keeps every subtitle track.');
 		await fireEvent.change(screen.getByTestId('tp-audio-selection'), { target: { value: 'all' } });
-		expect(screen.getByTestId('tp-audio-help')).toHaveTextContent('Keeps every audio track in disc order.');
+		expect(screen.getByTestId('tp-audio-help')).toHaveTextContent('Keeps every audio language in disc order.');
 	});
 
 	it('describes the ffmpeg VAAPI engine defaults', async () => {
 		render(makePreset({ encoder: 'vaapi_h264', audio_selection: 'preset', subtitle_selection: 'preset' }));
-		await waitFor(() => expect(screen.getByTestId('tp-audio-help')).toHaveTextContent('Keeps every audio track.'));
+		await waitFor(() =>
+			expect(screen.getByTestId('tp-audio-help')).toHaveTextContent('Keeps every audio track, copied.')
+		);
 		expect(screen.getByTestId('tp-subtitle-help')).toHaveTextContent('none in an MP4');
 	});
 

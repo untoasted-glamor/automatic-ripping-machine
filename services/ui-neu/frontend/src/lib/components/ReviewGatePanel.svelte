@@ -4,6 +4,7 @@
 	import { previouslyRippedJobId } from '$lib/utils/job-status';
 	import { isAdmin } from '$lib/stores/auth';
 	import ReviewWaitStatus from './ReviewWaitStatus.svelte';
+	import JobTrackPicker from './JobTrackPicker.svelte';
 
 	// The job page's review-gate panel for a disc held in awaiting_review: how
 	// it will get to the rip (confirm or countdown, via ReviewWaitStatus) and
@@ -58,7 +59,15 @@
 		}
 	}
 
-	const start = () => run(() => startWaitingJob(job.id), 'Failed to start the rip');
+	// DVD and Blu-ray: the audio/subtitle choice, saved when the rip starts.
+	const isVideoDisc = $derived(job.disc_type === 'dvd' || job.disc_type === 'bluray');
+	let picker = $state<JobTrackPicker | null>(null);
+
+	const start = () =>
+		run(async () => {
+			await picker?.save();
+			return startWaitingJob(job.id);
+		}, 'Failed to start the rip');
 	const setPause = (p: boolean) => run(() => pauseWaitingJob(job.id, p), 'Failed to update the pause');
 </script>
 
@@ -81,6 +90,12 @@
 		<p class="review-gate-panel-error" data-testid="review-gate-nothing-kept">
 			Keep at least one title to start the rip.
 		</p>
+	{/if}
+	{#if isVideoDisc && !previousRip}
+		<details class="review-gate-panel-tracks" data-testid="review-gate-tracks" open>
+			<summary class="field-label">Audio and subtitle tracks</summary>
+			<JobTrackPicker bind:this={picker} jobId={job.id} variant="review" />
+		</details>
 	{/if}
 	{#if error}
 		<p class="review-gate-panel-error" role="alert">{error}</p>
@@ -119,6 +134,10 @@
 	.review-gate-panel-text {
 		font-size: 0.875rem;
 		color: var(--color-text-muted);
+	}
+	.review-gate-panel-tracks summary {
+		cursor: pointer;
+		margin-bottom: 0.5rem;
 	}
 	.review-gate-panel-error {
 		font-size: 0.875rem;
