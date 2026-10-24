@@ -65,6 +65,7 @@ One row per disc insertion the ripper detected (via its `ioctl(CDROM_DRIVE_STATU
 - `metadata_json` (jsonb — full lookup result: artwork URLs, cast, synopsis, plus a load-bearing `scan_result` key holding the full `ScanResult` Pydantic dump from identify time. The rip-start handler in Phase 3+ reads `metadata_json["scan_result"]` to drive track selection; consumers must treat unknown keys as opaque.)
 - `status` (enum: created | awaiting_user_id | awaiting_review | identified | ripping | ripped | ripped_partial | ripped_awaiting_identify | abandoned | failed)
 - `identity_provenance` (jsonb, nullable — `{attribute: source_id}` for the `season`, `disc_number` and `disc_total` values the identity resolver set)
+- `track_selection` (json, nullable — the job's own audio/subtitle track choice, the shape of `arm_common.schemas.TrackSelectionSettings`: the five track fields plus `audio_format` of `transcode_presets`. Set means it wins over the transcode preset's fields; NULL lets the preset decide. Migration `0048_job_track_selection`.)
 - `resumed_from_crash` (bool, default false — set by Backend-startup sweep or by `POST /api/ripper/jobs/{job_id}/resume`; cleared when the job next reaches a terminal state)
 - `started_at`, `ripped_at`
 
@@ -133,6 +134,7 @@ Controls encoding: which tool, which preset, which container. Built-ins wrap Han
 - `audio_selection` (text, not null, default `preset`: `preset` | `all` | `languages`, validated in the app layer as `arm_common.AudioSelection`) and `audio_languages` (jsonb list of ISO 639-2 codes, default `[]`, ordered: output track order, the first kept track is the default). `preset` leaves the choice to the engine (HandBrake's presets keep only the first audio track; the ffmpeg VAAPI engine keeps all). A `languages` selection that matches no track keeps the first audio track.
 - `subtitle_selection` (text, not null, default `preset`: `preset` | `all` | `languages` | `none`) and `subtitle_languages` (jsonb list, default `[]`).
 - `subtitle_output` (text, not null, default `embedded`: `embedded` | `separate` | `both`). `separate` writes each kept subtitle track as a lossless file next to the video (`<video stem>.<lang>[.<n>][.forced].<ext>`: PGS `.sup`, VobSub `.mks`, text `.srt`/`.ass`/`.vtt`), the naming Jellyfin and Plex read. Migration `0047_transcode_track_select` leaves custom presets on the `preset`/`embedded` defaults and sets the HandBrake built-ins to `all` / `all` / `separate`; the seeder keeps the built-ins there. Passthrough (`tool=none`) ignores these fields: the move keeps every track. See [02-job-lifecycle.md § Track selection and subtitle files](02-job-lifecycle.md#track-selection-and-subtitle-files).
+- `audio_format` (text, not null, default `preset`: `preset` | `ac3_else_aac51` | `aac_stereo` | `aac_51` | `copy`, validated in the app layer as `arm_common.AudioFormat`): what each kept audio track becomes when ARM picks the audio tracks (see [02-job-lifecycle.md § Track selection and subtitle files](02-job-lifecycle.md#track-selection-and-subtitle-files)). Migration `0049_transcode_audio_format` leaves custom presets on `preset` and sets the HandBrake built-ins to `ac3_else_aac51` (one AC-3 copy per language, else AAC up to 5.1); new presets default to it.
 - `created_by_user_id` (nullable FK — null for built-ins)
 - `created_at`, `updated_at`
 
@@ -163,7 +165,8 @@ One row per "one raw track → one output file" operation. Fans out from a sessi
 - `claim_heartbeat_at` (timestamptz, nullable)
 - `attempts` (int, default 0)
 - `output_path` (text, nullable — resolved at fan-out time from the session's `output_path_template`)
-- `sidecar_paths` (jsonb list, nullable — the subtitle files a finished task wrote next to `output_path`, media-root-relative; reported at `/complete`, removed with the video by job delete and by an overwrite eviction)
+- `sidecar_paths` (jsonb list, nullable — the subtitle files a finished task wrote next to `output_path`, media-root-relative; reported at `/complete`, removed with the video by job delete)
+- `replaced_sidecar_paths` (jsonb list, nullable — the sidecars of the task an overwrite re-apply replaced at this `output_path`; removed when this task completes, unless it wrote the same file again)
 - `progress_pct` (int, default 0)
 - `last_error` (text, nullable)
 
