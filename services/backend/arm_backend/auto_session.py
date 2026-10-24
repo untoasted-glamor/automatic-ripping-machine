@@ -31,6 +31,7 @@ from sqlmodel import col, select
 
 from arm_backend.config import settings
 from arm_backend.path_template import TemplateValidationError
+from arm_backend.sidecars import remove_sidecars
 from arm_backend.transcode_apply import (
     compute_outputs,
     encoder_available,
@@ -1130,9 +1131,16 @@ async def _evict_colliding_tasks(db: AsyncSession, paths: list[str], *, job_id: 
         return
 
     affected_app_ids = {r.session_application_id for r in rows}
+    evicted_sidecars = [p for r in rows for p in (r.sidecar_paths or [])]
     for row in rows:
         await db.delete(row)
     await db.flush()
+    # The new fan-out re-writes the videos at these paths (atomic rename), but
+    # its subtitle sidecars can differ (other languages, or none), so the
+    # evicted tasks' recorded sidecars go now rather than linger next to the
+    # replacement.
+    if evicted_sidecars:
+        remove_sidecars(Path(settings.MEDIA_ROOT), evicted_sidecars)
 
     # Drop session_applications that now have zero remaining tasks. If any
     # other tasks still link to the application, leave it alone.

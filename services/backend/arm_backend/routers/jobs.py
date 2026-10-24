@@ -36,6 +36,7 @@ from arm_backend.routers._params import JobIdParam
 from arm_backend.routers.logs import per_job_log_path
 from arm_backend.routers.ripper import persist_review_tracks
 from arm_backend.seeders import CONFIG_SINGLETON_ID
+from arm_backend.sidecars import sidecar_files
 from arm_backend.ws import WSHub
 from arm_common import (
     Config,
@@ -808,18 +809,24 @@ async def _resolve_media_outputs(db: AsyncSession, job_id: str) -> list[Path]:
     output lands, so a queued, running, or failed task's path can name a file
     or folder this job never wrote. A disc backup whose move was refused
     because the destination already existed ends FAILED naming that folder,
-    which belongs to another job or the user."""
+    which belongs to another job or the user.
+
+    A task's subtitle sidecars (`sidecar_paths`) count as its outputs too."""
     media_root = Path(settings.MEDIA_ROOT)
     rows = (
         await db.execute(
-            select(TranscodeTask.output_path)
+            select(TranscodeTask.output_path, TranscodeTask.sidecar_paths)
             .join(Track, col(TranscodeTask.source_track_id) == col(Track.id))
             .where(col(Track.job_id) == job_id)
             .where(col(TranscodeTask.status) == TranscodeTaskStatus.DONE)
             .where(col(TranscodeTask.output_path).is_not(None))
         )
     ).all()
-    return [media_root / r[0] for r in rows]
+    outputs: list[Path] = []
+    for output_path, sidecar_paths in rows:
+        outputs.append(media_root / output_path)
+        outputs.extend(sidecar_files(media_root, sidecar_paths))
+    return outputs
 
 
 def _prune_empty_dirs(leaf_parent: Path, root: Path) -> int:

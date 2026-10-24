@@ -62,6 +62,11 @@ async def test_deleting_a_failed_backup_job_keeps_the_folder_it_never_filed(
     done_file = media_root / "Extras" / "extra.mkv"
     done_file.parent.mkdir(parents=True)
     done_file.write_bytes(b"ours")
+    # ...with the subtitle files it recorded, but not a file it never wrote.
+    sidecar = media_root / "Extras" / "extra.eng.sup"
+    sidecar.write_bytes(b"pgs")
+    users_srt = media_root / "Extras" / "extra.eng.srt"
+    users_srt.write_text("1")
     monkeypatch.setattr(jobs_router.settings, "RAW_ROOT", str(raw_root))
     monkeypatch.setattr(jobs_router.settings, "MEDIA_ROOT", str(media_root))
 
@@ -103,6 +108,7 @@ async def test_deleting_a_failed_backup_job_keeps_the_folder_it_never_filed(
                         attempts=1,
                         progress_pct=100,
                         output_path="Extras/extra.mkv",
+                        sidecar_paths=["Extras/extra.eng.sup"],
                     ),
                 ]
             )
@@ -110,7 +116,7 @@ async def test_deleting_a_failed_backup_job_keeps_the_folder_it_never_filed(
 
         async with factory() as db:
             outputs = await jobs_router._resolve_media_outputs(db, _JOB)
-        assert outputs == [media_root / "Extras" / "extra.mkv"]
+        assert outputs == [media_root / "Extras" / "extra.mkv", media_root / "Extras" / "extra.eng.sup"]
 
         app = FastAPI()
         app.state.signing_key = secrets.token_bytes(32)
@@ -131,4 +137,6 @@ async def test_deleting_a_failed_backup_job_keeps_the_folder_it_never_filed(
 
     assert (foreign / "BDMV" / "index.bdmv").read_bytes() == b"theirs"
     assert not done_file.exists()
+    assert not sidecar.exists()
+    assert users_srt.exists()
     assert not (raw_root / _JOB).exists()

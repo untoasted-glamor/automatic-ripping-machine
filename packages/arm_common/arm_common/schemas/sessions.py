@@ -9,18 +9,22 @@ be smuggled in.
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from arm_common.enums import (
+    AudioSelection,
     ContainerFormat,
     IdentificationMode,
     MediaType,
     OutputMode,
     SessionApplicationStatus,
+    SubtitleOutput,
+    SubtitleSelection,
     TrackSelection,
     TranscodeTaskStatus,
     TranscodeTool,
 )
+from arm_common.languages import normalize_language_list
 
 
 class TrackFilters(BaseModel):
@@ -88,9 +92,32 @@ class TranscodePresetView(BaseModel):
     container: ContainerFormat
     encoder: str
     extra_args: str | None
+    # Defaults match the DB server defaults, so a transcoder reading a
+    # register payload from an older Backend keeps the engine's own choice.
+    audio_selection: AudioSelection = AudioSelection.PRESET
+    audio_languages: list[str] = Field(default_factory=list)
+    subtitle_selection: SubtitleSelection = SubtitleSelection.PRESET
+    subtitle_languages: list[str] = Field(default_factory=list)
+    subtitle_output: SubtitleOutput = SubtitleOutput.EMBEDDED
     created_by_user_id: str | None
     created_at: datetime | None
     updated_at: datetime | None
+
+
+def check_track_selection(
+    audio_selection: AudioSelection,
+    audio_languages: list[str],
+    subtitle_selection: SubtitleSelection,
+    subtitle_languages: list[str],
+) -> None:
+    """Raise ValueError when a `languages` selection has an empty list.
+
+    Shared by the create request and the PATCH handler, which checks the row
+    as it will be after the patch."""
+    if audio_selection == AudioSelection.LANGUAGES and not audio_languages:
+        raise ValueError("audio_selection 'languages' needs at least one audio language")
+    if subtitle_selection == SubtitleSelection.LANGUAGES and not subtitle_languages:
+        raise ValueError("subtitle_selection 'languages' needs at least one subtitle language")
 
 
 class TranscodePresetCreateRequest(BaseModel):
@@ -102,6 +129,25 @@ class TranscodePresetCreateRequest(BaseModel):
     container: ContainerFormat
     encoder: str = Field(default="preset", min_length=1)
     extra_args: str | None = None
+    # A new preset keeps every audio track and writes every subtitle as a
+    # separate file unless the request says otherwise.
+    audio_selection: AudioSelection = AudioSelection.ALL
+    audio_languages: list[str] = Field(default_factory=list)
+    subtitle_selection: SubtitleSelection = SubtitleSelection.ALL
+    subtitle_languages: list[str] = Field(default_factory=list)
+    subtitle_output: SubtitleOutput = SubtitleOutput.SEPARATE
+
+    @field_validator("audio_languages", "subtitle_languages")
+    @classmethod
+    def _languages(cls, value: list[str]) -> list[str]:
+        return normalize_language_list(value)
+
+    @model_validator(mode="after")
+    def _selection(self) -> "TranscodePresetCreateRequest":
+        check_track_selection(
+            self.audio_selection, self.audio_languages, self.subtitle_selection, self.subtitle_languages
+        )
+        return self
 
 
 class TranscodePresetUpdateRequest(BaseModel):
@@ -112,6 +158,16 @@ class TranscodePresetUpdateRequest(BaseModel):
     container: ContainerFormat | None = None
     encoder: str | None = Field(default=None, min_length=1)
     extra_args: str | None = None
+    audio_selection: AudioSelection | None = None
+    audio_languages: list[str] | None = None
+    subtitle_selection: SubtitleSelection | None = None
+    subtitle_languages: list[str] | None = None
+    subtitle_output: SubtitleOutput | None = None
+
+    @field_validator("audio_languages", "subtitle_languages")
+    @classmethod
+    def _languages(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else normalize_language_list(value)
 
 
 # --- Session -----------------------------------------------------------------
@@ -183,6 +239,8 @@ class TranscodeTaskView(BaseModel):
     source_track_id: str
     status: TranscodeTaskStatus
     output_path: str | None
+    # Subtitle files written next to the video (media-root-relative).
+    sidecar_paths: list[str] | None = None
     progress_pct: int
     attempts: int
     claimed_by: str | None

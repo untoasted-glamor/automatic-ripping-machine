@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 from arm_common.models._columns import created_at_column, enum_column, updated_at_column
@@ -37,6 +38,10 @@ class TranscodeTask(SQLModel, table=True):
     claim_heartbeat_at: datetime | None = Field(sa_column=Column(DateTime(timezone=True), nullable=True))
     attempts: int = Field(sa_column=Column(Integer, nullable=False, server_default="0"))
     output_path: str | None = Field(default=None)
+    # Subtitle files written next to `output_path` (same media-root-relative
+    # form), reported by the transcoder at /complete. Job delete and an
+    # overwrite eviction remove them with the video.
+    sidecar_paths: list[str] | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
     progress_pct: int = Field(sa_column=Column(Integer, nullable=False, server_default="0"))
     last_error: str | None = Field(default=None)
     created_at: datetime | None = Field(sa_column=created_at_column())

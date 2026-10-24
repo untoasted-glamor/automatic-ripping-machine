@@ -24,6 +24,7 @@ from sqlmodel import col, select
 from arm_backend.auth import require_service_token
 from arm_backend.db import get_session
 from arm_backend.log_context import job_log_context
+from arm_backend.sidecars import accepted_sidecars
 from arm_backend.transcode_apply import aggregate_session_application
 from arm_backend.transcode_dispatcher import release_gpu_for_task
 from arm_backend.ws import WSHub
@@ -256,6 +257,7 @@ async def complete(
     task.status = TranscodeTaskStatus.DONE
     task.progress_pct = 100
     task.output_path = req.output_path
+    task.sidecar_paths = accepted_sidecars(req.output_path, req.sidecar_paths) or None
     task.last_error = None
     await release_gpu_for_task(db, task.id)
     await db.flush()
@@ -272,6 +274,7 @@ async def complete(
             "task_id": task.id,
             "session_application_id": task.session_application_id,
             "output_path": task.output_path,
+            "sidecar_paths": task.sidecar_paths or [],
             "size_bytes": req.size_bytes,
             "duration_seconds": req.duration_seconds,
             "sha256": req.sha256,

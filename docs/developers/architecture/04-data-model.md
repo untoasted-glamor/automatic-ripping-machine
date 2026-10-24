@@ -130,6 +130,9 @@ Controls encoding: which tool, which preset, which container. Built-ins wrap Han
 - `container` (enum: mkv | mp4 | webm | flac | mp3 | ogg | iso | none)
 - `encoder` (text, not null, default `"preset"`: a catalog id from `arm_common.encoders`, validated in the app layer, not a Postgres enum. Replaces the old `codec` + `hw_preference` columns (migration `0038_encoder_first`). `preset` means "HandBrake's own preset encoder, as-is"; `cpu_<codec>` forces software encode; `any_<codec>` prefers a verified GPU, queues if all are busy, and falls back to CPU only if this host has no eligible device for that codec at all; `qsv_<codec>` / `nvenc_<codec>` / `vaapi_<codec>` pin to that vendor and are refused at apply, or fail the task, when no device of that vendor has verified the codec. `NONE` and `ABCDE` presets must carry `encoder = "preset"`. See [02-job-lifecycle.md § Encoder claim and apply-time refusal](02-job-lifecycle.md#encoder-claim-and-apply-time-refusal).)
 - `extra_args` (text, nullable — raw CLI args appended to the tool invocation; escape hatch)
+- `audio_selection` (text, not null, default `preset`: `preset` | `all` | `languages`, validated in the app layer as `arm_common.AudioSelection`) and `audio_languages` (jsonb list of ISO 639-2 codes, default `[]`, ordered: output track order, the first kept track is the default). `preset` leaves the choice to the engine (HandBrake's presets keep only the first audio track; the ffmpeg VAAPI engine keeps all). A `languages` selection that matches no track keeps the first audio track.
+- `subtitle_selection` (text, not null, default `preset`: `preset` | `all` | `languages` | `none`) and `subtitle_languages` (jsonb list, default `[]`).
+- `subtitle_output` (text, not null, default `embedded`: `embedded` | `separate` | `both`). `separate` writes each kept subtitle track as a lossless file next to the video (`<video stem>.<lang>[.<n>][.forced].<ext>`: PGS `.sup`, VobSub `.mks`, text `.srt`/`.ass`/`.vtt`), the naming Jellyfin and Plex read. Migration `0047_transcode_track_select` leaves custom presets on the `preset`/`embedded` defaults and sets the HandBrake built-ins to `all` / `all` / `separate`; the seeder keeps the built-ins there. Passthrough (`tool=none`) ignores these fields: the move keeps every track. See [02-job-lifecycle.md § Track selection and subtitle files](02-job-lifecycle.md#track-selection-and-subtitle-files).
 - `created_by_user_id` (nullable FK — null for built-ins)
 - `created_at`, `updated_at`
 
@@ -160,6 +163,7 @@ One row per "one raw track → one output file" operation. Fans out from a sessi
 - `claim_heartbeat_at` (timestamptz, nullable)
 - `attempts` (int, default 0)
 - `output_path` (text, nullable — resolved at fan-out time from the session's `output_path_template`)
+- `sidecar_paths` (jsonb list, nullable — the subtitle files a finished task wrote next to `output_path`, media-root-relative; reported at `/complete`, removed with the video by job delete and by an overwrite eviction)
 - `progress_pct` (int, default 0)
 - `last_error` (text, nullable)
 

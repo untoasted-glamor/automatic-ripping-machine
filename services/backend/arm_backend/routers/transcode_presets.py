@@ -8,6 +8,7 @@ from arm_backend.auth import require_jwt, require_writer
 from arm_backend.db import get_session
 from arm_common import ContainerFormat, MediaType, Session, TranscodePreset, TranscodeTool, User
 from arm_common.encoders import encoder_allowed_for_tool, encoder_supports_container, get_encoder
+from arm_common.schemas.sessions import check_track_selection
 from arm_common.schemas import (
     TranscodePresetCreateRequest,
     TranscodePresetUpdateRequest,
@@ -15,6 +16,10 @@ from arm_common.schemas import (
 )
 
 router = APIRouter(prefix="/api/transcode-presets", tags=["transcode-presets"])
+
+_NOT_NULL_FIELDS = frozenset(
+    {"encoder", "audio_selection", "audio_languages", "subtitle_selection", "subtitle_languages", "subtitle_output"}
+)
 
 
 def _validate_encoder(encoder: str, tool: TranscodeTool, container: ContainerFormat) -> None:
@@ -78,6 +83,11 @@ async def create_transcode_preset(
         container=req.container,
         encoder=req.encoder,
         extra_args=req.extra_args,
+        audio_selection=req.audio_selection,
+        audio_languages=req.audio_languages,
+        subtitle_selection=req.subtitle_selection,
+        subtitle_languages=req.subtitle_languages,
+        subtitle_output=req.subtitle_output,
         created_by_user_id=user.id,
     )
     db.add(row)
@@ -97,8 +107,9 @@ async def update_transcode_preset(
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown transcode_preset_id: {preset_id}")
 
-    # `encoder` is NOT NULL: an explicit null means "leave it as is".
-    fields = {k: v for k, v in req.model_dump(exclude_unset=True).items() if not (k == "encoder" and v is None)}
+    # `encoder` and the track-selection fields are NOT NULL: an explicit null
+    # means "leave it as is".
+    fields = {k: v for k, v in req.model_dump(exclude_unset=True).items() if not (k in _NOT_NULL_FIELDS and v is None)}
     if row.is_builtin and set(fields.keys()) - {"name"}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -113,6 +124,18 @@ async def update_transcode_preset(
             req.tool if req.tool is not None else row.tool,
             req.container if req.container is not None else row.container,
         )
+
+    try:
+        # Check the selection the row will hold after the patch, so a PATCH
+        # that only switches the mode cannot leave `languages` with no list.
+        check_track_selection(
+            fields.get("audio_selection", row.audio_selection),
+            fields.get("audio_languages", row.audio_languages),
+            fields.get("subtitle_selection", row.subtitle_selection),
+            fields.get("subtitle_languages", row.subtitle_languages),
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
     for key, value in fields.items():
         setattr(row, key, value)

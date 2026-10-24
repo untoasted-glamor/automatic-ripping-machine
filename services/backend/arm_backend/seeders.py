@@ -24,6 +24,7 @@ from arm_common.models import (
 )
 from arm_common.models.user import ADMIN_ROLE, GUEST_ROLE
 from arm_common import (
+    AudioSelection,
     ContainerFormat,
     DiscType,
     IdentificationMode,
@@ -31,6 +32,8 @@ from arm_common import (
     NotificationChannel,
     OutputMode,
     RetentionPolicy,
+    SubtitleOutput,
+    SubtitleSelection,
     TrackSelection,
     TranscodeTool,
 )
@@ -251,6 +254,28 @@ RIP_PRESETS: list[dict[str, Any]] = [
 
 # --- Built-in transcode presets -----------------------------------------------
 
+# Track selection for the HandBrake built-ins: every audio track in source
+# order (the first stays the default) and every subtitle track as a separate
+# file next to the video. HandBrake's own presets keep only the first audio
+# track and no subtitles. Migration 0047 writes the same values to existing
+# installs. The passthrough and music presets keep the engine's choice (a
+# passthrough move keeps every track anyway).
+_KEEP_ALL_TRACKS: dict[str, Any] = {
+    "audio_selection": AudioSelection.ALL,
+    "audio_languages": [],
+    "subtitle_selection": SubtitleSelection.ALL,
+    "subtitle_languages": [],
+    "subtitle_output": SubtitleOutput.SEPARATE,
+}
+_ENGINE_TRACKS: dict[str, Any] = {
+    "audio_selection": AudioSelection.PRESET,
+    "audio_languages": [],
+    "subtitle_selection": SubtitleSelection.PRESET,
+    "subtitle_languages": [],
+    "subtitle_output": SubtitleOutput.EMBEDDED,
+}
+_TRACK_FIELDS: tuple[str, ...] = tuple(_KEEP_ALL_TRACKS)
+
 TRANSCODE_PRESETS: list[dict[str, Any]] = [
     {
         "id": "tpr_builtin_plex_1080p_h265",
@@ -259,6 +284,7 @@ TRANSCODE_PRESETS: list[dict[str, Any]] = [
         "tool": TranscodeTool.HANDBRAKE,
         "preset_ref": "H.265 MKV 1080p30",
         "container": ContainerFormat.MKV,
+        **_KEEP_ALL_TRACKS,
         "encoder": "any_h265",
     },
     {
@@ -270,6 +296,7 @@ TRANSCODE_PRESETS: list[dict[str, Any]] = [
         "tool": TranscodeTool.HANDBRAKE,
         "preset_ref": "H.265 MKV 1080p30",
         "container": ContainerFormat.MKV,
+        **_KEEP_ALL_TRACKS,
         "encoder": "any_h265",
     },
     {
@@ -279,6 +306,7 @@ TRANSCODE_PRESETS: list[dict[str, Any]] = [
         "tool": TranscodeTool.HANDBRAKE,
         "preset_ref": "H.265 MKV 2160p60 4K",
         "container": ContainerFormat.MKV,
+        **_KEEP_ALL_TRACKS,
         "encoder": "any_h265",
     },
     {
@@ -292,6 +320,7 @@ TRANSCODE_PRESETS: list[dict[str, Any]] = [
         "tool": TranscodeTool.NONE,
         "preset_ref": None,
         "container": ContainerFormat.MKV,
+        **_ENGINE_TRACKS,
         "encoder": "preset",
     },
     {
@@ -301,6 +330,7 @@ TRANSCODE_PRESETS: list[dict[str, Any]] = [
         "tool": TranscodeTool.HANDBRAKE,
         "preset_ref": "H.265 MKV 1080p30",
         "container": ContainerFormat.MKV,
+        **_KEEP_ALL_TRACKS,
         "encoder": "any_h265",
     },
     {
@@ -310,6 +340,7 @@ TRANSCODE_PRESETS: list[dict[str, Any]] = [
         "tool": TranscodeTool.ABCDE,
         "preset_ref": "flac",
         "container": ContainerFormat.FLAC,
+        **_ENGINE_TRACKS,
         "encoder": "preset",
     },
     {
@@ -319,6 +350,7 @@ TRANSCODE_PRESETS: list[dict[str, Any]] = [
         "tool": TranscodeTool.ABCDE,
         "preset_ref": "mp3",
         "container": ContainerFormat.MP3,
+        **_ENGINE_TRACKS,
         "encoder": "preset",
     },
     {
@@ -328,6 +360,7 @@ TRANSCODE_PRESETS: list[dict[str, Any]] = [
         "tool": TranscodeTool.NONE,
         "preset_ref": None,
         "container": ContainerFormat.NONE,
+        **_ENGINE_TRACKS,
         "encoder": "preset",
     },
     {
@@ -337,6 +370,7 @@ TRANSCODE_PRESETS: list[dict[str, Any]] = [
         "tool": TranscodeTool.NONE,
         "preset_ref": None,
         "container": ContainerFormat.ISO,
+        **_ENGINE_TRACKS,
         "encoder": "preset",
     },
 ]
@@ -534,7 +568,7 @@ async def run_seeders(session: AsyncSession) -> None:
     await _seed_config_singleton(session)
     await _seed_inapp_channel(session)
     await _insert_missing(session, RipPreset, RIP_PRESETS)
-    await _insert_missing(session, TranscodePreset, TRANSCODE_PRESETS)
+    await _insert_missing(session, TranscodePreset, TRANSCODE_PRESETS, sync_fields=("name", *_TRACK_FIELDS))
     await _insert_missing(session, Session, SESSIONS, sync_fields=("name", "output_path_template"))
     await _seed_session_routes(session)
     await session.commit()

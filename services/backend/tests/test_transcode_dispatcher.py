@@ -1789,6 +1789,43 @@ async def test_arm_inprogress_sweep_deletes_orphans(tmp_path: Path) -> None:
     assert live_marker.exists()
 
 
+async def test_arm_inprogress_sweep_keeps_a_live_tasks_sidecars(tmp_path: Path) -> None:
+    media = tmp_path / "media"
+    live_dir = media / "Show" / "Season 01"
+    live_dir.mkdir(parents=True)
+    live_video = live_dir / "Show - S01E01.mkv.arm-inprogress"
+    live_sidecar = live_dir / "Show - S01E01.eng.forced.sup.arm-inprogress"
+    orphan_sidecar = live_dir / "Show - S01E02.eng.sup.arm-inprogress"
+    for path in (live_video, live_sidecar, orphan_sidecar):
+        path.write_text("x")
+
+    db = FakeSession()
+    db.rows["transcode_tasks"] = [
+        TranscodeTask(
+            id="txt_live",
+            session_application_id="sap_x",
+            source_track_id="trk_x",
+            status=TranscodeTaskStatus.IN_PROGRESS,
+            output_path="Show/Season 01/Show - S01E01.mkv",
+            attempts=1,
+            progress_pct=5,
+        ),
+        TranscodeTask(
+            id="txt_unplaced",
+            session_application_id="sap_x",
+            source_track_id="trk_y",
+            status=TranscodeTaskStatus.IN_PROGRESS,
+            output_path=None,
+            attempts=1,
+            progress_pct=0,
+        ),
+    ]
+    disp = TranscodeDispatcher(_settings(), _db_factory(db), MagicMock(), WSHub())
+    assert await disp.sweep_arm_inprogress(media) == 1
+    assert live_video.exists() and live_sidecar.exists()
+    assert not orphan_sidecar.exists()
+
+
 async def test_arm_inprogress_sweep_skips_when_media_root_missing(tmp_path: Path) -> None:
     db = FakeSession()
     disp = TranscodeDispatcher(_settings(), _db_factory(db), MagicMock(), WSHub())

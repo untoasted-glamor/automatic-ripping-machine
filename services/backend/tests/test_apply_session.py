@@ -280,6 +280,54 @@ def test_manual_reapply_with_overwrite_evicts_done_tasks_and_creates_new(signing
     assert all(a.id != "sap_existing" for a in db.rows["session_applications"])
 
 
+def test_manual_reapply_with_overwrite_removes_the_evicted_tasks_sidecars(signing_key: bytes, tmp_path: Path) -> None:
+    """The evicted DONE task's recorded subtitle files go with it; a file it
+    never recorded (the user's own subtitles) stays."""
+    db = FakeSession()
+    _seed(db)
+    db.rows["session_applications"] = [
+        SessionApplication(
+            id="sap_existing",
+            session_id="ses_x",
+            job_id="job_01JZXR7K3M5Q8N4VWA00000001",
+            status=SessionApplicationStatus.DONE,
+            overwrite=False,
+        )
+    ]
+    folder = tmp_path / "Iron Man (2008)"
+    folder.mkdir()
+    old_sidecars = [
+        "Iron Man (2008)/Iron Man - plex-1080p-h-265.fre.sup",
+        "Iron Man (2008)/Iron Man - plex-1080p-h-265.eng.sup",
+    ]
+    for rel in old_sidecars:
+        (tmp_path / rel).write_bytes(b"pgs")
+    users_own = folder / "Iron Man - plex-1080p-h-265.eng.srt"
+    users_own.write_text("1")
+    db.rows["transcode_tasks"] = [
+        TranscodeTask(
+            id="txt_existing",
+            session_application_id="sap_existing",
+            source_track_id="trk_1",
+            status=TranscodeTaskStatus.DONE,
+            output_path="Iron Man (2008)/Iron Man - plex-1080p-h-265.mkv",
+            sidecar_paths=old_sidecars,
+            attempts=1,
+            progress_pct=100,
+        )
+    ]
+    app, token = _make_app(signing_key, db, tmp_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/transcode",
+            json={"session_id": "ses_x", "overwrite": True},
+            headers=_auth(token),
+        )
+    assert r.status_code == 200, r.text
+    assert not any((tmp_path / rel).exists() for rel in old_sidecars)
+    assert users_own.exists()
+
+
 def test_manual_reapply_overwrite_refused_when_in_progress(signing_key: bytes, tmp_path: Path) -> None:
     """Don't displace a transcoder that's actively writing — even with
     `overwrite=true`, an IN_PROGRESS collision on the *same* job's own prior

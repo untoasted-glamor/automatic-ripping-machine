@@ -66,6 +66,9 @@ class HeartbeatRequest(BaseModel):
 
 class CompleteTaskRequest(BaseModel):
     output_path: str
+    # Subtitle files written next to the video, relative to the media root
+    # like `output_path`. Empty when the preset embeds or drops subtitles.
+    sidecar_paths: list[str] = Field(default_factory=list, max_length=256)
     size_bytes: int | None = Field(default=None, ge=0)
     duration_seconds: int | None = Field(default=None, ge=0)
     sha256: str | None = None

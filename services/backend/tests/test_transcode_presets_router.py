@@ -353,3 +353,114 @@ def test_delete_success_204(signing_key: bytes) -> None:
     with TestClient(app) as client:
         r = client.delete("/api/transcode-presets/tpr_del", headers=_auth(token))
     assert r.status_code == 204
+
+
+# --- track selection ------------------------------------------------------------
+
+
+def test_create_defaults_keep_every_track_and_write_separate_subtitles(signing_key: bytes) -> None:
+    db = FakeSession()
+    app, token = _make_app(signing_key, db)
+    with TestClient(app) as client:
+        r = client.post("/api/transcode-presets", json=_CREATE_BODY, headers=_auth(token))
+    assert r.status_code == 201, r.text
+    out = r.json()
+    assert (out["audio_selection"], out["subtitle_selection"], out["subtitle_output"]) == ("all", "all", "separate")
+    assert out["audio_languages"] == [] and out["subtitle_languages"] == []
+
+
+def test_create_normalises_language_lists(signing_key: bytes) -> None:
+    db = FakeSession()
+    app, token = _make_app(signing_key, db)
+    body = {
+        **_CREATE_BODY,
+        "audio_selection": "languages",
+        "audio_languages": ["JPN", "deu", "ger", " eng "],
+        "subtitle_selection": "languages",
+        "subtitle_languages": ["fra"],
+        "subtitle_output": "both",
+    }
+    with TestClient(app) as client:
+        r = client.post("/api/transcode-presets", json=body, headers=_auth(token))
+    assert r.status_code == 201, r.text
+    row = db.rows["transcode_presets"][0]
+    assert row.audio_languages == ["jpn", "ger", "eng"]
+    assert row.subtitle_languages == ["fre"]
+    assert row.subtitle_output == "both"
+
+
+_TOO_MANY = [f"a{c}{c}" for c in "abcdefghijklmnopqrstuvwxyz"] + [f"b{c}{c}" for c in "abcdefg"]
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"audio_selection": "languages"}, "at least one audio language"),
+        ({"subtitle_selection": "languages", "subtitle_languages": []}, "at least one subtitle language"),
+        ({"audio_languages": ["english"]}, "not an ISO 639-2 code"),
+        ({"subtitle_languages": ["en"]}, "not an ISO 639-2 code"),
+        ({"audio_languages": _TOO_MANY}, "at most 32"),
+        ({"subtitle_output": "burned"}, "subtitle_output"),
+    ],
+)
+def test_create_rejects_bad_track_selection(signing_key: bytes, extra: dict[str, object], message: str) -> None:
+    db = FakeSession()
+    app, token = _make_app(signing_key, db)
+    with TestClient(app) as client:
+        r = client.post("/api/transcode-presets", json={**_CREATE_BODY, **extra}, headers=_auth(token))
+    assert r.status_code == 422
+    assert message in r.text
+    assert db.rows.get("transcode_presets", []) == []
+
+
+def test_patch_track_selection_fields(signing_key: bytes) -> None:
+    db = FakeSession()
+    app, token = _make_app(signing_key, db)
+    db.rows["transcode_presets"] = [_preset("tpr_a")]
+    with TestClient(app) as client:
+        r = client.patch(
+            "/api/transcode-presets/tpr_a",
+            json={"audio_selection": "languages", "audio_languages": ["jpn", "eng"], "subtitle_selection": "none"},
+            headers=_auth(token),
+        )
+        # An explicit null leaves a NOT NULL field as it is.
+        r2 = client.patch(
+            "/api/transcode-presets/tpr_a",
+            json={"audio_languages": None, "subtitle_output": None},
+            headers=_auth(token),
+        )
+    assert r.status_code == 200, r.text
+    assert r2.status_code == 200, r2.text
+    row = db.rows["transcode_presets"][0]
+    assert row.audio_selection == "languages"
+    assert row.audio_languages == ["jpn", "eng"]
+    assert row.subtitle_selection == "none"
+    assert row.subtitle_output == "embedded"
+
+
+def test_patch_languages_mode_without_a_list_is_422(signing_key: bytes) -> None:
+    db = FakeSession()
+    app, token = _make_app(signing_key, db)
+    db.rows["transcode_presets"] = [_preset("tpr_a")]
+    with TestClient(app) as client:
+        mode_only = client.patch(
+            "/api/transcode-presets/tpr_a", json={"subtitle_selection": "languages"}, headers=_auth(token)
+        )
+        bad_code = client.patch(
+            "/api/transcode-presets/tpr_a", json={"subtitle_languages": ["e1g"]}, headers=_auth(token)
+        )
+    assert mode_only.status_code == 422
+    assert "at least one subtitle language" in mode_only.json()["detail"]
+    assert bad_code.status_code == 422
+    assert db.rows["transcode_presets"][0].subtitle_selection == "preset"
+
+
+def test_patch_builtin_track_selection_409(signing_key: bytes) -> None:
+    db = FakeSession()
+    app, token = _make_app(signing_key, db)
+    db.rows["transcode_presets"] = [_preset("tpr_builtin_x", is_builtin=True)]
+    with TestClient(app) as client:
+        r = client.patch(
+            "/api/transcode-presets/tpr_builtin_x", json={"subtitle_output": "embedded"}, headers=_auth(token)
+        )
+    assert r.status_code == 409

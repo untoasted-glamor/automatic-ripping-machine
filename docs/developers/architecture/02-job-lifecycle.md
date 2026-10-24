@@ -349,7 +349,7 @@ Templates are validated on session save: the backend expands the template agains
 
 Two layers of defense against overlapping writes to the same output path:
 
-**Atomic rename on completion.** The transcoder writes to `<final>.arm-inprogress` in the final directory, `fsync`s, then `rename(2)` to the final path on success. Same filesystem, so the rename is atomic. Plex and Jellyfin don't match `.arm-inprogress` as a media extension, so half-written files are invisible to scanners — no "corrupt file" flags during transcode, no racy mid-transcode scanning. On crash, leftover `.arm-inprogress` files are swept by the transcoder at startup: any file matching `*.arm-inprogress` under `/media` with no corresponding `transcode_tasks` row in `in_progress` state is deleted. The `.arm-inprogress` suffix is unique to ARM so it never collides with `wget`/`aria2`-style `.part` files or editor `.tmp` files.
+**Atomic rename on completion.** The transcoder writes to `<final>.arm-inprogress` in the final directory, `fsync`s, then `rename(2)` to the final path on success. Same filesystem, so the rename is atomic. Plex and Jellyfin don't match `.arm-inprogress` as a media extension, so half-written files are invisible to scanners — no "corrupt file" flags during transcode, no racy mid-transcode scanning. On crash, leftover `.arm-inprogress` files are swept by the Backend at startup: any file matching `*.arm-inprogress` under `/media` that is neither the output of a `transcode_tasks` row in `in_progress` state nor one of that output's subtitle files (`<video stem>.*` in the same folder) is deleted. The `.arm-inprogress` suffix is unique to ARM so it never collides with `wget`/`aria2`-style `.part` files or editor `.tmp` files.
 
 **Apply-time collision validation.** When a user applies a session to a job, the Backend resolves every task's output path *before* fan-out. Two failure cases:
 
@@ -358,11 +358,17 @@ Two layers of defense against overlapping writes to the same output path:
 
    > "This session would write `Iron Man (2008) - plex-1080p-h265.mkv`, which already exists. Options: (a) Overwrite the existing file; (b) Cancel."
 
-   Option (a) sets `session_applications.overwrite = true`; the transcoder replaces the file atomically via the same `.arm-inprogress` → rename flow. Option (b) aborts the apply. No silent auto-suffix (`(2).mkv`) — that hides user intent and produces files neither scanner recognizes as meaningful versions.
+   Option (a) sets `session_applications.overwrite = true`; the transcoder replaces the file atomically via the same `.arm-inprogress` → rename flow. The evicted task's recorded subtitle files (`sidecar_paths`) are removed at eviction, since the new run can write other languages or none. Option (b) aborts the apply. No silent auto-suffix (`(2).mkv`) — that hides user intent and produces files neither scanner recognizes as meaningful versions.
 
 **DB-level safety net.** A partial unique index on `transcode_tasks(output_path)` where `status IN ('queued', 'in_progress', 'done')` catches any path collision the apply-time check missed (concurrent applies, logic bugs). Failed tasks can share paths — their file is presumed absent.
 
 **Idempotency.** Applying the same (session, job) pair twice returns the existing `session_application` rather than fanning out a second set of tasks.
+
+### Track selection and subtitle files
+
+A transcode preset picks the source audio and subtitle tracks it keeps (`audio_selection`/`audio_languages`, `subtitle_selection`/`subtitle_languages`, see [04-data-model.md § transcode_presets](04-data-model.md#transcode_presets)). When either selection is not `preset`, the transcoder probes the raw file with `ffprobe` and builds one plan for both engines (`arm_transcode.tracks`): `all` keeps every track in source order; `languages` keeps every track of each listed language, in the list's order; an audio list that matches nothing keeps the first audio track, so a file never loses its sound. HandBrake gets explicit `--audio`/`--subtitle` track numbers; because any audio option replaces the HandBrake preset's encoder list with HandBrakeCLI's defaults, the preset's own `AudioList` is read back with `--preset-export` and applied to every kept track (a `copy:<codec>` entry falls back to the preset's fallback encoder when the source is another codec). The built-in `H.265 MKV` presets therefore encode every kept track to AAC stereo. The ffmpeg VAAPI engine maps the same tracks by position and copies the audio as is.
+
+With `subtitle_output` `separate` or `both`, each kept subtitle track is copied losslessly out of the raw file with one `ffmpeg` run into `<video stem>.<lang>[.<n>][.forced].<ext>` next to the video: PGS as `.sup`, DVD VobSub as a one-track `.mks` (ffmpeg has no `.idx`/`.sub` muxer), text as `.srt`/`.ass`/`.vtt`. The language comes first so Jellyfin reads it, a counter from 2 separates two tracks of one language, and `.forced` marks a track the source flags forced. The files are written as `.arm-inprogress`, renamed just after the video, removed when the encode fails or is cancelled, and reported to the Backend at `/complete` (`transcode_tasks.sidecar_paths`). MP4 output never embeds picture subtitles (they would be burned in); write them as separate files instead. Passthrough tasks move the raw file unchanged and keep every track.
 
 ### Unidentified and placeholder rips
 

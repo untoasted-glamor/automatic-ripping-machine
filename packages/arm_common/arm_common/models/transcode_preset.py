@@ -6,7 +6,14 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 from arm_common.models._columns import created_at_column, enum_column, updated_at_column
-from arm_common.enums import ContainerFormat, MediaType, TranscodeTool
+from arm_common.enums import (
+    AudioSelection,
+    ContainerFormat,
+    MediaType,
+    SubtitleOutput,
+    SubtitleSelection,
+    TranscodeTool,
+)
 from arm_common.ulid import new_id
 
 
@@ -29,6 +36,27 @@ class TranscodePreset(SQLModel, table=True):
     # hw_preference. Validated in the app layer, stored as VARCHAR.
     encoder: str = Field(default="preset", sa_column=Column(String, nullable=False, server_default="preset"))
     extra_args: str | None = Field(default=None)
+    # Track selection (validated in the app layer, stored as VARCHAR/JSONB).
+    # The `preset` modes leave the choice to the engine; the language lists
+    # are ordered ISO 639-2 codes (arm_common.languages), output order.
+    audio_selection: AudioSelection = Field(
+        default=AudioSelection.PRESET,
+        sa_column=enum_column(AudioSelection, "audio_selection", server_default=AudioSelection.PRESET.value),
+    )
+    audio_languages: list[str] = Field(
+        default_factory=list, sa_column=Column(JSONB, nullable=False, server_default="[]")
+    )
+    subtitle_selection: SubtitleSelection = Field(
+        default=SubtitleSelection.PRESET,
+        sa_column=enum_column(SubtitleSelection, "subtitle_selection", server_default=SubtitleSelection.PRESET.value),
+    )
+    subtitle_languages: list[str] = Field(
+        default_factory=list, sa_column=Column(JSONB, nullable=False, server_default="[]")
+    )
+    subtitle_output: SubtitleOutput = Field(
+        default=SubtitleOutput.EMBEDDED,
+        sa_column=enum_column(SubtitleOutput, "subtitle_output", server_default=SubtitleOutput.EMBEDDED.value),
+    )
     created_by_user_id: str | None = Field(
         sa_column=Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     )

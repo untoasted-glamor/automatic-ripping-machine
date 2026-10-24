@@ -11,6 +11,7 @@ from arm_common.logging import (
     with_log_context,
 )
 from arm_common.enums import (
+    AudioSelection,
     ContainerFormat,
     DiscType,
     DriveIdentityKind,
@@ -33,6 +34,8 @@ from arm_common.enums import (
     PreviouslyRippedAction,
     RetentionPolicy,
     SessionApplicationStatus,
+    SubtitleOutput,
+    SubtitleSelection,
     TrackKind,
     TrackRole,
     TrackSelection,
@@ -68,6 +71,7 @@ from arm_common.ulid import new_id
 
 __all__ = [
     "ADMIN_ROLE",
+    "AudioSelection",
     "DEFAULT_MUSICBRAINZ_USER_AGENT",
     "Config",
     "ContainerFormat",
@@ -108,6 +112,8 @@ __all__ = [
     "SessionApplication",
     "SessionApplicationStatus",
     "SessionRoute",
+    "SubtitleOutput",
+    "SubtitleSelection",
     "Track",
     "TrackKind",
     "TrackRole",

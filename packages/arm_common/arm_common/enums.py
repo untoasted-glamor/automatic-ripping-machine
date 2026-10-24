@@ -237,6 +237,38 @@ class TranscodeTool(StrEnum):
     NONE = "none"
 
 
+class AudioSelection(StrEnum):
+    """Which source audio tracks a transcode preset keeps.
+
+    `preset` leaves the choice to the engine (HandBrake: the preset's own
+    rule, which keeps the first track; ffmpeg VAAPI: every track). `all`
+    keeps every track in source order; `languages` keeps the tracks whose
+    language is in the preset's ordered `audio_languages` list.
+    """
+
+    PRESET = "preset"
+    ALL = "all"
+    LANGUAGES = "languages"
+
+
+class SubtitleSelection(StrEnum):
+    """Which source subtitle tracks a transcode preset keeps (see AudioSelection)."""
+
+    PRESET = "preset"
+    ALL = "all"
+    LANGUAGES = "languages"
+    NONE = "none"
+
+
+class SubtitleOutput(StrEnum):
+    """Where kept subtitle tracks go: muxed into the video, written as
+    separate files next to it (Jellyfin/Plex sidecars), or both."""
+
+    EMBEDDED = "embedded"
+    SEPARATE = "separate"
+    BOTH = "both"
+
+
 class ContainerFormat(StrEnum):
     MKV = "mkv"
     MP4 = "mp4"

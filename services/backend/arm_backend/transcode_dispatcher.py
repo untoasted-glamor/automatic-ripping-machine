@@ -33,6 +33,7 @@ from sqlmodel import col, select
 
 from arm_backend.config import Settings, settings
 from arm_backend.docker_probe import TtlProbe, probe_backend_url, probe_docker
+from arm_backend.sidecars import is_sidecar_of
 from arm_backend.transcode_images import (
     VARIANT_SUFFIX,
     image_for,
@@ -1422,24 +1423,29 @@ class TranscodeDispatcher:
         """Delete `*.arm-inprogress` orphans whose final-path's task isn't IN_PROGRESS.
 
         Runs once at Backend startup. A live in-progress task's `.arm-inprogress`
-        is preserved (the transcoder is still writing it). Returns the count
-        of deleted orphans.
+        files are preserved (the transcoder is still writing them): its video
+        and its subtitle sidecars (`<video stem>.<lang>....<ext>` in the same
+        folder). Returns the count of deleted orphans.
         """
         if not media_root.exists():
             return 0
         deleted = 0
         async with self._db_factory() as db:
+            live_outputs = [
+                t.output_path
+                for t in (
+                    await db.execute(
+                        select(TranscodeTask).where(col(TranscodeTask.status) == TranscodeTaskStatus.IN_PROGRESS)
+                    )
+                )
+                .scalars()
+                .all()
+                if t.output_path
+            ]
             for path in media_root.rglob("*.arm-inprogress"):
                 final = path.with_suffix("")
                 relative = final.relative_to(media_root).as_posix()
-                live = (
-                    await db.execute(
-                        select(TranscodeTask)
-                        .where(col(TranscodeTask.output_path) == relative)
-                        .where(col(TranscodeTask.status) == TranscodeTaskStatus.IN_PROGRESS)
-                    )
-                ).scalar_one_or_none()
-                if live is not None:
+                if any(relative == live or is_sidecar_of(live, relative) for live in live_outputs):
                     continue
                 try:
                     path.unlink()

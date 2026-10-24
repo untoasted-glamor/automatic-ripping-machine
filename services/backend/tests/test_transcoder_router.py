@@ -281,6 +281,44 @@ def test_complete_marks_done_and_aggregates_application() -> None:
     assert db.rows["session_applications"][0].completed_at is not None
 
 
+def test_complete_records_the_sidecars_next_to_the_video(caplog: pytest.LogCaptureFixture) -> None:
+    db = FakeSession()
+    _seed(db, task_status=TranscodeTaskStatus.IN_PROGRESS)
+    db.rows["session_applications"][0].status = SessionApplicationStatus.RUNNING
+    with caplog.at_level(logging.WARNING, logger="arm_backend.sidecars"), TestClient(_make_app(db)) as client:
+        r = client.patch(
+            "/api/transcoder/tasks/txt_1/complete",
+            json={
+                "output_path": "Iron Man (2008)/Iron Man.mkv",
+                "sidecar_paths": [
+                    "Iron Man (2008)/Iron Man.eng.sup",
+                    "Iron Man (2008)/Iron Man.eng.forced.sup",
+                    "Iron Man (2008)/Iron Man.eng.sup",
+                    "Other/Iron Man.eng.sup",
+                ],
+            },
+            headers=_SERVICE_AUTH,
+        )
+    assert r.status_code == 200, r.text
+    expected = ["Iron Man (2008)/Iron Man.eng.sup", "Iron Man (2008)/Iron Man.eng.forced.sup"]
+    assert r.json()["sidecar_paths"] == expected
+    assert db.rows["transcode_tasks"][0].sidecar_paths == expected
+    assert "Other/Iron Man.eng.sup" in caplog.text
+
+
+def test_complete_without_sidecars_records_none() -> None:
+    db = FakeSession()
+    _seed(db, task_status=TranscodeTaskStatus.IN_PROGRESS)
+    with TestClient(_make_app(db)) as client:
+        r = client.patch(
+            "/api/transcoder/tasks/txt_1/complete",
+            json={"output_path": "Iron Man (2008)/Iron Man.mkv"},
+            headers=_SERVICE_AUTH,
+        )
+    assert r.status_code == 200, r.text
+    assert r.json()["sidecar_paths"] is None
+
+
 def test_complete_logs_into_the_tasks_job(caplog: pytest.LogCaptureFixture) -> None:
     caplog.handler.setFormatter(JsonFormatter("test"))
     caplog.set_level(logging.INFO, logger="arm_backend")
