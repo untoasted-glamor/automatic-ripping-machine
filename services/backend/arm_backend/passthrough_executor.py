@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
 from arm_backend.config import Settings
+from arm_backend.sidecars import drop_replaced_sidecars
 from arm_common import (
     SessionApplication,
     SessionApplicationStatus,
@@ -279,6 +280,10 @@ async def execute_passthrough_task(
             fresh_task.status = TranscodeTaskStatus.DONE
             fresh_task.progress_pct = 100
             fresh_task.last_error = None
+            if fresh_task.replaced_sidecar_paths:
+                # This move replaced an encode that wrote subtitle files.
+                drop_replaced_sidecars(Path(settings.MEDIA_ROOT), fresh_task.replaced_sidecar_paths, None)
+                fresh_task.replaced_sidecar_paths = None
             event_type, payload_extra = "task.completed", {"output_path": task_output_path, "size_bytes": size}
             logger.info("passthrough complete task_id=%s output=%s", task_id, task_output_path)
         else:

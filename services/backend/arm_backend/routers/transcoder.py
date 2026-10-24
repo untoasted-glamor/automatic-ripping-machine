@@ -15,6 +15,7 @@ Five endpoints per `03-protocol.md § Transcode container ↔ Backend`:
 """
 
 import logging
+from pathlib import Path
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -23,12 +24,14 @@ from sqlmodel import col, select
 
 from arm_backend.auth import require_service_token
 from arm_backend.db import get_session
+from arm_backend.job_track_selection import effective_preset_view
 from arm_backend.log_context import job_log_context
-from arm_backend.sidecars import accepted_sidecars
+from arm_backend.sidecars import accepted_sidecars, drop_replaced_sidecars
 from arm_backend.transcode_apply import aggregate_session_application
 from arm_backend.transcode_dispatcher import release_gpu_for_task
 from arm_backend.ws import WSHub
 from arm_common import (
+    Job,
     Session,
     SessionApplication,
     SessionApplicationStatus,
@@ -129,10 +132,15 @@ async def register(
         )
 
     media_root = request_media_root()
+    preset_view = TranscodePresetView.model_validate(transcode_preset) if transcode_preset is not None else None
+    # The job's own track selection, when set, wins over the preset's.
+    job = (await db.execute(select(Job).where(col(Job.id) == application.job_id))).scalar_one_or_none()
+    if job is not None:
+        preset_view = effective_preset_view(preset_view, job)
     return RegisterTranscoderResponse(
         task=TranscodeTaskView.model_validate(task),
         session=SessionView.model_validate(sess),
-        transcode_preset=TranscodePresetView.model_validate(transcode_preset) if transcode_preset is not None else None,
+        transcode_preset=preset_view,
         source_track=TrackView.model_validate(track),
         raw_input_path=track.output_path,
         media_root=media_root,
@@ -258,6 +266,10 @@ async def complete(
     task.progress_pct = 100
     task.output_path = req.output_path
     task.sidecar_paths = accepted_sidecars(req.output_path, req.sidecar_paths) or None
+    if task.replaced_sidecar_paths:
+        # The new video has replaced the old one: its subtitle files go now.
+        drop_replaced_sidecars(Path(request_media_root()), task.replaced_sidecar_paths, task.sidecar_paths)
+        task.replaced_sidecar_paths = None
     task.last_error = None
     await release_gpu_for_task(db, task.id)
     await db.flush()

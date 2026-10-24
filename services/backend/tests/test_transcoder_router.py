@@ -10,7 +10,8 @@ import json
 import logging
 import os
 from datetime import UTC, datetime
-from typing import AsyncIterator
+from pathlib import Path
+from typing import Any, AsyncIterator
 
 os.environ.setdefault("DATABASE_URL", "postgresql://x:x@localhost/x")
 os.environ.setdefault("ARM_SERVICE_TOKEN", "tok-service")
@@ -23,6 +24,7 @@ from arm_backend.db import get_session  # noqa: E402
 from arm_backend.routers import transcoder as transcoder_router  # noqa: E402
 from arm_backend.ws import WSHub  # noqa: E402
 from arm_common import (  # noqa: E402
+    AudioSelection,
     ContainerFormat,
     DiscType,
     IdentificationMode,
@@ -460,3 +462,100 @@ def test_fail_409_when_not_in_progress() -> None:
         )
     assert r.status_code == 409
     assert "not in_progress" in r.json()["detail"]
+
+
+# --- job track selection + replaced sidecars --------------------------------------
+
+
+def _register(db: FakeSession) -> dict[str, Any]:
+    with TestClient(_make_app(db)) as client:
+        r = client.post(
+            "/api/transcoder/register",
+            json={"task_id": "txt_1", "hostname": _HOSTNAME, "hw_caps": {"cpu_count": 8}},
+            headers=_SERVICE_AUTH,
+        )
+    assert r.status_code == 200, r.text
+    return r.json()["transcode_preset"]
+
+
+def test_register_without_a_job_override_sends_the_presets_tracks() -> None:
+    db = FakeSession()
+    _seed(db)
+    db.rows["transcode_presets"][0].audio_selection = AudioSelection.ALL
+    preset = _register(db)
+    assert preset["audio_selection"] == "all"
+    assert preset["subtitle_output"] == "embedded"
+
+
+def test_register_applies_the_jobs_track_selection_over_the_preset() -> None:
+    db = FakeSession()
+    _seed(db)
+    db.rows["jobs"][0].track_selection = {
+        "audio_selection": "languages",
+        "audio_languages": ["jpn", "eng"],
+        "subtitle_selection": "none",
+        "subtitle_languages": [],
+        "subtitle_output": "separate",
+    }
+    preset = _register(db)
+    assert preset["audio_selection"] == "languages"
+    assert preset["audio_languages"] == ["jpn", "eng"]
+    assert preset["subtitle_selection"] == "none"
+    # Everything else is still the preset's.
+    assert preset["preset_ref"] == "H.265 MKV 1080p30"
+    assert db.rows["transcode_presets"][0].audio_selection == AudioSelection.PRESET
+
+
+def test_register_with_the_job_gone_still_sends_the_preset() -> None:
+    db = FakeSession()
+    _seed(db)
+    db.rows["jobs"] = []
+    assert _register(db)["preset_ref"] == "H.265 MKV 1080p30"
+
+
+def test_complete_removes_the_replaced_tasks_sidecars_it_did_not_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from arm_backend import config as bcfg
+
+    monkeypatch.setattr(bcfg.settings, "MEDIA_ROOT", str(tmp_path))
+    folder = tmp_path / "Iron Man (2008)"
+    folder.mkdir()
+    for name in ("Iron Man.fre.sup", "Iron Man.eng.sup"):
+        (folder / name).write_bytes(b"old")
+    db = FakeSession()
+    _seed(db, task_status=TranscodeTaskStatus.IN_PROGRESS)
+    db.rows["transcode_tasks"][0].replaced_sidecar_paths = [
+        "Iron Man (2008)/Iron Man.fre.sup",
+        "Iron Man (2008)/Iron Man.eng.sup",
+    ]
+    (folder / "Iron Man.eng.sup").write_bytes(b"new")  # this task wrote it again
+    with TestClient(_make_app(db)) as client:
+        r = client.patch(
+            "/api/transcoder/tasks/txt_1/complete",
+            json={"output_path": "Iron Man (2008)/Iron Man.mkv", "sidecar_paths": ["Iron Man (2008)/Iron Man.eng.sup"]},
+            headers=_SERVICE_AUTH,
+        )
+    assert r.status_code == 200, r.text
+    assert not (folder / "Iron Man.fre.sup").exists()
+    assert (folder / "Iron Man.eng.sup").read_bytes() == b"new"
+    assert db.rows["transcode_tasks"][0].replaced_sidecar_paths is None
+
+
+def test_fail_keeps_the_replaced_tasks_sidecars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from arm_backend import config as bcfg
+
+    monkeypatch.setattr(bcfg.settings, "MEDIA_ROOT", str(tmp_path))
+    old = tmp_path / "Iron Man (2008)" / "Iron Man.fre.sup"
+    old.parent.mkdir()
+    old.write_bytes(b"old")
+    db = FakeSession()
+    _seed(db, task_status=TranscodeTaskStatus.IN_PROGRESS)
+    db.rows["transcode_tasks"][0].replaced_sidecar_paths = ["Iron Man (2008)/Iron Man.fre.sup"]
+    with TestClient(_make_app(db)) as client:
+        r = client.patch(
+            "/api/transcoder/tasks/txt_1/fail", json={"last_error": "HandBrakeCLI exited rc=3"}, headers=_SERVICE_AUTH
+        )
+    assert r.status_code == 200, r.text
+    assert old.exists()
+    assert db.rows["transcode_tasks"][0].replaced_sidecar_paths == ["Iron Man (2008)/Iron Man.fre.sup"]

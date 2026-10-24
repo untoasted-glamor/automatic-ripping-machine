@@ -30,6 +30,7 @@ from arm_backend.identity.proposals import (
 )
 from arm_backend.identity.stage_runner import EpisodeStageRunner
 from arm_backend.job_abandon import abandon_job_transition
+from arm_backend.job_track_selection import default_for_job, disc_languages, edit_lock_reason, job_override
 from arm_backend.path_template import TemplateValidationError
 from arm_backend.raw_backup import delete_backup, describe_backup
 from arm_backend.routers._params import JobIdParam
@@ -61,6 +62,8 @@ from arm_common.schemas import (
     AbandonJobRequest,
     ApplySessionRequest,
     ApplySessionResponse,
+    JobTrackSelectionRequest,
+    JobTrackSelectionView,
     BulkDeleteJobsRequest,
     BulkDeleteJobsResponse,
     DiscFingerprintView,
@@ -1523,6 +1526,62 @@ async def resolve(
     )
 
 
+async def _track_selection_view(db: AsyncSession, job: Job, session_id: str | None) -> JobTrackSelectionView:
+    override = job_override(job)
+    default = await default_for_job(db, job, session_id)
+    locked = await edit_lock_reason(db, job)
+    return JobTrackSelectionView(
+        override=override,
+        default=default.settings,
+        default_source=default.source,
+        default_preset_id=default.preset_id,
+        effective=override or default.settings,
+        disc=await disc_languages(db, job),
+        editable=locked is None,
+        locked_reason=locked,
+    )
+
+
+@router.get("/{job_id}/track-selection", response_model=JobTrackSelectionView)
+async def get_track_selection(
+    job_id: JobIdParam,
+    session_id: str | None = Query(default=None),
+    _: User = Depends(require_jwt),
+    db: AsyncSession = Depends(get_session),
+) -> JobTrackSelectionView:
+    """The job's track selection for the picker: its override, the default
+    it would get without one (from `session_id` when given, as Apply session
+    does), the languages on the disc's kept titles, and whether the job page
+    can still change it."""
+    job = (await db.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")
+    return await _track_selection_view(db, job, session_id)
+
+
+@router.put("/{job_id}/track-selection", response_model=JobTrackSelectionView)
+async def put_track_selection(
+    job_id: JobIdParam,
+    req: JobTrackSelectionRequest,
+    _: User = Depends(require_writer),
+    db: AsyncSession = Depends(get_session),
+) -> JobTrackSelectionView:
+    """Set (or, with null, clear) the job's own track selection. Refused
+    once one of the job's transcode tasks has been claimed; Apply session
+    sets it for a re-transcode instead."""
+    job = (await db.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")
+    locked = await edit_lock_reason(db, job)
+    if locked is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=locked)
+    job.track_selection = req.track_selection.model_dump(mode="json") if req.track_selection else None
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    return await _track_selection_view(db, job, None)
+
+
 @router.post("/{job_id}/transcode", response_model=ApplySessionResponse)
 async def apply_session(
     job_id: JobIdParam,
@@ -1534,6 +1593,11 @@ async def apply_session(
     job = (await db.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")
+
+    if "track_selection" in req.model_fields_set:
+        # Committed with the apply; a refused apply (collisions, wrong media
+        # type) leaves the job's selection as it was.
+        job.track_selection = req.track_selection.model_dump(mode="json") if req.track_selection else None
 
     try:
         outcome = await apply_session_internal(

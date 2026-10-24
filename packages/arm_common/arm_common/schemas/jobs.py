@@ -22,6 +22,7 @@ from arm_common.disc_shape import looks_episodic as _looks_episodic
 from arm_common.schemas.identity import IdentityClaims
 from arm_common.schemas.job_metadata import ExternalIds, JobMetadata, MusicMeta
 from arm_common.schemas.ripper import ScanTitle
+from arm_common.schemas.sessions import TrackSelectionSettings
 
 
 class ResolveRequest(BaseModel):
@@ -247,6 +248,9 @@ class JobView(BaseModel):
     wait_start_time: datetime | None = None
     # Per-job review-gate pause: freezes this disc's countdown (UI shows paused).
     manual_pause: bool = False
+    # The job's own audio/subtitle track selection; None lets the transcode
+    # preset decide.
+    track_selection: TrackSelectionSettings | None = None
     # Populated only by the list endpoint for ripping jobs; None on
     # detail responses and on terminal/early-state jobs.
     rip_progress: RipProgressSummary | None = None
@@ -482,3 +486,54 @@ class JobStatsResponse(BaseModel):
     total: int
     by_status: dict[str, int]
     by_type: dict[str, int]
+
+
+# --- Per-job track selection -------------------------------------------------
+
+
+class DiscLanguageTracks(BaseModel):
+    """One language the disc's kept titles carry, for the track picker."""
+
+    language: str
+    language_name: str | None = None
+    # Distinct MakeMKV descriptions of this language's tracks, e.g.
+    # `TrueHD Surround 5.1 English`, in disc order.
+    tracks: list[str] = Field(default_factory=list)
+    # How many kept titles have at least one track in this language.
+    title_count: int = 0
+    # Every track of this language is a forced-only subtitle.
+    forced_only: bool = False
+
+
+class DiscTrackLanguages(BaseModel):
+    audio: list[DiscLanguageTracks] = Field(default_factory=list)
+    subtitles: list[DiscLanguageTracks] = Field(default_factory=list)
+    # False when the stored scan predates stream parsing (or there is none):
+    # the disc's languages are unknown, not absent.
+    known: bool = False
+
+
+class JobTrackSelectionView(BaseModel):
+    """GET /api/jobs/{id}/track-selection: what the picker needs.
+
+    `effective` is what the job's transcodes use: `override` when set, else
+    `default`, the track fields of the transcode preset this job would use
+    (`default_source` names it), or the built-in default when no preset is
+    known yet."""
+
+    override: TrackSelectionSettings | None = None
+    default: TrackSelectionSettings
+    default_source: str
+    default_preset_id: str | None = None
+    effective: TrackSelectionSettings
+    disc: DiscTrackLanguages
+    # False once one of the job's transcode tasks has been claimed: change it
+    # then through Apply session (re-transcode) instead.
+    editable: bool
+    locked_reason: str | None = None
+
+
+class JobTrackSelectionRequest(BaseModel):
+    """PUT /api/jobs/{id}/track-selection. Null clears the override."""
+
+    track_selection: TrackSelectionSettings | None = None

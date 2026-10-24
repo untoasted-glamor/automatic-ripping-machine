@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from typing import Any
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -280,9 +281,11 @@ def test_manual_reapply_with_overwrite_evicts_done_tasks_and_creates_new(signing
     assert all(a.id != "sap_existing" for a in db.rows["session_applications"])
 
 
-def test_manual_reapply_with_overwrite_removes_the_evicted_tasks_sidecars(signing_key: bytes, tmp_path: Path) -> None:
-    """The evicted DONE task's recorded subtitle files go with it; a file it
-    never recorded (the user's own subtitles) stays."""
+def test_manual_reapply_with_overwrite_hands_the_evicted_sidecars_to_the_new_task(
+    signing_key: bytes, tmp_path: Path
+) -> None:
+    """The evicted DONE task's subtitle files stay with the old video until
+    the replacing task completes: the new task carries them."""
     db = FakeSession()
     _seed(db)
     db.rows["session_applications"] = [
@@ -324,8 +327,11 @@ def test_manual_reapply_with_overwrite_removes_the_evicted_tasks_sidecars(signin
             headers=_auth(token),
         )
     assert r.status_code == 200, r.text
-    assert not any((tmp_path / rel).exists() for rel in old_sidecars)
+    assert all((tmp_path / rel).exists() for rel in old_sidecars)
     assert users_own.exists()
+    (new_task,) = db.rows["transcode_tasks"]
+    assert new_task.id != "txt_existing"
+    assert new_task.replaced_sidecar_paths == old_sidecars
 
 
 def test_manual_reapply_overwrite_refused_when_in_progress(signing_key: bytes, tmp_path: Path) -> None:
@@ -1296,3 +1302,56 @@ def test_apply_with_no_kept_track_ripped_queues_nothing(signing_key: bytes, tmp_
     assert r.json()["session_application"]["status"] == "waiting_identify"
     assert r.json()["tasks"] == []
     assert db.rows["transcode_tasks"] == []
+
+
+async def test_evict_returns_the_sidecars_to_hand_on_including_a_failed_replacements() -> None:
+    """A FAILED replacement still carries the sidecars it was handed; a second
+    overwrite passes those on too, with no duplicates."""
+    from arm_backend.auto_session import _evict_colliding_tasks
+
+    db = FakeSession()
+    db.rows["session_applications"] = [
+        SessionApplication(id="sap_own", session_id="ses_x", job_id="job_01JZXR7K3M5Q8N4VWA00000001")
+    ]
+
+    def task(task_id: str, path: str, status: TranscodeTaskStatus, **extra: Any) -> TranscodeTask:
+        return TranscodeTask(
+            id=task_id,
+            session_application_id="sap_own",
+            source_track_id="trk_1",
+            status=status,
+            output_path=path,
+            attempts=1,
+            progress_pct=0,
+            **extra,
+        )
+
+    db.rows["transcode_tasks"] = [
+        task(
+            "txt_failed",
+            "M/A.mkv",
+            TranscodeTaskStatus.FAILED,
+            replaced_sidecar_paths=["M/A.fre.sup", "M/A.eng.sup"],
+            sidecar_paths=["M/A.eng.sup"],
+        ),
+        task("txt_done", "M/B.mkv", TranscodeTaskStatus.DONE, sidecar_paths=["M/B.eng.sup"]),
+        task("txt_plain", "M/C.mkv", TranscodeTaskStatus.DONE),
+    ]
+    replaced = await _evict_colliding_tasks(
+        db, ["M/A.mkv", "M/B.mkv", "M/C.mkv"], job_id="job_01JZXR7K3M5Q8N4VWA00000001"
+    )
+    assert replaced == {"M/A.mkv": ["M/A.fre.sup", "M/A.eng.sup"], "M/B.mkv": ["M/B.eng.sup"]}
+    assert db.rows["transcode_tasks"] == []
+
+
+async def test_evict_with_no_own_application_or_no_row_hands_on_nothing() -> None:
+    from arm_backend.auto_session import _evict_colliding_tasks
+
+    db = FakeSession()
+    db.rows["session_applications"] = []
+    assert await _evict_colliding_tasks(db, ["M/A.mkv"], job_id="job_01JZXR7K3M5Q8N4VWA00000001") == {}
+    db.rows["session_applications"] = [
+        SessionApplication(id="sap_own", session_id="ses_x", job_id="job_01JZXR7K3M5Q8N4VWA00000001")
+    ]
+    db.rows["transcode_tasks"] = []
+    assert await _evict_colliding_tasks(db, ["M/A.mkv"], job_id="job_01JZXR7K3M5Q8N4VWA00000001") == {}

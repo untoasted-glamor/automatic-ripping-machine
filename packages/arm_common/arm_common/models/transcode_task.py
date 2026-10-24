@@ -39,9 +39,15 @@ class TranscodeTask(SQLModel, table=True):
     attempts: int = Field(sa_column=Column(Integer, nullable=False, server_default="0"))
     output_path: str | None = Field(default=None)
     # Subtitle files written next to `output_path` (same media-root-relative
-    # form), reported by the transcoder at /complete. Job delete and an
-    # overwrite eviction remove them with the video.
+    # form), reported by the transcoder at /complete. Job delete removes them
+    # with the video; an overwrite re-apply hands them to the replacing task
+    # (`replaced_sidecar_paths`).
     sidecar_paths: list[str] | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
+    # The sidecars of the task an overwrite re-apply replaced at this
+    # `output_path`. They stay next to the old video until this task
+    # completes (its video then replaces the old one), and are removed then
+    # unless this task wrote the same file again.
+    replaced_sidecar_paths: list[str] | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
     progress_pct: int = Field(sa_column=Column(Integer, nullable=False, server_default="0"))
     last_error: str | None = Field(default=None)
     created_at: datetime | None = Field(sa_column=created_at_column())

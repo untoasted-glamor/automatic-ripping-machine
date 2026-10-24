@@ -120,17 +120,14 @@ def check_track_selection(
         raise ValueError("subtitle_selection 'languages' needs at least one subtitle language")
 
 
-class TranscodePresetCreateRequest(BaseModel):
-    name: str = Field(min_length=1)
-    media_type: MediaType
-    tool: TranscodeTool
-    preset_ref: str | None = None
-    preset_json: dict[str, Any] | None = None
-    container: ContainerFormat
-    encoder: str = Field(default="preset", min_length=1)
-    extra_args: str | None = None
-    # A new preset keeps every audio track and writes every subtitle as a
-    # separate file unless the request says otherwise.
+class TrackSelectionSettings(BaseModel):
+    """Which audio and subtitle tracks a transcode keeps and where the
+    subtitles go: the track fields of a transcode preset, and the shape of a
+    job's own override (`jobs.track_selection`), which wins over the preset.
+
+    The defaults keep every audio track and write every subtitle as a
+    separate file."""
+
     audio_selection: AudioSelection = AudioSelection.ALL
     audio_languages: list[str] = Field(default_factory=list)
     subtitle_selection: SubtitleSelection = SubtitleSelection.ALL
@@ -143,11 +140,25 @@ class TranscodePresetCreateRequest(BaseModel):
         return normalize_language_list(value)
 
     @model_validator(mode="after")
-    def _selection(self) -> "TranscodePresetCreateRequest":
+    def _selection(self) -> "TrackSelectionSettings":
         check_track_selection(
             self.audio_selection, self.audio_languages, self.subtitle_selection, self.subtitle_languages
         )
         return self
+
+
+TRACK_SELECTION_FIELDS: tuple[str, ...] = tuple(TrackSelectionSettings.model_fields)
+
+
+class TranscodePresetCreateRequest(TrackSelectionSettings):
+    name: str = Field(min_length=1)
+    media_type: MediaType
+    tool: TranscodeTool
+    preset_ref: str | None = None
+    preset_json: dict[str, Any] | None = None
+    container: ContainerFormat
+    encoder: str = Field(default="preset", min_length=1)
+    extra_args: str | None = None
 
 
 class TranscodePresetUpdateRequest(BaseModel):
@@ -256,6 +267,10 @@ class TranscodeTaskView(BaseModel):
 class ApplySessionRequest(BaseModel):
     session_id: str
     overwrite: bool = False
+    # The job's own track selection (jobs.track_selection), saved before the
+    # fan-out. Sent: set it (null clears it, so the preset decides). Left out:
+    # the job keeps what it has.
+    track_selection: TrackSelectionSettings | None = None
 
 
 class CollisionInfo(BaseModel):

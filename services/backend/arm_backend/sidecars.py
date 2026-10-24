@@ -4,9 +4,14 @@ A transcode preset with `subtitle_output` `separate` or `both` makes the
 transcoder write each kept subtitle track as its own file in the video's
 folder, named `<video stem>.<lang>[.<n>][.forced].<ext>`, and report them at
 /complete. The Backend records them on `transcode_tasks.sidecar_paths`
-(media-root-relative, like `output_path`) so job delete and an overwrite
-eviction remove them with the video, and the startup `.arm-inprogress`
-sweep leaves a running task's partial sidecars alone.
+(media-root-relative, like `output_path`) so job delete removes them with the
+video, and the startup `.arm-inprogress` sweep leaves a running task's
+partial sidecars alone.
+
+An overwrite re-apply evicts the old task but keeps its sidecars: the new
+task carries them as `replaced_sidecar_paths` and `drop_replaced_sidecars`
+removes them only when it completes, when its video has replaced the old one.
+A failed re-encode leaves the old video with its subtitles.
 """
 
 from __future__ import annotations
@@ -72,3 +77,10 @@ def remove_sidecars(media_root: Path, sidecar_paths: Iterable[str] | None) -> in
         removed += 1
         logger.info("removed sidecar path=%s", path)
     return removed
+
+
+def drop_replaced_sidecars(media_root: Path, replaced: Iterable[str] | None, written: Iterable[str] | None) -> int:
+    """Remove the replaced task's sidecars the completing task did not write
+    again (a file it wrote under the same name is its own now)."""
+    keep = set(written or ())
+    return remove_sidecars(media_root, [p for p in replaced or () if p not in keep])

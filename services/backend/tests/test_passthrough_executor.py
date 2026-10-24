@@ -764,3 +764,22 @@ async def test_a_failing_progress_publish_does_not_strand_the_task(tmp_path: Pat
 
     assert progress_tried.is_set()
     assert ok is True and task.status == TranscodeTaskStatus.DONE
+
+
+async def test_a_move_that_replaces_an_encode_removes_its_subtitle_files(tmp_path: Path) -> None:
+    raw = tmp_path / "raw" / "job1" / "t0.mkv"
+    raw.parent.mkdir(parents=True)
+    raw.write_bytes(b"data")
+    media_root = tmp_path / "media"
+    old_sub = media_root / "Title (2020)" / "t0.eng.sup"
+    old_sub.parent.mkdir(parents=True)
+    old_sub.write_bytes(b"pgs")
+
+    db = _db(track_output_path=str(raw), task_output_path="Title (2020)/t0.mkv")
+    task = db.rows["transcode_tasks"][0]
+    task.replaced_sidecar_paths = ["Title (2020)/t0.eng.sup"]
+    hub, _ = _hub_with_recorder()
+
+    assert await execute_passthrough_task(db, task, hub, _settings(MEDIA_ROOT=str(media_root))) is True
+    assert not old_sub.exists()
+    assert task.replaced_sidecar_paths is None

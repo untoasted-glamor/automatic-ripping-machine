@@ -82,6 +82,10 @@ class Job(SQLModel, table=True):
     # Distinct from the global ripping_paused (whole-machine). Resume clears it
     # and restarts a fresh countdown.
     manual_pause: bool = Field(default=False, sa_column=Column(Boolean, nullable=False, server_default="false"))
+    # The job's own audio/subtitle track selection
+    # (arm_common.schemas.TrackSelectionSettings), set from the review step,
+    # the job page or Apply session. NULL lets the transcode preset decide.
+    track_selection: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     started_at: datetime | None = Field(sa_column=Column(DateTime(timezone=True), nullable=True))
     ripped_at: datetime | None = Field(sa_column=Column(DateTime(timezone=True), nullable=True))
     created_at: datetime | None = Field(sa_column=created_at_column())

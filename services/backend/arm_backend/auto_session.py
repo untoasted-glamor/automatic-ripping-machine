@@ -31,7 +31,6 @@ from sqlmodel import col, select
 
 from arm_backend.config import settings
 from arm_backend.path_template import TemplateValidationError
-from arm_backend.sidecars import remove_sidecars
 from arm_backend.transcode_apply import (
     compute_outputs,
     encoder_available,
@@ -580,6 +579,7 @@ async def _fan_out_tasks_for_application(
             skipped_reason="collisions",
         )
 
+    replaced_sidecars: dict[str, list[str]] = {}
     if overwrite and collisions:
         # overwrite=True only ever licenses evicting the *applying* job's own
         # colliding tasks. A collision whose owning job differs, OR whose
@@ -617,7 +617,7 @@ async def _fan_out_tasks_for_application(
         same_job_paths = [
             c.output_path for c in collisions if c.reason != "existing_task" or c.existing_job_id == job.id
         ]
-        await _evict_colliding_tasks(db, same_job_paths, job_id=job.id)
+        replaced_sidecars = await _evict_colliding_tasks(db, same_job_paths, job_id=job.id)
 
     if application is None:
         application = SessionApplication(
@@ -638,6 +638,7 @@ async def _fan_out_tasks_for_application(
             source_track_id=r.track_id,
             status=TranscodeTaskStatus.QUEUED,
             output_path=r.output_path,
+            replaced_sidecar_paths=replaced_sidecars.get(r.output_path),
             attempts=0,
             progress_pct=0,
         )
@@ -1058,7 +1059,7 @@ async def drain_parked_applications_after_rip(
     return outcomes
 
 
-async def _evict_colliding_tasks(db: AsyncSession, paths: list[str], *, job_id: str) -> None:
+async def _evict_colliding_tasks(db: AsyncSession, paths: list[str], *, job_id: str) -> dict[str, list[str]]:
     """Delete the *applying job's own* live tasks that claim the
     soon-to-be-reused `paths`.
 
@@ -1080,6 +1081,11 @@ async def _evict_colliding_tasks(db: AsyncSession, paths: list[str], *, job_id: 
     Empty `session_applications` left behind (all their tasks evicted)
     get cleaned up here so the JobDetail page doesn't accumulate husk
     rows on every re-apply.
+
+    Returns the evicted tasks' subtitle sidecars by output path. Their files
+    stay on disk with the old video; the caller hands them to the replacing
+    task (`replaced_sidecar_paths`), which removes them once its own video
+    has landed.
     """
     own_application_ids = [
         row.id
@@ -1090,7 +1096,7 @@ async def _evict_colliding_tasks(db: AsyncSession, paths: list[str], *, job_id: 
     if not own_application_ids:
         # Nothing of this job's has ever fanned out a task — an evictable
         # collision can only be an on-disk-only hit, which has no DB row.
-        return
+        return {}
 
     in_progress_ids = (
         (
@@ -1128,19 +1134,19 @@ async def _evict_colliding_tasks(db: AsyncSession, paths: list[str], *, job_id: 
     if not rows:
         # FS-only collision (no DB row to evict) — atomic_output will
         # clobber the on-disk file via the .arm-inprogress rename dance.
-        return
+        return {}
 
     affected_app_ids = {r.session_application_id for r in rows}
-    evicted_sidecars = [p for r in rows for p in (r.sidecar_paths or [])]
+    replaced: dict[str, list[str]] = {}
     for row in rows:
+        if row.output_path and (row.sidecar_paths or row.replaced_sidecar_paths):
+            # A FAILED replacement still carries the sidecars it was handed.
+            paths_here = replaced.setdefault(row.output_path, [])
+            for path in [*(row.replaced_sidecar_paths or []), *(row.sidecar_paths or [])]:
+                if path not in paths_here:
+                    paths_here.append(path)
         await db.delete(row)
     await db.flush()
-    # The new fan-out re-writes the videos at these paths (atomic rename), but
-    # its subtitle sidecars can differ (other languages, or none), so the
-    # evicted tasks' recorded sidecars go now rather than linger next to the
-    # replacement.
-    if evicted_sidecars:
-        remove_sidecars(Path(settings.MEDIA_ROOT), evicted_sidecars)
 
     # Drop session_applications that now have zero remaining tasks. If any
     # other tasks still link to the application, leave it alone.
@@ -1156,6 +1162,7 @@ async def _evict_colliding_tasks(db: AsyncSession, paths: list[str], *, job_id: 
         if app is not None:
             await db.delete(app)
     await db.flush()
+    return replaced
 
 
 _EVICTABLE_STATES: tuple[TranscodeTaskStatus, ...] = (
