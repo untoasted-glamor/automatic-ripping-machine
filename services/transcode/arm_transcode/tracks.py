@@ -17,6 +17,22 @@ Selection rules:
   track instead (and logs it): a file with no sound is never the intent.
   A subtitle selection that matches nothing keeps none.
 
+Audio format (`audio_format`, used when ARM picks the audio tracks):
+- `ac3_else_aac51` keeps one track per language: an untouched copy of its
+  AC-3 track with the most channels, else its best track (most channels,
+  then TrueHD, DTS-HD, LPCM, FLAC, DTS, E-AC-3, others) converted to AAC with
+  the source's channels up to 5.1 (a stereo or mono source stays so).
+  Commentary and audio-description tracks (the source's `comment` /
+  `visual_impaired` disposition, or a title naming one) never stand in for
+  the main track: they follow every language's main track, chosen by the same
+  rule. Candidates that still tie (two AC-3 5.1 tracks of one language that
+  nothing marks apart) are all kept, in disc order.
+- `aac_stereo` converts every kept track to AAC stereo, `aac_51` to AAC with
+  up to 5.1 channels, and `copy` keeps every kept track untouched.
+- `preset` leaves it to the engine.
+A converted track is titled for what it now is (`English AAC 5.1`); a copy
+keeps its source title. Language tags stay on every track.
+
 Sidecars: bitmap subtitles are copied losslessly in their own format, Blu-ray
 PGS to `.sup` and DVD VobSub to `.mks` (a one-track Matroska file: ffmpeg
 has no VobSub `.idx`/`.sub` muxer, and Jellyfin reads `.mks`). Text
@@ -39,9 +55,11 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from arm_common import AudioSelection, ContainerFormat, SubtitleOutput, SubtitleSelection
+import re
+
+from arm_common import AudioFormat, AudioSelection, ContainerFormat, SubtitleOutput, SubtitleSelection
 from arm_common.fileops import INPROGRESS_SUFFIX
-from arm_common.languages import canonical_language
+from arm_common.languages import canonical_language, language_name
 from arm_common.schemas import TranscodePresetView
 
 logger = logging.getLogger("arm_transcode.tracks")
@@ -82,6 +100,23 @@ class SourceStream:
     forced: bool = False
     title: str | None = None
     profile: str | None = None
+    channels: int | None = None
+    # Commentary or audio description (see `_is_extra`).
+    extra: bool = False
+
+
+@dataclass(frozen=True)
+class AudioOut:
+    """One output audio track: `stream` copied untouched (`channels` None),
+    or converted to AAC with `channels` channels and titled `title`."""
+
+    stream: SourceStream
+    channels: int | None = None
+    title: str | None = None
+
+    @property
+    def copy(self) -> bool:
+        return self.channels is None
 
 
 @dataclass(frozen=True)
@@ -110,6 +145,9 @@ class TrackPlan:
     audio: list[SourceStream] | None
     embedded_subtitles: list[SourceStream] | None
     sidecars: list[Sidecar] = field(default_factory=list)
+    # What each kept audio track becomes; None leaves it to the engine
+    # (`audio_format` `preset`). When set, `audio` lists the same streams.
+    audio_out: list[AudioOut] | None = None
 
 
 def needs_plan(preset: TranscodePresetView | None) -> bool:
@@ -139,9 +177,86 @@ def parse_ffprobe(payload: str) -> SourceTracks:
                 forced=bool(disposition.get("forced")),
                 title=tags.get("title"),
                 profile=stream.get("profile"),
+                channels=stream.get("channels") if isinstance(stream.get("channels"), int) else None,
+                extra=_is_extra(disposition, tags.get("title")),
             )
         )
     return SourceTracks(audio=audio, subtitles=subtitles)
+
+
+_EXTRA_TITLE_RE = re.compile(r"comment|descripti|narrat", re.IGNORECASE)
+
+
+def _is_extra(disposition: dict[str, object], title: str | None) -> bool:
+    """A commentary or audio-description track: flagged so by the source
+    (Matroska FlagCommentary / FlagVisualImpaired, read by ffprobe as the
+    `comment` / `visual_impaired` disposition), or titled so."""
+    if disposition.get("comment") or disposition.get("visual_impaired"):
+        return True
+    return bool(title and _EXTRA_TITLE_RE.search(title))
+
+
+# Fallback ranking when a language has no AC-3 track: lossless first.
+_CODEC_RANK = {"truehd": 0, "dts_hd": 1, "flac": 3, "dts": 4, "eac3": 5, "aac": 6, "mp2": 7, "mp3": 7}
+
+
+def _codec_rank(stream: SourceStream) -> int:
+    if stream.codec == "dts" and "HD" in (stream.profile or ""):
+        return _CODEC_RANK["dts_hd"]
+    if stream.codec.startswith("pcm_"):
+        return 2
+    return _CODEC_RANK.get(stream.codec, 8)
+
+
+def _aac_channels(stream: SourceStream, *, stereo: bool) -> int:
+    if stereo:
+        return 2
+    channels = stream.channels or 2
+    return 6 if channels >= 3 else channels
+
+
+_LAYOUTS = {1: "Mono", 2: "Stereo", 6: "5.1"}
+
+
+def _converted(stream: SourceStream, *, stereo: bool) -> AudioOut:
+    channels = _aac_channels(stream, stereo=stereo)
+    title = f"{language_name(stream.language)} AAC {_LAYOUTS.get(channels, f'{channels} ch')}"
+    return AudioOut(stream=stream, channels=channels, title=title)
+
+
+def _best_of(candidates: list[SourceStream]) -> list[AudioOut]:
+    """One language's pick (see the module doc); ties are all kept."""
+    ac3 = [s for s in candidates if s.codec == "ac3"]
+    if ac3:
+        most = max(s.channels or 0 for s in ac3)
+        return [AudioOut(stream=s) for s in ac3 if (s.channels or 0) == most]
+    best = min((-(s.channels or 0), _codec_rank(s)) for s in candidates)
+    return [_converted(s, stereo=False) for s in candidates if (-(s.channels or 0), _codec_rank(s)) == best]
+
+
+def plan_audio(streams: list[SourceStream], audio_format: AudioFormat) -> list[AudioOut] | None:
+    """What each of the kept `streams` becomes; None for `preset`."""
+    if audio_format == AudioFormat.PRESET:
+        return None
+    if audio_format == AudioFormat.COPY:
+        return [AudioOut(stream=s) for s in streams]
+    if audio_format in (AudioFormat.AAC_STEREO, AudioFormat.AAC_51):
+        return [_converted(s, stereo=audio_format == AudioFormat.AAC_STEREO) for s in streams]
+    by_language: dict[str, list[SourceStream]] = {}
+    for stream in streams:
+        by_language.setdefault(stream.language, []).append(stream)
+    mains: list[AudioOut] = []
+    extras: list[AudioOut] = []
+    for members in by_language.values():
+        main = [s for s in members if not s.extra]
+        extra = [s for s in members if s.extra]
+        if not main:
+            # Only commentary in this language: it is the language's track.
+            main, extra = extra, []
+        mains += _best_of(main)
+        if extra:
+            extras += _best_of(extra)
+    return mains + extras
 
 
 def _by_languages(streams: list[SourceStream], languages: list[str]) -> list[SourceStream]:
@@ -235,8 +350,12 @@ def plan_tracks(
     preset: TranscodePresetView, source: SourceTracks, container: ContainerFormat, final_output: Path
 ) -> TrackPlan:
     audio: list[SourceStream] | None = None
+    audio_out: list[AudioOut] | None = None
     if preset.audio_selection != AudioSelection.PRESET:
         audio = select_audio(source.audio, preset.audio_selection, preset.audio_languages)
+        audio_out = plan_audio(audio, preset.audio_format)
+        if audio_out is not None:
+            audio = [o.stream for o in audio_out]
 
     embedded: list[SourceStream] | None = None
     sidecars: list[Sidecar] = []
@@ -250,11 +369,15 @@ def plan_tracks(
 
     logger.info(
         "track plan audio=%s embedded_subtitles=%s sidecars=%s",
-        "engine" if audio is None else [f"{s.position}:{s.language}" for s in audio],
+        "engine"
+        if audio is None
+        else [f"{s.position}:{s.language}" for s in audio]
+        if audio_out is None
+        else [f"{o.stream.position}:{o.stream.language}:{'copy' if o.copy else f'aac{o.channels}'}" for o in audio_out],
         "engine" if embedded is None else [f"{s.position}:{s.language}" for s in embedded],
         [p.path.name for p in sidecars],
     )
-    return TrackPlan(audio=audio, embedded_subtitles=embedded, sidecars=sidecars)
+    return TrackPlan(audio=audio, embedded_subtitles=embedded, sidecars=sidecars, audio_out=audio_out)
 
 
 async def run_tool(cmd: list[str], what: str) -> str:

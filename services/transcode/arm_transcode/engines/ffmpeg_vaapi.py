@@ -5,8 +5,12 @@ Defaults: only the first video stream is mapped
 (`-map 0:v:0`, HandBrake parity) so the single `-vf format=nv12,hwupload
 -c:v <encoder>` chain never has to apply to more than one stream; a bare
 `-map 0` would also pull in extra angles and attached-picture "video"
-streams. Audio is always copied (`-c:a copy`), so TrueHD, DTS and AC-3
-tracks stay as they are.
+streams. Audio is copied (`-c:a copy`), so TrueHD, DTS and AC-3 tracks
+stay as they are, unless the plan says otherwise (`TrackPlan.audio_out`,
+any `audio_format` but `preset`): then each converted track is AAC with its
+planned channel count (96/160/384 kbit/s for mono/stereo/5.1) and gets its
+new title; a copied track keeps its source title. ffmpeg carries every
+mapped stream's language tag over.
 
 Which audio and subtitle tracks are mapped follows the preset's track
 selection (`arm_transcode.tracks.TrackPlan`). Without one (the `preset`
@@ -36,6 +40,7 @@ logger = logging.getLogger("arm_transcode.engines.ffmpeg_vaapi")
 
 FFMPEG_MUXER: dict[ContainerFormat, str] = {ContainerFormat.MKV: "matroska", ContainerFormat.MP4: "mp4"}
 DEFAULT_QP = "22"
+_AAC_BITRATES = {1: "96k", 2: "160k", 6: "384k"}
 
 
 def build_command(
@@ -92,6 +97,14 @@ def build_command(
         "-c:a",
         "copy",
     ]
+    outs = plan.audio_out if plan is not None else None
+    for index, out in enumerate(outs or []):
+        if out.copy:
+            continue
+        channels = out.channels or 2
+        cmd += [f"-c:a:{index}", "aac", f"-ac:a:{index}", str(channels)]
+        cmd += [f"-b:a:{index}", _AAC_BITRATES.get(channels, "384k")]
+        cmd += [f"-metadata:s:a:{index}", f"title={out.title or ''}"]
     if audio is not None:
         for index, _ in enumerate(audio):
             cmd += [f"-disposition:a:{index}", "default" if index == 0 else "0"]

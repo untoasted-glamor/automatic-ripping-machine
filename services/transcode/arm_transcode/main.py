@@ -185,7 +185,7 @@ async def _run_encoder(
         hb_track_args: list[str] = []
         sidecars = []
         if plan is not None:
-            audio = await preset_audio(preset.preset_ref) if plan.audio else None
+            audio = await preset_audio(preset.preset_ref) if plan.audio and plan.audio_out is None else None
             hb_track_args = track_args(plan, audio)
             sidecars = plan.sidecars
         with sidecar_outputs(sidecars):

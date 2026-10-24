@@ -4,10 +4,22 @@ the audio and subtitle track args.
 
 Track args. HandBrakeCLI numbers a title's audio and subtitle tracks from 1
 in source order, so a kept stream at ffmpeg position N is HandBrake track
-N+1. Any audio track option on the command line replaces the preset's audio
-encoder list with HandBrakeCLI's own defaults (MP3 for MKV), so the preset's
-`AudioList` is read back with `--preset-export` and repeated for every kept
-track, the same way HandBrake applies a preset to a title:
+N+1.
+
+When the plan says what each audio track becomes (`TrackPlan.audio_out`, any
+`audio_format` but `preset`), each track is a passthru (`copy`, with every
+codec HandBrake can pass through in `--audio-copy-mask`) or `av_aac` with a
+mono, stereo or 5point1 mixdown at HandBrake's default bitrate (160 kbit/s
+stereo, 384 kbit/s 5.1). Every track is named explicitly with `--aname`
+(HandBrakeCLI drops some source names when an entry is empty and has no
+escape for a comma, so a comma in a source name becomes `;`): a copy keeps
+its source title, a converted track gets its new one.
+
+With `audio_format` `preset`, any audio track option on the command line
+replaces the preset's audio encoder list with HandBrakeCLI's own defaults
+(MP3 for MKV), so the preset's `AudioList` is read back with
+`--preset-export` and repeated for every kept track, the same way HandBrake
+applies a preset to a title:
 
 - every `AudioList` entry applies to the first kept track; with
   `AudioSecondaryEncoderMode` on (all built-in presets) the other tracks get
@@ -32,7 +44,7 @@ import logging
 from dataclasses import dataclass, field
 
 from arm_common.encoders import EncoderSpec
-from arm_transcode.tracks import SourceStream, TrackPlan, run_tool
+from arm_transcode.tracks import AudioOut, SourceStream, TrackPlan, run_tool
 
 logger = logging.getLogger("arm_transcode.engines.handbrake")
 
@@ -173,11 +185,33 @@ def subtitle_track_args(tracks: list[SourceStream]) -> list[str]:
     return ["--subtitle", numbers, "--subtitle-burned=none", "--subtitle-default=none"]
 
 
+_MIXDOWNS = {1: "mono", 2: "stereo", 6: "5point1"}
+# Every codec HandBrakeCLI 1.11 can pass through (its --audio-copy-mask list).
+_COPY_MASK = "aac,ac3,eac3,truehd,dts,dtshd,mp2,mp3,opus,vorbis,flac,alac,pcm"
+
+
+def audio_out_args(outs: list[AudioOut]) -> list[str]:
+    """HandBrakeCLI audio args for an explicit per-track plan."""
+    if not outs:
+        return ["--audio", "none"]
+    numbers = ",".join(str(o.stream.position + 1) for o in outs)
+    encoders = ",".join("copy" if o.copy else "av_aac" for o in outs)
+    mixdowns = ",".join("none" if o.channels is None else _MIXDOWNS.get(o.channels, "5point1") for o in outs)
+    names = ",".join(((o.stream.title or "") if o.copy else (o.title or "")).replace(",", ";") for o in outs)
+    args = ["--audio", numbers, "--aencoder", encoders, "--mixdown", mixdowns, "--aname", names]
+    if any(o.copy for o in outs):
+        args += ["--audio-copy-mask", _COPY_MASK]
+    return [*args, "--audio-fallback", "av_aac"]
+
+
 def track_args(plan: TrackPlan, audio: PresetAudio | None) -> list[str]:
     """HandBrakeCLI args for `plan`; `audio` is the preset's audio settings,
-    needed only when the plan picks the audio tracks."""
+    needed only when the plan picks the audio tracks with `audio_format`
+    `preset`."""
     args: list[str] = []
-    if plan.audio is not None:
+    if plan.audio_out is not None:
+        args += audio_out_args(plan.audio_out)
+    elif plan.audio is not None:
         args += audio_track_args(plan.audio, audio or _DEFAULT_AUDIO)
     if plan.embedded_subtitles is not None:
         args += subtitle_track_args(plan.embedded_subtitles)
