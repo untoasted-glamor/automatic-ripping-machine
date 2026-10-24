@@ -9777,6 +9777,16 @@
         "type": "object",
         "title": "AppriseChannelConfig"
       },
+      "AudioSelection": {
+        "type": "string",
+        "enum": [
+          "preset",
+          "all",
+          "languages"
+        ],
+        "title": "AudioSelection",
+        "description": "Which source audio tracks a transcode preset keeps.\n\n`preset` leaves the choice to the engine (HandBrake: the preset's own\nrule, which keeps the first track; ffmpeg VAAPI: every track). `all`\nkeeps every track in source order; `languages` keeps the tracks whose\nlanguage is in the preset's ordered `audio_languages` list."
+      },
       "BashChannelConfig": {
         "properties": {
           "type": {
@@ -10382,6 +10392,14 @@
           "output_path": {
             "type": "string",
             "title": "Output Path"
+          },
+          "sidecar_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 256,
+            "title": "Sidecar Paths"
           },
           "size_bytes": {
             "anyOf": [
@@ -18294,6 +18312,27 @@
         ],
         "title": "StorageRoot"
       },
+      "SubtitleOutput": {
+        "type": "string",
+        "enum": [
+          "embedded",
+          "separate",
+          "both"
+        ],
+        "title": "SubtitleOutput",
+        "description": "Where kept subtitle tracks go: muxed into the video, written as\nseparate files next to it (Jellyfin/Plex sidecars), or both."
+      },
+      "SubtitleSelection": {
+        "type": "string",
+        "enum": [
+          "preset",
+          "all",
+          "languages",
+          "none"
+        ],
+        "title": "SubtitleSelection",
+        "description": "Which source subtitle tracks a transcode preset keeps (see AudioSelection)."
+      },
       "SystemDiagnosticCheck": {
         "properties": {
           "name": {
@@ -19287,6 +19326,32 @@
               }
             ],
             "title": "Extra Args"
+          },
+          "audio_selection": {
+            "$ref": "#/components/schemas/AudioSelection",
+            "default": "all"
+          },
+          "audio_languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Audio Languages"
+          },
+          "subtitle_selection": {
+            "$ref": "#/components/schemas/SubtitleSelection",
+            "default": "all"
+          },
+          "subtitle_languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Subtitle Languages"
+          },
+          "subtitle_output": {
+            "$ref": "#/components/schemas/SubtitleOutput",
+            "default": "separate"
           }
         },
         "type": "object",
@@ -19377,6 +19442,64 @@
               }
             ],
             "title": "Extra Args"
+          },
+          "audio_selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AudioSelection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "audio_languages": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audio Languages"
+          },
+          "subtitle_selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleSelection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subtitle_languages": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle Languages"
+          },
+          "subtitle_output": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleOutput"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -19442,6 +19565,32 @@
               }
             ],
             "title": "Extra Args"
+          },
+          "audio_selection": {
+            "$ref": "#/components/schemas/AudioSelection",
+            "default": "preset"
+          },
+          "audio_languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Audio Languages"
+          },
+          "subtitle_selection": {
+            "$ref": "#/components/schemas/SubtitleSelection",
+            "default": "preset"
+          },
+          "subtitle_languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Subtitle Languages"
+          },
+          "subtitle_output": {
+            "$ref": "#/components/schemas/SubtitleOutput",
+            "default": "embedded"
           },
           "created_by_user_id": {
             "anyOf": [
@@ -19626,6 +19775,20 @@
               }
             ],
             "title": "Output Path"
+          },
+          "sidecar_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sidecar Paths"
           },
           "progress_pct": {
             "type": "integer",

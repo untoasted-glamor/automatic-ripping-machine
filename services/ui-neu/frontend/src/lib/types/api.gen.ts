@@ -77,6 +77,18 @@ export type AppriseChannelConfig = {
 };
 
 /**
+ * AudioSelection
+ *
+ * Which source audio tracks a transcode preset keeps.
+ *
+ * `preset` leaves the choice to the engine (HandBrake: the preset's own
+ * rule, which keeps the first track; ffmpeg VAAPI: every track). `all`
+ * keeps every track in source order; `languages` keeps the tracks whose
+ * language is in the preset's ordered `audio_languages` list.
+ */
+export type AudioSelection = 'preset' | 'all' | 'languages';
+
+/**
  * BashChannelConfig
  *
  * A script under the backend's ``/scripts`` mount (bare file name), run as
@@ -459,6 +471,10 @@ export type CompleteTaskRequest = {
      * Output Path
      */
     output_path: string;
+    /**
+     * Sidecar Paths
+     */
+    sidecar_paths?: Array<string>;
     /**
      * Size Bytes
      */
@@ -4704,6 +4720,21 @@ export type StorageRoot = {
 };
 
 /**
+ * SubtitleOutput
+ *
+ * Where kept subtitle tracks go: muxed into the video, written as
+ * separate files next to it (Jellyfin/Plex sidecars), or both.
+ */
+export type SubtitleOutput = 'embedded' | 'separate' | 'both';
+
+/**
+ * SubtitleSelection
+ *
+ * Which source subtitle tracks a transcode preset keeps (see AudioSelection).
+ */
+export type SubtitleSelection = 'preset' | 'all' | 'languages' | 'none';
+
+/**
  * SystemDiagnosticCheck
  */
 export type SystemDiagnosticCheck = {
@@ -5160,6 +5191,17 @@ export type TranscodePresetCreateRequest = {
      * Extra Args
      */
     extra_args?: string | null;
+    audio_selection?: AudioSelection;
+    /**
+     * Audio Languages
+     */
+    audio_languages?: Array<string>;
+    subtitle_selection?: SubtitleSelection;
+    /**
+     * Subtitle Languages
+     */
+    subtitle_languages?: Array<string>;
+    subtitle_output?: SubtitleOutput;
 };
 
 /**
@@ -5190,6 +5232,17 @@ export type TranscodePresetUpdateRequest = {
      * Extra Args
      */
     extra_args?: string | null;
+    audio_selection?: AudioSelection | null;
+    /**
+     * Audio Languages
+     */
+    audio_languages?: Array<string> | null;
+    subtitle_selection?: SubtitleSelection | null;
+    /**
+     * Subtitle Languages
+     */
+    subtitle_languages?: Array<string> | null;
+    subtitle_output?: SubtitleOutput | null;
 };
 
 /**
@@ -5229,6 +5282,17 @@ export type TranscodePresetView = {
      * Extra Args
      */
     extra_args: string | null;
+    audio_selection?: AudioSelection;
+    /**
+     * Audio Languages
+     */
+    audio_languages?: Array<string>;
+    subtitle_selection?: SubtitleSelection;
+    /**
+     * Subtitle Languages
+     */
+    subtitle_languages?: Array<string>;
+    subtitle_output?: SubtitleOutput;
     /**
      * Created By User Id
      */
@@ -5340,6 +5404,10 @@ export type TranscodeTaskView = {
      * Output Path
      */
     output_path: string | null;
+    /**
+     * Sidecar Paths
+     */
+    sidecar_paths?: Array<string> | null;
     /**
      * Progress Pct
      */
