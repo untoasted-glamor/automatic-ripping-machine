@@ -124,6 +124,15 @@ function makePreset(overrides: Partial<TranscodePresetView> = {}): TranscodePres
 	} as TranscodePresetView;
 }
 
+// What a new preset keeps unless the form changes it.
+const DEFAULT_TRACKS = {
+	audio_selection: 'all',
+	audio_languages: [],
+	subtitle_selection: 'all',
+	subtitle_languages: [],
+	subtitle_output: 'separate'
+};
+
 function resultPreset(): TranscodePresetView {
 	return makePreset({ id: 'saved_1' });
 }
@@ -186,7 +195,8 @@ describe('TranscodePresetForm', () => {
 					preset_ref: null,
 					container: 'mp4',
 					encoder: 'preset',
-					extra_args: null
+					extra_args: null,
+					...DEFAULT_TRACKS
 				});
 				expect(onsaved).toHaveBeenCalledWith(resultPreset());
 			});
@@ -215,7 +225,8 @@ describe('TranscodePresetForm', () => {
 					preset_ref: 'Fast 1080p30',
 					container: 'mkv',
 					encoder: 'any_h265',
-					extra_args: '--turbo'
+					extra_args: '--turbo',
+					...DEFAULT_TRACKS
 				});
 			});
 		});
@@ -258,7 +269,8 @@ describe('TranscodePresetForm', () => {
 					preset_ref: 'flac',
 					container: 'flac',
 					encoder: 'cpu_h264',
-					extra_args: '-q 5'
+					extra_args: '-q 5',
+					...DEFAULT_TRACKS
 				});
 			});
 			const body = updateMock.mock.calls[0][1];
@@ -544,5 +556,125 @@ describe('hardware-name hint', () => {
 
 		await fireEvent.change(encoder, { target: { value: 'nvenc_h264' } });
 		expect(screen.queryByTestId('tp-encoder-hint')).not.toBeInTheDocument();
+	});
+});
+
+describe('TranscodePresetForm track selection', () => {
+	afterEach(() => {
+		cleanup();
+		vi.clearAllMocks();
+	});
+
+	function render(preset: TranscodePresetView | null = null) {
+		renderComponent(TranscodePresetForm, { props: { preset, onsaved: vi.fn(), oncancel: vi.fn() } });
+	}
+
+	it('submits ordered audio languages and subtitle languages as separate files', async () => {
+		createMock.mockResolvedValue(resultPreset());
+		render();
+		await fireEvent.input(screen.getByTestId('tp-name'), { target: { value: 'Anime' } });
+		await fireEvent.change(screen.getByTestId('tp-audio-selection'), { target: { value: 'languages' } });
+
+		// An empty languages list blocks saving.
+		expect(screen.getByTestId('tp-audio-missing')).toBeInTheDocument();
+		expect(screen.getByTestId('tp-submit')).toBeDisabled();
+
+		await fireEvent.change(screen.getByTestId('tp-audio-languages-pick'), { target: { value: 'eng' } });
+		await fireEvent.input(screen.getByTestId('tp-audio-languages-code'), { target: { value: 'JPN' } });
+		await fireEvent.click(screen.getByTestId('tp-audio-languages-add'));
+		// Put Japanese first: it becomes the default track.
+		await fireEvent.click(screen.getByRole('button', { name: 'Move Japanese up' }));
+		const items = screen.getAllByTestId('tp-audio-languages-item');
+		expect(items.map((i) => i.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
+			'Japanese jpn | default track',
+			'English eng'
+		]);
+
+		await fireEvent.change(screen.getByTestId('tp-subtitle-selection'), { target: { value: 'languages' } });
+		expect(screen.getByTestId('tp-submit')).toBeDisabled();
+		await fireEvent.change(screen.getByTestId('tp-subtitle-languages-pick'), { target: { value: 'eng' } });
+		expect(screen.getByTestId('tp-subtitle-files-note')).toBeInTheDocument();
+		await fireEvent.click(screen.getByTestId('tp-submit'));
+
+		await waitFor(() =>
+			expect(createMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					audio_selection: 'languages',
+					audio_languages: ['jpn', 'eng'],
+					subtitle_selection: 'languages',
+					subtitle_languages: ['eng'],
+					subtitle_output: 'separate'
+				})
+			)
+		);
+	});
+
+	it('loads an existing preset and saves an embedded-only subtitle choice', async () => {
+		updateMock.mockResolvedValue(resultPreset());
+		render(
+			makePreset({
+				audio_selection: 'preset',
+				audio_languages: [],
+				subtitle_selection: 'all',
+				subtitle_languages: [],
+				subtitle_output: 'both',
+				container: 'mp4'
+			})
+		);
+		expect((screen.getByTestId('tp-audio-selection') as HTMLSelectElement).value).toBe('preset');
+		expect(screen.getByTestId('tp-audio-help')).toHaveTextContent('the first audio track only');
+		expect(screen.getByTestId('tp-subtitle-mp4-note')).toBeInTheDocument();
+
+		await fireEvent.change(screen.getByTestId('tp-subtitle-output'), { target: { value: 'embedded' } });
+		expect(screen.queryByTestId('tp-subtitle-files-note')).toBeNull();
+		await fireEvent.click(screen.getByTestId('tp-submit'));
+		await waitFor(() =>
+			expect(updateMock).toHaveBeenCalledWith(
+				'tpr_1',
+				expect.objectContaining({ audio_selection: 'preset', subtitle_output: 'embedded' })
+			)
+		);
+	});
+
+	it('hides the output choice when no subtitles are kept and shows the help per mode', async () => {
+		render();
+		const subtitles = screen.getByTestId('tp-subtitle-selection');
+		await fireEvent.change(subtitles, { target: { value: 'none' } });
+		expect(screen.queryByTestId('tp-subtitle-output')).toBeNull();
+		expect(screen.getByTestId('tp-subtitle-help')).toHaveTextContent('Keeps no subtitles.');
+		await fireEvent.change(subtitles, { target: { value: 'preset' } });
+		expect(screen.getByTestId('tp-subtitle-help')).toHaveTextContent('no subtitles');
+		await fireEvent.change(subtitles, { target: { value: 'all' } });
+		expect(screen.getByTestId('tp-subtitle-help')).toHaveTextContent('Keeps every subtitle track.');
+		await fireEvent.change(screen.getByTestId('tp-audio-selection'), { target: { value: 'all' } });
+		expect(screen.getByTestId('tp-audio-help')).toHaveTextContent('Keeps every audio track in disc order.');
+	});
+
+	it('describes the ffmpeg VAAPI engine defaults', async () => {
+		render(makePreset({ encoder: 'vaapi_h264', audio_selection: 'preset', subtitle_selection: 'preset' }));
+		await waitFor(() => expect(screen.getByTestId('tp-audio-help')).toHaveTextContent('Keeps every audio track.'));
+		expect(screen.getByTestId('tp-subtitle-help')).toHaveTextContent('none in an MP4');
+	});
+
+	it('shows no track settings for an abcde or passthrough preset', async () => {
+		render();
+		await fireEvent.change(screen.getByTestId('tp-tool'), { target: { value: 'none' } });
+		expect(screen.queryByTestId('tp-tracks')).toBeNull();
+	});
+
+	it('locks the track settings of a built-in preset', async () => {
+		render(
+			makePreset({
+				is_builtin: true,
+				audio_selection: 'languages',
+				audio_languages: ['jpn'],
+				subtitle_selection: 'languages',
+				subtitle_languages: ['eng']
+			})
+		);
+		expect(screen.getByTestId('tp-audio-selection')).toBeDisabled();
+		expect(screen.getByTestId('tp-subtitle-output')).toBeDisabled();
+		expect(screen.getByRole('button', { name: 'Remove Japanese' })).toBeDisabled();
+		expect(screen.queryByTestId('tp-audio-languages-pick')).toBeNull();
 	});
 });

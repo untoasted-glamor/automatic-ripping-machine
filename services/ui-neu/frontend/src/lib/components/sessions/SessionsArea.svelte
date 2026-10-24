@@ -164,7 +164,12 @@
 				preset_ref: p.preset_ref ?? null,
 				container: p.container,
 				encoder: p.encoder,
-				extra_args: p.extra_args ?? null
+				extra_args: p.extra_args ?? null,
+				audio_selection: p.audio_selection,
+				audio_languages: p.audio_languages,
+				subtitle_selection: p.subtitle_selection,
+				subtitle_languages: p.subtitle_languages,
+				subtitle_output: p.subtitle_output
 			});
 			await data.load();
 		} catch (e) {

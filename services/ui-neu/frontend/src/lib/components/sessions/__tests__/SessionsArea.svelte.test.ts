@@ -73,6 +73,11 @@ const makeTranscode = (id = 't1', name = 'tc t1') => ({
 	container: 'mkv' as const,
 	encoder: 'any_h265',
 	extra_args: null,
+	audio_selection: 'languages' as const,
+	audio_languages: ['jpn', 'eng'],
+	subtitle_selection: 'all' as const,
+	subtitle_languages: [],
+	subtitle_output: 'separate' as const,
 	created_by_user_id: null,
 	created_at: null,
 	updated_at: null
@@ -116,7 +121,15 @@ it('cloning a transcode preset carries its encoder', async () => {
 	await fireEvent.click(screen.getByRole('button', { name: /^clone$/i }));
 	await waitFor(() =>
 		expect(createTranscodePreset).toHaveBeenCalledWith(
-			expect.objectContaining({ name: 'tc t1 (copy)', encoder: 'any_h265' })
+			expect.objectContaining({
+				name: 'tc t1 (copy)',
+				encoder: 'any_h265',
+				audio_selection: 'languages',
+				audio_languages: ['jpn', 'eng'],
+				subtitle_selection: 'all',
+				subtitle_languages: [],
+				subtitle_output: 'separate'
+			})
 		)
 	);
 });
