@@ -1677,6 +1677,7 @@ _THREE_TITLES: list[dict[str, Any]] = [
         "original_title_id": None,
         "segment_count": len(segments.split(",")),
         "segment_map": segments,
+        "streams": [],
     }
     for i, dur, chapters, size, playlist, segments in (
         (0, 1452, 6, 5_300_000_000, "00009.mpls", "14"),

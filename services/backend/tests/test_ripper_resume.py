@@ -173,7 +173,7 @@ def test_resume_returns_scan_titles_and_excluded_tracks() -> None:
     """A resumed rip gets the same scan detail as rip-start, and the excluded
     track is still in `tracks`, flagged, so the ripper re-runs the same
     strategy and skips it again."""
-    dvd_keys: dict[str, Any] = {"source_playlist": None, "segment_count": 1, "segment_map": "1-7"}
+    dvd_keys: dict[str, Any] = {"source_playlist": None, "segment_count": 1, "segment_map": "1-7", "streams": []}
     titles: list[dict[str, Any]] = [
         {
             "index": 1,

@@ -5,7 +5,8 @@ import re
 from typing import Iterable
 
 from arm_common import DiscType, MakemkvKeyState
-from arm_common.schemas import DiscFingerprintInput, ScanResult, ScanTitle
+from arm_common.languages import canonical_language
+from arm_common.schemas import DiscFingerprintInput, ScanResult, ScanStream, ScanTitle
 from arm_ripper.scan.disc_probe import probe_disc
 from arm_ripper.source import is_file_source, makemkv_source_url
 
@@ -71,6 +72,57 @@ def _classify_from_cinfo(disc_type_text: str) -> DiscType | None:
     return None
 
 
+# SINFO attribute ids (MakeMKV apdefs.h `ap_ia*`), as seen in the recordings
+# under tests/fixtures:
+_SINFO_TYPE = 1  # code 6201 Video, 6202 Audio, 6203 Subtitles (the text is localised)
+_SINFO_LANG_CODE = 3  # "eng", "jpn"
+_SINFO_LANG_NAME = 4  # "English"
+_SINFO_CODEC_ID = 5  # "A_TRUEHD", "S_HDMV/PGS", "S_VOBSUB"
+_SINFO_CODEC_SHORT = 6  # "TrueHD", "DD", "PGS" ("" for VobSub)
+_SINFO_CHANNELS = 14  # "6"
+_SINFO_FLAGS = 22  # stream flags bitmask, see below
+_SINFO_TREE_INFO = 30  # "TrueHD Surround 5.1 English", "PGS English  (forced only)"
+_SINFO_MKV_FLAGS = 38  # "d" = default track
+_STREAM_KINDS = {6202: "audio", 6203: "subtitle"}
+# AP_AVStreamFlag_*: Hanako's TrueHD tracks carry 1024 (has core audio), their
+# AC-3 cores 2304 (derived + core audio), the forced-only PGS tracks 6144
+# (derived + forced subtitles).
+_FLAG_DERIVED = 2048
+_FLAG_FORCED_SUBTITLES = 4096
+
+
+def _stream_from_sinfo(index: int, attrs: dict[int, tuple[int, str]]) -> ScanStream | None:
+    """Build a ScanStream from one stream's SINFO attributes; None for video
+    and anything that is not an audio or subtitle stream."""
+    type_code = attrs.get(_SINFO_TYPE, (0, ""))[0]
+    kind = _STREAM_KINDS.get(type_code)
+    if kind is None:
+        return None
+
+    def text(attr: int) -> str | None:
+        value = " ".join(attrs.get(attr, (0, ""))[1].split())
+        return value or None
+
+    def number(attr: int) -> int | None:
+        value = text(attr)
+        return int(value) if value is not None and value.isdigit() else None
+
+    flags = number(_SINFO_FLAGS) or 0
+    return ScanStream(
+        index=index,
+        kind="audio" if kind == "audio" else "subtitle",
+        language=canonical_language(text(_SINFO_LANG_CODE)),
+        language_name=text(_SINFO_LANG_NAME),
+        codec_id=text(_SINFO_CODEC_ID),
+        codec=text(_SINFO_CODEC_SHORT),
+        description=text(_SINFO_TREE_INFO),
+        channels=number(_SINFO_CHANNELS),
+        forced=bool(flags & _FLAG_FORCED_SUBTITLES),
+        derived=bool(flags & _FLAG_DERIVED),
+        default="d" in (text(_SINFO_MKV_FLAGS) or ""),
+    )
+
+
 def _int_field(entry: dict[str, object], key: str) -> int | None:
     value = entry.get(key)
     return value if isinstance(value, int) else None
@@ -108,6 +160,9 @@ def parse_makemkvcon_info(
     - TINFO:t,27,... — planned *output* filename (e.g. title_t00.mkv),
                        numbered by this invocation's own title ids; despite
                        the field name it is not a source file
+    - SINFO:t,s,...  — per-stream attributes of title t, stream s; the audio
+                       and subtitle streams become `ScanTitle.streams` (see
+                       `_stream_from_sinfo` for the attribute ids)
     - TCOUNT:n       — MakeMKV's own title count, only cross-checked against
                        the titles parsed (a mismatch is logged); it never
                        makes a title on its own.
@@ -122,6 +177,7 @@ def parse_makemkvcon_info(
     mkv_disc_type: DiscType | None = None
     tcount: int | None = None
     titles: dict[int, dict[str, object]] = {}
+    sinfo: dict[int, dict[int, dict[int, tuple[int, str]]]] = {}
 
     for raw in lines:
         line = raw.strip()
@@ -185,6 +241,14 @@ def parse_makemkvcon_info(
             elif code == 27:
                 entry["source_file"] = value
 
+        elif msg_type == "SINFO" and len(fields) >= 5:
+            try:
+                title_idx, stream_idx, attr, value_code = (int(f) for f in fields[:4])
+            except ValueError:
+                continue
+            streams = sinfo.setdefault(title_idx, {})
+            streams.setdefault(stream_idx, {})[attr] = (value_code, _strip_quotes(",".join(fields[4:])))
+
     parsed: list[ScanTitle] = []
     missing_duration: list[int] = []
     for idx in sorted(titles):
@@ -204,6 +268,11 @@ def parse_makemkvcon_info(
                 original_title_id=_int_field(entry, "original_title_id"),
                 segment_count=_int_field(entry, "segment_count"),
                 segment_map=_str_field(entry, "segment_map"),
+                streams=[
+                    stream
+                    for stream_idx, attrs in sorted(sinfo.get(idx, {}).items())
+                    if (stream := _stream_from_sinfo(stream_idx, attrs)) is not None
+                ],
             )
         )
 

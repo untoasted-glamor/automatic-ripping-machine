@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -82,6 +82,34 @@ class RipperHeartbeatRequest(BaseModel):
     scan: RipperScanActivity | None = None
 
 
+class ScanStream(BaseModel):
+    """One audio or subtitle stream of a scanned title (MakeMKV `SINFO`).
+
+    What the disc offers, for the track picker; the transcoder still probes
+    the ripped file, since MakeMKV's own stream selection can leave a stream
+    (e.g. a derived forced-only subtitle) out of the rip.
+    """
+
+    # MakeMKV's stream id within the title (0 is usually the video).
+    index: int
+    kind: Literal["audio", "subtitle"]
+    # ISO 639-2 code as stored for track selection (`und` when untagged).
+    language: str = "und"
+    language_name: str | None = None
+    # Matroska codec id (`A_TRUEHD`, `S_HDMV/PGS`) and MakeMKV's short name.
+    codec_id: str | None = None
+    codec: str | None = None
+    # MakeMKV's one-line description, e.g. `TrueHD Surround 5.1 English`.
+    description: str | None = None
+    channels: int | None = None
+    # Stream flags: forced-only subtitles, a stream derived from another
+    # (the AC-3 core of a TrueHD track, a forced-only subtitle split off a
+    # full one), and MakeMKV's default-track flag.
+    forced: bool = False
+    derived: bool = False
+    default: bool = False
+
+
 class ScanTitle(BaseModel):
     index: int
     # None when makemkvcon described the title (some TINFO line) but gave no
@@ -104,6 +132,9 @@ class ScanTitle(BaseModel):
     # (a clip list like `14,15,16` on Blu-ray, a cell range like `1-7` on DVD).
     segment_count: int | None = None
     segment_map: str | None = None
+    # Audio and subtitle streams (SINFO). Empty on scans stored before the
+    # scan read them.
+    streams: list[ScanStream] = Field(default_factory=list)
 
 
 class DiscFingerprintInput(BaseModel):
