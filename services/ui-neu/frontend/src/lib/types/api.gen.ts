@@ -31,6 +31,7 @@ export type ApplySessionRequest = {
      * Overwrite
      */
     overwrite?: boolean;
+    track_selection?: TrackSelectionSettings | null;
 };
 
 /**
@@ -75,6 +76,20 @@ export type AppriseChannelConfig = {
         [key: string]: string | number | number | boolean;
     } | null;
 };
+
+/**
+ * AudioFormat
+ *
+ * What each kept audio track becomes (when ARM picks the audio tracks).
+ *
+ * `preset` leaves it to the engine (HandBrake: the preset's audio encoders;
+ * ffmpeg VAAPI: every track copied). `ac3_else_aac51` keeps one track per
+ * language: an untouched copy of its AC-3 (Dolby Digital) track, else its
+ * best track converted to AAC with up to 5.1 channels. `aac_stereo`
+ * converts every kept track to AAC stereo, `aac_51` to AAC with up to 5.1
+ * channels, and `copy` keeps every kept track untouched.
+ */
+export type AudioFormat = 'preset' | 'ac3_else_aac51' | 'aac_stereo' | 'aac_51' | 'copy';
 
 /**
  * AudioSelection
@@ -977,6 +992,34 @@ export type DiscFingerprintView = {
 };
 
 /**
+ * DiscLanguageTracks
+ *
+ * One language the disc's kept titles carry, for the track picker.
+ */
+export type DiscLanguageTracks = {
+    /**
+     * Language
+     */
+    language: string;
+    /**
+     * Language Name
+     */
+    language_name?: string | null;
+    /**
+     * Tracks
+     */
+    tracks?: Array<string>;
+    /**
+     * Title Count
+     */
+    title_count?: number;
+    /**
+     * Forced Only
+     */
+    forced_only?: boolean;
+};
+
+/**
  * DiscRouteSummary
  *
  * What one kind of disc gets with no drive default and no per-rip choice.
@@ -1003,6 +1046,24 @@ export type DiscRouteSummary = {
      * Output Template
      */
     output_template?: string | null;
+};
+
+/**
+ * DiscTrackLanguages
+ */
+export type DiscTrackLanguages = {
+    /**
+     * Audio
+     */
+    audio?: Array<DiscLanguageTracks>;
+    /**
+     * Subtitles
+     */
+    subtitles?: Array<DiscLanguageTracks>;
+    /**
+     * Known
+     */
+    known?: boolean;
 };
 
 /**
@@ -2238,6 +2299,12 @@ export type Job = {
      */
     manual_pause?: boolean;
     /**
+     * Track Selection
+     */
+    track_selection?: {
+        [key: string]: unknown;
+    } | null;
+    /**
      * Started At
      */
     started_at: string | null;
@@ -2456,6 +2523,48 @@ export type JobStatsResponse = {
 export type JobStatus = 'created' | 'awaiting_user_id' | 'identified' | 'ripping' | 'ripped' | 'ripped_partial' | 'awaiting_review' | 'ripped_awaiting_identify' | 'abandoned' | 'failed';
 
 /**
+ * JobTrackSelectionRequest
+ *
+ * PUT /api/jobs/{id}/track-selection. Null clears the override.
+ */
+export type JobTrackSelectionRequest = {
+    track_selection?: TrackSelectionSettings | null;
+};
+
+/**
+ * JobTrackSelectionView
+ *
+ * GET /api/jobs/{id}/track-selection: what the picker needs.
+ *
+ * `effective` is what the job's transcodes use: `override` when set, else
+ * `default`, the track fields of the transcode preset this job would use
+ * (`default_source` names it), or the built-in default when no preset is
+ * known yet.
+ */
+export type JobTrackSelectionView = {
+    override?: TrackSelectionSettings | null;
+    default: TrackSelectionSettings;
+    /**
+     * Default Source
+     */
+    default_source: string;
+    /**
+     * Default Preset Id
+     */
+    default_preset_id?: string | null;
+    effective: TrackSelectionSettings;
+    disc: DiscTrackLanguages;
+    /**
+     * Editable
+     */
+    editable: boolean;
+    /**
+     * Locked Reason
+     */
+    locked_reason?: string | null;
+};
+
+/**
  * JobUpdateRequest
  *
  * PATCH /api/jobs/{id} body. `poster_url_manual` + disc fields edit the job;
@@ -2550,6 +2659,7 @@ export type JobView = {
      * Manual Pause
      */
     manual_pause?: boolean;
+    track_selection?: TrackSelectionSettings | null;
     rip_progress?: RipProgressSummary | null;
     transcode_progress?: TranscodeProgressSummary | null;
     readonly actions: JobActions;
@@ -4175,6 +4285,62 @@ export type ScanResult = {
 };
 
 /**
+ * ScanStream
+ *
+ * One audio or subtitle stream of a scanned title (MakeMKV `SINFO`).
+ *
+ * What the disc offers, for the track picker; the transcoder still probes
+ * the ripped file, since MakeMKV's own stream selection can leave a stream
+ * (e.g. a derived forced-only subtitle) out of the rip.
+ */
+export type ScanStream = {
+    /**
+     * Index
+     */
+    index: number;
+    /**
+     * Kind
+     */
+    kind: 'audio' | 'subtitle';
+    /**
+     * Language
+     */
+    language?: string;
+    /**
+     * Language Name
+     */
+    language_name?: string | null;
+    /**
+     * Codec Id
+     */
+    codec_id?: string | null;
+    /**
+     * Codec
+     */
+    codec?: string | null;
+    /**
+     * Description
+     */
+    description?: string | null;
+    /**
+     * Channels
+     */
+    channels?: number | null;
+    /**
+     * Forced
+     */
+    forced?: boolean;
+    /**
+     * Derived
+     */
+    derived?: boolean;
+    /**
+     * Default
+     */
+    default?: boolean;
+};
+
+/**
  * ScanTitle
  */
 export type ScanTitle = {
@@ -4214,6 +4380,10 @@ export type ScanTitle = {
      * Segment Map
      */
     segment_map?: string | null;
+    /**
+     * Streams
+     */
+    streams?: Array<ScanStream>;
 };
 
 /**
@@ -5018,6 +5188,32 @@ export type TrackRole = 'main' | 'episode' | 'extra' | 'trailer' | 'other' | 'pl
 export type TrackSelection = 'main_feature' | 'all_tracks' | 'archive' | 'custom';
 
 /**
+ * TrackSelectionSettings
+ *
+ * Which audio and subtitle tracks a transcode keeps and where the
+ * subtitles go: the track fields of a transcode preset, and the shape of a
+ * job's own override (`jobs.track_selection`), which wins over the preset.
+ *
+ * The defaults keep every audio language (one track each: its AC-3 copy,
+ * else AAC 5.1) and write every subtitle as a separate file. `audio_format`
+ * applies only when `audio_selection` is not `preset`.
+ */
+export type TrackSelectionSettings = {
+    audio_selection?: AudioSelection;
+    /**
+     * Audio Languages
+     */
+    audio_languages?: Array<string>;
+    subtitle_selection?: SubtitleSelection;
+    /**
+     * Subtitle Languages
+     */
+    subtitle_languages?: Array<string>;
+    subtitle_output?: SubtitleOutput;
+    audio_format?: AudioFormat;
+};
+
+/**
  * TrackStatus
  */
 export type TrackStatus = 'queued' | 'in_progress' | 'done' | 'failed';
@@ -5166,6 +5362,18 @@ export type TrackView = {
  * TranscodePresetCreateRequest
  */
 export type TranscodePresetCreateRequest = {
+    audio_selection?: AudioSelection;
+    /**
+     * Audio Languages
+     */
+    audio_languages?: Array<string>;
+    subtitle_selection?: SubtitleSelection;
+    /**
+     * Subtitle Languages
+     */
+    subtitle_languages?: Array<string>;
+    subtitle_output?: SubtitleOutput;
+    audio_format?: AudioFormat;
     /**
      * Name
      */
@@ -5191,17 +5399,6 @@ export type TranscodePresetCreateRequest = {
      * Extra Args
      */
     extra_args?: string | null;
-    audio_selection?: AudioSelection;
-    /**
-     * Audio Languages
-     */
-    audio_languages?: Array<string>;
-    subtitle_selection?: SubtitleSelection;
-    /**
-     * Subtitle Languages
-     */
-    subtitle_languages?: Array<string>;
-    subtitle_output?: SubtitleOutput;
 };
 
 /**
@@ -5243,6 +5440,7 @@ export type TranscodePresetUpdateRequest = {
      */
     subtitle_languages?: Array<string> | null;
     subtitle_output?: SubtitleOutput | null;
+    audio_format?: AudioFormat | null;
 };
 
 /**
@@ -5293,6 +5491,7 @@ export type TranscodePresetView = {
      */
     subtitle_languages?: Array<string>;
     subtitle_output?: SubtitleOutput;
+    audio_format?: AudioFormat;
     /**
      * Created By User Id
      */
@@ -5677,6 +5876,7 @@ export type JobViewWritable = {
      * Manual Pause
      */
     manual_pause?: boolean;
+    track_selection?: TrackSelectionSettings | null;
     rip_progress?: RipProgressSummary | null;
     transcode_progress?: TranscodeProgressSummary | null;
 };
@@ -7002,6 +7202,83 @@ export type ResolveApiJobsJobIdResolvePostResponses = {
 };
 
 export type ResolveApiJobsJobIdResolvePostResponse = ResolveApiJobsJobIdResolvePostResponses[keyof ResolveApiJobsJobIdResolvePostResponses];
+
+export type GetTrackSelectionApiJobsJobIdTrackSelectionGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: {
+        /**
+         * Session Id
+         */
+        session_id?: string | null;
+    };
+    url: '/api/jobs/{job_id}/track-selection';
+};
+
+export type GetTrackSelectionApiJobsJobIdTrackSelectionGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetTrackSelectionApiJobsJobIdTrackSelectionGetError = GetTrackSelectionApiJobsJobIdTrackSelectionGetErrors[keyof GetTrackSelectionApiJobsJobIdTrackSelectionGetErrors];
+
+export type GetTrackSelectionApiJobsJobIdTrackSelectionGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: JobTrackSelectionView;
+};
+
+export type GetTrackSelectionApiJobsJobIdTrackSelectionGetResponse = GetTrackSelectionApiJobsJobIdTrackSelectionGetResponses[keyof GetTrackSelectionApiJobsJobIdTrackSelectionGetResponses];
+
+export type PutTrackSelectionApiJobsJobIdTrackSelectionPutData = {
+    body: JobTrackSelectionRequest;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/jobs/{job_id}/track-selection';
+};
+
+export type PutTrackSelectionApiJobsJobIdTrackSelectionPutErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type PutTrackSelectionApiJobsJobIdTrackSelectionPutError = PutTrackSelectionApiJobsJobIdTrackSelectionPutErrors[keyof PutTrackSelectionApiJobsJobIdTrackSelectionPutErrors];
+
+export type PutTrackSelectionApiJobsJobIdTrackSelectionPutResponses = {
+    /**
+     * Successful Response
+     */
+    200: JobTrackSelectionView;
+};
+
+export type PutTrackSelectionApiJobsJobIdTrackSelectionPutResponse = PutTrackSelectionApiJobsJobIdTrackSelectionPutResponses[keyof PutTrackSelectionApiJobsJobIdTrackSelectionPutResponses];
 
 export type ApplySessionApiJobsJobIdTranscodePostData = {
     body: ApplySessionRequest;

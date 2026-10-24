@@ -2267,6 +2267,150 @@
         }
       }
     },
+    "/api/jobs/{job_id}/track-selection": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Get Track Selection",
+        "description": "The job's track selection for the picker: its override, the default\nit would get without one (from `session_id` when given, as Apply session\ndoes), the languages on the disc's kept titles, and whether the job page\ncan still change it.",
+        "operationId": "get_track_selection_api_jobs__job_id__track_selection_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobTrackSelectionView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Put Track Selection",
+        "description": "Set (or, with null, clear) the job's own track selection. Refused\nonce one of the job's transcode tasks has been claimed; Apply session\nsets it for a re-transcode instead.",
+        "operationId": "put_track_selection_api_jobs__job_id__track_selection_put",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobTrackSelectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobTrackSelectionView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/jobs/{job_id}/transcode": {
       "post": {
         "tags": [
@@ -9681,6 +9825,16 @@
             "type": "boolean",
             "title": "Overwrite",
             "default": false
+          },
+          "track_selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackSelectionSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -9776,6 +9930,18 @@
         },
         "type": "object",
         "title": "AppriseChannelConfig"
+      },
+      "AudioFormat": {
+        "type": "string",
+        "enum": [
+          "preset",
+          "ac3_else_aac51",
+          "aac_stereo",
+          "aac_51",
+          "copy"
+        ],
+        "title": "AudioFormat",
+        "description": "What each kept audio track becomes (when ARM picks the audio tracks).\n\n`preset` leaves it to the engine (HandBrake: the preset's audio encoders;\nffmpeg VAAPI: every track copied). `ac3_else_aac51` keeps one track per\nlanguage: an untouched copy of its AC-3 (Dolby Digital) track, else its\nbest track converted to AAC with up to 5.1 channels. `aac_stereo`\nconverts every kept track to AAC stereo, `aac_51` to AAC with up to 5.1\nchannels, and `copy` keeps every kept track untouched."
       },
       "AudioSelection": {
         "type": "string",
@@ -11382,6 +11548,48 @@
         ],
         "title": "DiscFingerprintView"
       },
+      "DiscLanguageTracks": {
+        "properties": {
+          "language": {
+            "type": "string",
+            "title": "Language"
+          },
+          "language_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language Name"
+          },
+          "tracks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tracks"
+          },
+          "title_count": {
+            "type": "integer",
+            "title": "Title Count",
+            "default": 0
+          },
+          "forced_only": {
+            "type": "boolean",
+            "title": "Forced Only",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "language"
+        ],
+        "title": "DiscLanguageTracks",
+        "description": "One language the disc's kept titles carry, for the track picker."
+      },
       "DiscRouteSummary": {
         "properties": {
           "kind": {
@@ -11449,6 +11657,31 @@
         ],
         "title": "DiscRouteSummary",
         "description": "What one kind of disc gets with no drive default and no per-rip choice."
+      },
+      "DiscTrackLanguages": {
+        "properties": {
+          "audio": {
+            "items": {
+              "$ref": "#/components/schemas/DiscLanguageTracks"
+            },
+            "type": "array",
+            "title": "Audio"
+          },
+          "subtitles": {
+            "items": {
+              "$ref": "#/components/schemas/DiscLanguageTracks"
+            },
+            "type": "array",
+            "title": "Subtitles"
+          },
+          "known": {
+            "type": "boolean",
+            "title": "Known",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "DiscTrackLanguages"
       },
       "DiscType": {
         "type": "string",
@@ -13826,6 +14059,18 @@
             "title": "Manual Pause",
             "default": false
           },
+          "track_selection": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Selection"
+          },
           "started_at": {
             "anyOf": [
               {
@@ -14243,6 +14488,86 @@
         ],
         "title": "JobStatus"
       },
+      "JobTrackSelectionRequest": {
+        "properties": {
+          "track_selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackSelectionSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "JobTrackSelectionRequest",
+        "description": "PUT /api/jobs/{id}/track-selection. Null clears the override."
+      },
+      "JobTrackSelectionView": {
+        "properties": {
+          "override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackSelectionSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "default": {
+            "$ref": "#/components/schemas/TrackSelectionSettings"
+          },
+          "default_source": {
+            "type": "string",
+            "title": "Default Source"
+          },
+          "default_preset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Preset Id"
+          },
+          "effective": {
+            "$ref": "#/components/schemas/TrackSelectionSettings"
+          },
+          "disc": {
+            "$ref": "#/components/schemas/DiscTrackLanguages"
+          },
+          "editable": {
+            "type": "boolean",
+            "title": "Editable"
+          },
+          "locked_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "default",
+          "default_source",
+          "effective",
+          "disc",
+          "editable"
+        ],
+        "title": "JobTrackSelectionView",
+        "description": "GET /api/jobs/{id}/track-selection: what the picker needs.\n\n`effective` is what the job's transcodes use: `override` when set, else\n`default`, the track fields of the transcode preset this job would use\n(`default_source` names it), or the built-in default when no preset is\nknown yet."
+      },
       "JobUpdateRequest": {
         "properties": {
           "poster_url_manual": {
@@ -14471,6 +14796,16 @@
             "type": "boolean",
             "title": "Manual Pause",
             "default": false
+          },
+          "track_selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackSelectionSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "rip_progress": {
             "anyOf": [
@@ -17334,6 +17669,104 @@
         ],
         "title": "ScanResult"
       },
+      "ScanStream": {
+        "properties": {
+          "index": {
+            "type": "integer",
+            "title": "Index"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "audio",
+              "subtitle"
+            ],
+            "title": "Kind"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language",
+            "default": "und"
+          },
+          "language_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language Name"
+          },
+          "codec_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codec Id"
+          },
+          "codec": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codec"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "channels": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channels"
+          },
+          "forced": {
+            "type": "boolean",
+            "title": "Forced",
+            "default": false
+          },
+          "derived": {
+            "type": "boolean",
+            "title": "Derived",
+            "default": false
+          },
+          "default": {
+            "type": "boolean",
+            "title": "Default",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "index",
+          "kind"
+        ],
+        "title": "ScanStream",
+        "description": "One audio or subtitle stream of a scanned title (MakeMKV `SINFO`).\n\nWhat the disc offers, for the track picker; the transcoder still probes\nthe ripped file, since MakeMKV's own stream selection can leave a stream\n(e.g. a derived forced-only subtitle) out of the rip."
+      },
       "ScanTitle": {
         "properties": {
           "index": {
@@ -17427,6 +17860,13 @@
               }
             ],
             "title": "Segment Map"
+          },
+          "streams": {
+            "items": {
+              "$ref": "#/components/schemas/ScanStream"
+            },
+            "type": "array",
+            "title": "Streams"
           }
         },
         "type": "object",
@@ -18922,6 +19362,43 @@
         ],
         "title": "TrackSelection"
       },
+      "TrackSelectionSettings": {
+        "properties": {
+          "audio_selection": {
+            "$ref": "#/components/schemas/AudioSelection",
+            "default": "all"
+          },
+          "audio_languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Audio Languages"
+          },
+          "subtitle_selection": {
+            "$ref": "#/components/schemas/SubtitleSelection",
+            "default": "all"
+          },
+          "subtitle_languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Subtitle Languages"
+          },
+          "subtitle_output": {
+            "$ref": "#/components/schemas/SubtitleOutput",
+            "default": "separate"
+          },
+          "audio_format": {
+            "$ref": "#/components/schemas/AudioFormat",
+            "default": "ac3_else_aac51"
+          }
+        },
+        "type": "object",
+        "title": "TrackSelectionSettings",
+        "description": "Which audio and subtitle tracks a transcode keeps and where the\nsubtitles go: the track fields of a transcode preset, and the shape of a\njob's own override (`jobs.track_selection`), which wins over the preset.\n\nThe defaults keep every audio language (one track each: its AC-3 copy,\nelse AAC 5.1) and write every subtitle as a separate file. `audio_format`\napplies only when `audio_selection` is not `preset`."
+      },
       "TrackStatus": {
         "type": "string",
         "enum": [
@@ -19273,6 +19750,36 @@
       },
       "TranscodePresetCreateRequest": {
         "properties": {
+          "audio_selection": {
+            "$ref": "#/components/schemas/AudioSelection",
+            "default": "all"
+          },
+          "audio_languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Audio Languages"
+          },
+          "subtitle_selection": {
+            "$ref": "#/components/schemas/SubtitleSelection",
+            "default": "all"
+          },
+          "subtitle_languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Subtitle Languages"
+          },
+          "subtitle_output": {
+            "$ref": "#/components/schemas/SubtitleOutput",
+            "default": "separate"
+          },
+          "audio_format": {
+            "$ref": "#/components/schemas/AudioFormat",
+            "default": "ac3_else_aac51"
+          },
           "name": {
             "type": "string",
             "minLength": 1,
@@ -19326,32 +19833,6 @@
               }
             ],
             "title": "Extra Args"
-          },
-          "audio_selection": {
-            "$ref": "#/components/schemas/AudioSelection",
-            "default": "all"
-          },
-          "audio_languages": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Audio Languages"
-          },
-          "subtitle_selection": {
-            "$ref": "#/components/schemas/SubtitleSelection",
-            "default": "all"
-          },
-          "subtitle_languages": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Subtitle Languages"
-          },
-          "subtitle_output": {
-            "$ref": "#/components/schemas/SubtitleOutput",
-            "default": "separate"
           }
         },
         "type": "object",
@@ -19500,6 +19981,16 @@
                 "type": "null"
               }
             ]
+          },
+          "audio_format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AudioFormat"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -19591,6 +20082,10 @@
           "subtitle_output": {
             "$ref": "#/components/schemas/SubtitleOutput",
             "default": "embedded"
+          },
+          "audio_format": {
+            "$ref": "#/components/schemas/AudioFormat",
+            "default": "preset"
           },
           "created_by_user_id": {
             "anyOf": [
