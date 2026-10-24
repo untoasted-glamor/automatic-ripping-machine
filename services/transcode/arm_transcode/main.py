@@ -9,8 +9,12 @@ Run order:
    - ABCDE → `ffmpeg_audio.transcode_audio`
    - NONE → `arm_common.fileops.transcode_none` (no atomic-rename needed)
 5. Wrap the output write in `arm_common.fileops.atomic_output` so partial
-   files land as `*.arm-inprogress` and only get renamed on success.
-6. PATCH /complete with size + duration metadata.
+   files land as `*.arm-inprogress` and only get renamed on success. When the
+   preset selects tracks (`arm_transcode.tracks`), probe the source first,
+   and write any subtitle sidecars as `*.arm-inprogress` too: they are
+   renamed just after the video, and removed if the encode fails or is
+   cancelled.
+6. PATCH /complete with size + duration metadata and the sidecar paths.
 7. On exception or cancel: PATCH /fail with the error string.
 8. If a heartbeat shows the Backend revoked our claim, stop the encode and
    exit without /fail: the task is no longer ours to report on.
@@ -28,8 +32,9 @@ import os
 import ssl
 import sys
 from collections.abc import Coroutine
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from arm_common import configure_service_logging, with_log_context
 from arm_common.schemas import (
@@ -46,9 +51,19 @@ from arm_transcode.device_probe import ProbeSetupError, probe_device
 from arm_transcode.engines import selected_encoder
 from arm_transcode.engines.ffmpeg_vaapi import transcode_ffmpeg_vaapi
 from arm_transcode.engines.handbrake_engine import encoder_args as handbrake_encoder_args
+from arm_transcode.engines.handbrake_engine import preset_audio, track_args
 from arm_transcode.ffmpeg_audio import transcode_audio
 from arm_transcode.handbrake import transcode_handbrake
 from arm_transcode.heartbeat import HeartbeatPump, ProgressState
+from arm_transcode.tracks import (
+    TrackPlan,
+    extract_sidecars,
+    needs_plan,
+    plan_tracks,
+    probe_source,
+    sidecar_outputs,
+    written_sidecars,
+)
 from arm_transcode.ws_client import WSClient
 
 
@@ -98,6 +113,21 @@ def _detect_hw_caps() -> HardwareCaps:
     )
 
 
+@dataclass(frozen=True)
+class EncodeResult:
+    size: int
+    sidecars: list[Path] = field(default_factory=list)
+
+
+async def _track_plan(preset: TranscodePresetView | None, raw_input: Path, final_output: Path) -> TrackPlan | None:
+    """The preset's track selection for this source, or None when the preset
+    leaves both audio and subtitles to the engine (no probe needed)."""
+    if preset is None or not needs_plan(preset):
+        return None
+    source = await probe_source(raw_input)
+    return plan_tracks(preset, source, preset.container, final_output)
+
+
 async def _run_encoder(
     *,
     tool: TranscodeTool,
@@ -106,8 +136,9 @@ async def _run_encoder(
     final_output: Path,
     duration_seconds: int | None,
     state: ProgressState,
-) -> int:
-    """Dispatch on `tool`. Returns the size of the file we wrote."""
+) -> EncodeResult:
+    """Dispatch on `tool`. Returns the size of the video we wrote and the
+    subtitle sidecars written next to it."""
 
     async def _on_progress(pct: int, eta: int | None, current: str | None) -> None:
         state.pct = pct
@@ -117,7 +148,7 @@ async def _run_encoder(
     if tool == TranscodeTool.NONE:
         size = transcode_none(raw_input, final_output)
         state.pct = 100
-        return size
+        return EncodeResult(size=size)
 
     spec = selected_encoder()
     if tool == TranscodeTool.HANDBRAKE and spec is not None and spec.engine == "ffmpeg_vaapi":
@@ -127,35 +158,50 @@ async def _run_encoder(
         device = os.environ.get("ARM_GPU_DEVICE")
         if not device:
             raise RuntimeError("ffmpeg_vaapi encoder requires ARM_GPU_DEVICE")
-        with atomic_output(final_output) as tmp:
-            size = await transcode_ffmpeg_vaapi(
-                input_path=raw_input,
-                output_path=tmp,
-                spec=spec,
-                device=device,
-                container=preset.container,
-                extra_args=preset.extra_args,
-                duration_seconds=duration_seconds,
-                progress_callback=_on_progress,
-            )
+        plan = await _track_plan(preset, raw_input, final_output)
+        sidecars = plan.sidecars if plan is not None else []
+        with sidecar_outputs(sidecars):
+            await extract_sidecars(raw_input, sidecars)
+            with atomic_output(final_output) as tmp:
+                size = await transcode_ffmpeg_vaapi(
+                    input_path=raw_input,
+                    output_path=tmp,
+                    spec=spec,
+                    device=device,
+                    container=preset.container,
+                    extra_args=preset.extra_args,
+                    duration_seconds=duration_seconds,
+                    progress_callback=_on_progress,
+                    plan=plan,
+                )
         state.pct = 100
-        return size
+        return EncodeResult(size=size, sidecars=written_sidecars(sidecars))
 
     if preset is None or preset.preset_ref is None:
         raise RuntimeError(f"transcode tool={tool.value} requires a preset_ref")
 
     if tool == TranscodeTool.HANDBRAKE:
-        with atomic_output(final_output) as tmp:
-            size = await transcode_handbrake(
-                input_path=raw_input,
-                output_path=tmp,
-                preset_ref=preset.preset_ref,
-                extra_args=preset.extra_args,
-                encoder_args=handbrake_encoder_args(selected_encoder()),
-                progress_callback=_on_progress,
-            )
+        plan = await _track_plan(preset, raw_input, final_output)
+        hb_track_args: list[str] = []
+        sidecars = []
+        if plan is not None:
+            audio = await preset_audio(preset.preset_ref) if plan.audio else None
+            hb_track_args = track_args(plan, audio)
+            sidecars = plan.sidecars
+        with sidecar_outputs(sidecars):
+            await extract_sidecars(raw_input, sidecars)
+            with atomic_output(final_output) as tmp:
+                size = await transcode_handbrake(
+                    input_path=raw_input,
+                    output_path=tmp,
+                    preset_ref=preset.preset_ref,
+                    extra_args=preset.extra_args,
+                    encoder_args=handbrake_encoder_args(selected_encoder()),
+                    progress_callback=_on_progress,
+                    track_args=hb_track_args,
+                )
         state.pct = 100
-        return size
+        return EncodeResult(size=size, sidecars=written_sidecars(sidecars))
 
     if tool == TranscodeTool.ABCDE:
         # The ripper's abcde stage produced .wav files; we re-encode to
@@ -170,17 +216,20 @@ async def _run_encoder(
                 progress_callback=_on_progress,
             )
         state.pct = 100
-        return size
+        return EncodeResult(size=size)
 
     raise RuntimeError(f"unknown transcode tool={tool.value}")
 
 
+_T = TypeVar("_T")
+
+
 async def _encode_until_stopped(
-    encode: Coroutine[Any, Any, int],
+    encode: Coroutine[Any, Any, _T],
     *,
     cancel_event: asyncio.Event,
     revoked_event: asyncio.Event,
-) -> int:
+) -> _T:
     """Run `encode`, cancelling it if the user cancels or our claim is revoked.
 
     Cancelling the encoder task kills its subprocess (see `handbrake.py`,
@@ -262,7 +311,7 @@ async def run() -> int:
                 state = ProgressState()
                 try:
                     async with HeartbeatPump(api=api, ws=ws, task_id=cfg.task_id, state=state) as pump:
-                        size = await _encode_until_stopped(
+                        result = await _encode_until_stopped(
                             _run_encoder(
                                 tool=tool,
                                 preset=preset,
@@ -287,13 +336,15 @@ async def run() -> int:
                     rc = 1
                 else:
                     relative = final_output.relative_to(registered.media_root).as_posix()
+                    sidecars = [p.relative_to(registered.media_root).as_posix() for p in result.sidecars]
                     await api.complete(
                         cfg.task_id,
                         output_path=relative,
-                        size_bytes=size,
+                        size_bytes=result.size,
                         duration_seconds=duration,
+                        sidecar_paths=sidecars,
                     )
-                    logger.info("task complete output=%s size=%d", relative, size)
+                    logger.info("task complete output=%s size=%d sidecars=%d", relative, result.size, len(sidecars))
                     rc = 0
     finally:
         await api.close()

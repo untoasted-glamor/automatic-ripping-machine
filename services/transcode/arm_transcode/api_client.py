@@ -85,12 +85,14 @@ class BackendClient:
         size_bytes: int | None = None,
         duration_seconds: int | None = None,
         sha256: str | None = None,
+        sidecar_paths: list[str] | None = None,
     ) -> TranscodeTaskView:
         req = CompleteTaskRequest(
             output_path=output_path,
             size_bytes=size_bytes,
             duration_seconds=duration_seconds,
             sha256=sha256,
+            sidecar_paths=sidecar_paths or [],
         )
         r = await self._client.patch(
             f"/api/transcoder/tasks/{task_id}/complete",

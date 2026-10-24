@@ -17,8 +17,10 @@ The caller (`main._run_encoder`) resolves the encoder via the engine seam
 (`arm_transcode.engines.selected_encoder` + `.engines.handbrake_engine.
 encoder_args`) and passes the resulting `--encoder <id>` pair in as
 `encoder_args`, appended *after* `--preset` so HandBrake's preset-driven
-encoder is overridden. `extra_args` from the user-defined preset still
-appends last (escape hatch).
+encoder is overridden. `track_args` (the preset's audio/subtitle track
+selection, `engines.handbrake_engine.track_args`) follow. `extra_args` from
+the user-defined preset still appends last (escape hatch), so a flag there
+wins over the track selection.
 """
 
 from __future__ import annotations
@@ -63,6 +65,7 @@ async def transcode_handbrake(
     extra_args: str | None,
     encoder_args: list[str],
     progress_callback: ProgressCallback,
+    track_args: list[str] | None = None,
 ) -> int:
     """Run HandBrakeCLI; stream text progress; return final file size in bytes.
 
@@ -79,6 +82,7 @@ async def transcode_handbrake(
         preset_ref,
     ]
     cmd.extend(encoder_args)
+    cmd.extend(track_args or [])
     if extra_args:
         cmd.extend(extra_args.split())
 
