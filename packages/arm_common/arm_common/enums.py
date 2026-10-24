@@ -251,6 +251,24 @@ class AudioSelection(StrEnum):
     LANGUAGES = "languages"
 
 
+class AudioFormat(StrEnum):
+    """What each kept audio track becomes (when ARM picks the audio tracks).
+
+    `preset` leaves it to the engine (HandBrake: the preset's audio encoders;
+    ffmpeg VAAPI: every track copied). `ac3_else_aac51` keeps one track per
+    language: an untouched copy of its AC-3 (Dolby Digital) track, else its
+    best track converted to AAC with up to 5.1 channels. `aac_stereo`
+    converts every kept track to AAC stereo, `aac_51` to AAC with up to 5.1
+    channels, and `copy` keeps every kept track untouched.
+    """
+
+    PRESET = "preset"
+    AC3_ELSE_AAC51 = "ac3_else_aac51"
+    AAC_STEREO = "aac_stereo"
+    AAC_51 = "aac_51"
+    COPY = "copy"
+
+
 class SubtitleSelection(StrEnum):
     """Which source subtitle tracks a transcode preset keeps (see AudioSelection)."""
 

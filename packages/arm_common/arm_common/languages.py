@@ -40,6 +40,38 @@ _TERMINOLOGY_TO_BIBLIOGRAPHIC: dict[str, str] = {
     "zho": "chi",
 }
 
+# English names for the common codes, for track titles ("English AAC 5.1").
+LANGUAGE_NAMES: dict[str, str] = {
+    "eng": "English",
+    "jpn": "Japanese",
+    "ger": "German",
+    "fre": "French",
+    "spa": "Spanish",
+    "ita": "Italian",
+    "por": "Portuguese",
+    "dut": "Dutch",
+    "swe": "Swedish",
+    "nor": "Norwegian",
+    "dan": "Danish",
+    "fin": "Finnish",
+    "pol": "Polish",
+    "cze": "Czech",
+    "hun": "Hungarian",
+    "rus": "Russian",
+    "ukr": "Ukrainian",
+    "gre": "Greek",
+    "tur": "Turkish",
+    "ara": "Arabic",
+    "heb": "Hebrew",
+    "hin": "Hindi",
+    "chi": "Chinese",
+    "kor": "Korean",
+    "tha": "Thai",
+    "vie": "Vietnamese",
+    "ind": "Indonesian",
+    "und": "Unknown language",
+}
+
 _CODE_RE = re.compile(r"^[a-z]{3}$")
 
 # Upper bound on a preset's language list; a longer list is a typo or abuse.
@@ -76,3 +108,8 @@ def normalize_language_list(codes: list[str]) -> list[str]:
         if canonical not in out:
             out.append(canonical)
     return out
+
+
+def language_name(code: str) -> str:
+    """The English name of a code, or the code itself when it is not a common one."""
+    return LANGUAGE_NAMES.get(canonical_language(code), code)

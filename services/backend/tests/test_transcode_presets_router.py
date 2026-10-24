@@ -366,6 +366,7 @@ def test_create_defaults_keep_every_track_and_write_separate_subtitles(signing_k
     assert r.status_code == 201, r.text
     out = r.json()
     assert (out["audio_selection"], out["subtitle_selection"], out["subtitle_output"]) == ("all", "all", "separate")
+    assert out["audio_format"] == "ac3_else_aac51"
     assert out["audio_languages"] == [] and out["subtitle_languages"] == []
 
 
@@ -401,6 +402,7 @@ _TOO_MANY = [f"a{c}{c}" for c in "abcdefghijklmnopqrstuvwxyz"] + [f"b{c}{c}" for
         ({"subtitle_languages": ["en"]}, "not an ISO 639-2 code"),
         ({"audio_languages": _TOO_MANY}, "at most 32"),
         ({"subtitle_output": "burned"}, "subtitle_output"),
+        ({"audio_format": "mp3"}, "audio_format"),
     ],
 )
 def test_create_rejects_bad_track_selection(signing_key: bytes, extra: dict[str, object], message: str) -> None:
@@ -426,9 +428,10 @@ def test_patch_track_selection_fields(signing_key: bytes) -> None:
         # An explicit null leaves a NOT NULL field as it is.
         r2 = client.patch(
             "/api/transcode-presets/tpr_a",
-            json={"audio_languages": None, "subtitle_output": None},
+            json={"audio_languages": None, "subtitle_output": None, "audio_format": None},
             headers=_auth(token),
         )
+        r3 = client.patch("/api/transcode-presets/tpr_a", json={"audio_format": "aac_stereo"}, headers=_auth(token))
     assert r.status_code == 200, r.text
     assert r2.status_code == 200, r2.text
     row = db.rows["transcode_presets"][0]
@@ -436,6 +439,8 @@ def test_patch_track_selection_fields(signing_key: bytes) -> None:
     assert row.audio_languages == ["jpn", "eng"]
     assert row.subtitle_selection == "none"
     assert row.subtitle_output == "embedded"
+    assert r3.status_code == 200, r3.text
+    assert row.audio_format == "aac_stereo"
 
 
 def test_patch_languages_mode_without_a_list_is_422(signing_key: bytes) -> None:

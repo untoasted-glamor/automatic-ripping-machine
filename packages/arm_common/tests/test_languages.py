@@ -56,3 +56,12 @@ def test_update_request_normalises_and_passes_none_through() -> None:
     assert TranscodePresetUpdateRequest().audio_languages is None
     with pytest.raises(ValidationError):
         TranscodePresetUpdateRequest(subtitle_languages=["xx"])
+
+
+def test_language_name() -> None:
+    from arm_common.languages import language_name
+
+    assert language_name("eng") == "English"
+    assert language_name("deu") == "German"
+    assert language_name("tlh") == "tlh"
+    assert language_name("") == "Unknown language"

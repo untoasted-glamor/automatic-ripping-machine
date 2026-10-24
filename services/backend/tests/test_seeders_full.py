@@ -315,7 +315,7 @@ async def test_run_seeders_builtin_track_selection(tmp_path: Path, monkeypatch: 
     """HandBrake built-ins keep every audio track and write every subtitle as a
     separate file; the seeder owns those fields and corrects a drifted row.
     Passthrough and music built-ins leave tracks to the engine."""
-    from arm_common import AudioSelection, SubtitleOutput, SubtitleSelection
+    from arm_common import AudioFormat, AudioSelection, SubtitleOutput, SubtitleSelection
 
     monkeypatch.setattr(seeders, "FIRST_BOOT_LOG", tmp_path / "fb.log")
     db = FakeSession()
@@ -323,14 +323,17 @@ async def test_run_seeders_builtin_track_selection(tmp_path: Path, monkeypatch: 
     by_id = {p.id: p for p in db.rows["transcode_presets"]}
     for preset in by_id.values():
         if preset.tool == TranscodeTool.HANDBRAKE:
-            expected = (AudioSelection.ALL, SubtitleSelection.ALL, SubtitleOutput.SEPARATE)
+            expected = (AudioSelection.ALL, SubtitleSelection.ALL, SubtitleOutput.SEPARATE, AudioFormat.AC3_ELSE_AAC51)
         else:
-            expected = (AudioSelection.PRESET, SubtitleSelection.PRESET, SubtitleOutput.EMBEDDED)
-        assert (preset.audio_selection, preset.subtitle_selection, preset.subtitle_output) == expected, preset.id
+            expected = (AudioSelection.PRESET, SubtitleSelection.PRESET, SubtitleOutput.EMBEDDED, AudioFormat.PRESET)
+        got = (preset.audio_selection, preset.subtitle_selection, preset.subtitle_output, preset.audio_format)
+        assert got == expected, preset.id
 
     tv = by_id["tpr_builtin_tv_plex_1080p_h265"]
     tv.audio_selection = AudioSelection.PRESET
     tv.subtitle_output = SubtitleOutput.EMBEDDED
+    tv.audio_format = AudioFormat.AAC_STEREO
     await run_seeders(db)
     assert tv.audio_selection == AudioSelection.ALL
+    assert tv.audio_format == AudioFormat.AC3_ELSE_AAC51
     assert tv.subtitle_output == SubtitleOutput.SEPARATE

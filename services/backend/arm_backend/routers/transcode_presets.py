@@ -18,7 +18,15 @@ from arm_common.schemas import (
 router = APIRouter(prefix="/api/transcode-presets", tags=["transcode-presets"])
 
 _NOT_NULL_FIELDS = frozenset(
-    {"encoder", "audio_selection", "audio_languages", "subtitle_selection", "subtitle_languages", "subtitle_output"}
+    {
+        "encoder",
+        "audio_selection",
+        "audio_languages",
+        "subtitle_selection",
+        "subtitle_languages",
+        "subtitle_output",
+        "audio_format",
+    }
 )
 
 
@@ -88,6 +96,7 @@ async def create_transcode_preset(
         subtitle_selection=req.subtitle_selection,
         subtitle_languages=req.subtitle_languages,
         subtitle_output=req.subtitle_output,
+        audio_format=req.audio_format,
         created_by_user_id=user.id,
     )
     db.add(row)

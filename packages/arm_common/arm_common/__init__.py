@@ -11,6 +11,7 @@ from arm_common.logging import (
     with_log_context,
 )
 from arm_common.enums import (
+    AudioFormat,
     AudioSelection,
     ContainerFormat,
     DiscType,
@@ -71,6 +72,7 @@ from arm_common.ulid import new_id
 
 __all__ = [
     "ADMIN_ROLE",
+    "AudioFormat",
     "AudioSelection",
     "DEFAULT_MUSICBRAINZ_USER_AGENT",
     "Config",

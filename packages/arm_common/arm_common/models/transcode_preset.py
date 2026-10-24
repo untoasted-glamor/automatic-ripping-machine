@@ -7,6 +7,7 @@ from sqlmodel import Field, SQLModel
 
 from arm_common.models._columns import created_at_column, enum_column, updated_at_column
 from arm_common.enums import (
+    AudioFormat,
     AudioSelection,
     ContainerFormat,
     MediaType,
@@ -56,6 +57,11 @@ class TranscodePreset(SQLModel, table=True):
     subtitle_output: SubtitleOutput = Field(
         default=SubtitleOutput.EMBEDDED,
         sa_column=enum_column(SubtitleOutput, "subtitle_output", server_default=SubtitleOutput.EMBEDDED.value),
+    )
+    # What each kept audio track becomes (arm_common.enums.AudioFormat).
+    audio_format: AudioFormat = Field(
+        default=AudioFormat.PRESET,
+        sa_column=enum_column(AudioFormat, "audio_format", server_default=AudioFormat.PRESET.value),
     )
     created_by_user_id: str | None = Field(
         sa_column=Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

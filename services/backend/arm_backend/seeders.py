@@ -24,6 +24,7 @@ from arm_common.models import (
 )
 from arm_common.models.user import ADMIN_ROLE, GUEST_ROLE
 from arm_common import (
+    AudioFormat,
     AudioSelection,
     ContainerFormat,
     DiscType,
@@ -254,18 +255,21 @@ RIP_PRESETS: list[dict[str, Any]] = [
 
 # --- Built-in transcode presets -----------------------------------------------
 
-# Track selection for the HandBrake built-ins: every audio track in source
-# order (the first stays the default) and every subtitle track as a separate
-# file next to the video. HandBrake's own presets keep only the first audio
-# track and no subtitles. Migration 0047 writes the same values to existing
-# installs. The passthrough and music presets keep the engine's choice (a
-# passthrough move keeps every track anyway).
+# Track selection for the HandBrake built-ins: every audio language, one
+# track each (an untouched copy of its AC-3 track, else its best track as
+# AAC with up to 5.1 channels; the first stays the default), and every
+# subtitle track as a separate file next to the video. HandBrake's own
+# presets keep only the first audio track, as AAC stereo, and no subtitles.
+# Migrations 0047 and 0049 write the same values to existing installs. The
+# passthrough and music presets keep the engine's choice (a passthrough move
+# keeps every track anyway).
 _KEEP_ALL_TRACKS: dict[str, Any] = {
     "audio_selection": AudioSelection.ALL,
     "audio_languages": [],
     "subtitle_selection": SubtitleSelection.ALL,
     "subtitle_languages": [],
     "subtitle_output": SubtitleOutput.SEPARATE,
+    "audio_format": AudioFormat.AC3_ELSE_AAC51,
 }
 _ENGINE_TRACKS: dict[str, Any] = {
     "audio_selection": AudioSelection.PRESET,
@@ -273,6 +277,7 @@ _ENGINE_TRACKS: dict[str, Any] = {
     "subtitle_selection": SubtitleSelection.PRESET,
     "subtitle_languages": [],
     "subtitle_output": SubtitleOutput.EMBEDDED,
+    "audio_format": AudioFormat.PRESET,
 }
 _TRACK_FIELDS: tuple[str, ...] = tuple(_KEEP_ALL_TRACKS)
 

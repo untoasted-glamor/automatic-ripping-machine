@@ -12,6 +12,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from arm_common.enums import (
+    AudioFormat,
     AudioSelection,
     ContainerFormat,
     IdentificationMode,
@@ -99,6 +100,7 @@ class TranscodePresetView(BaseModel):
     subtitle_selection: SubtitleSelection = SubtitleSelection.PRESET
     subtitle_languages: list[str] = Field(default_factory=list)
     subtitle_output: SubtitleOutput = SubtitleOutput.EMBEDDED
+    audio_format: AudioFormat = AudioFormat.PRESET
     created_by_user_id: str | None
     created_at: datetime | None
     updated_at: datetime | None
@@ -125,14 +127,16 @@ class TrackSelectionSettings(BaseModel):
     subtitles go: the track fields of a transcode preset, and the shape of a
     job's own override (`jobs.track_selection`), which wins over the preset.
 
-    The defaults keep every audio track and write every subtitle as a
-    separate file."""
+    The defaults keep every audio language (one track each: its AC-3 copy,
+    else AAC 5.1) and write every subtitle as a separate file. `audio_format`
+    applies only when `audio_selection` is not `preset`."""
 
     audio_selection: AudioSelection = AudioSelection.ALL
     audio_languages: list[str] = Field(default_factory=list)
     subtitle_selection: SubtitleSelection = SubtitleSelection.ALL
     subtitle_languages: list[str] = Field(default_factory=list)
     subtitle_output: SubtitleOutput = SubtitleOutput.SEPARATE
+    audio_format: AudioFormat = AudioFormat.AC3_ELSE_AAC51
 
     @field_validator("audio_languages", "subtitle_languages")
     @classmethod
@@ -174,6 +178,7 @@ class TranscodePresetUpdateRequest(BaseModel):
     subtitle_selection: SubtitleSelection | None = None
     subtitle_languages: list[str] | None = None
     subtitle_output: SubtitleOutput | None = None
+    audio_format: AudioFormat | None = None
 
     @field_validator("audio_languages", "subtitle_languages")
     @classmethod

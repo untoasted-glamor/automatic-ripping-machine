@@ -46,6 +46,7 @@ OVERRIDE = {
     "subtitle_selection": "languages",
     "subtitle_languages": ["eng"],
     "subtitle_output": "both",
+    "audio_format": "copy",
 }
 
 
@@ -117,6 +118,7 @@ def test_override_wins_over_the_preset_and_none_leaves_it() -> None:
     assert effective is not None
     assert effective.audio_languages == ["jpn", "eng"]
     assert effective.subtitle_output == SubtitleOutput.BOTH
+    assert effective.audio_format == "copy"
     assert effective.name == "Anime"
     assert jts.effective_preset_view(None, _job(db)) is None
 
