@@ -131,7 +131,7 @@ const DEFAULT_TRACKS = {
 	subtitle_selection: 'all',
 	subtitle_languages: [],
 	subtitle_output: 'separate',
-	audio_format: 'ac3_else_aac51'
+	audio_format: 'aac_best'
 };
 
 function resultPreset(): TranscodePresetView {

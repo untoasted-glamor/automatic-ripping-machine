@@ -107,7 +107,7 @@
 	let extraArgs = $state(preset?.extra_args ?? '');
 
 	// Track selection. A new preset keeps every audio language (one track
-	// each: AC-3 copy, else AAC 5.1) and writes every subtitle as a separate
+	// each: AAC from its best track) and writes every subtitle as a separate
 	// file (the API's defaults too). Rendered by TrackSelectionEditor.
 	let tracks = $state<TrackSettings>(
 		preset

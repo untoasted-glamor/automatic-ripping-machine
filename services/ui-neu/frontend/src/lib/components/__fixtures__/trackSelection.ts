@@ -8,7 +8,7 @@ export function trackView(overrides: Partial<JobTrackSelectionView> = {}): JobTr
 		subtitle_selection: 'all' as const,
 		subtitle_languages: [],
 		subtitle_output: 'separate' as const,
-		audio_format: 'ac3_else_aac51' as const
+		audio_format: 'aac_best' as const
 	};
 	return {
 		override: null,

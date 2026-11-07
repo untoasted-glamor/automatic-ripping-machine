@@ -53,7 +53,7 @@
 	const AUDIO_SELECTIONS: AudioSelection[] = ['all', 'languages', 'preset'];
 	const SUBTITLE_SELECTIONS: SubtitleSelection[] = ['all', 'languages', 'none', 'preset'];
 	const SUBTITLE_OUTPUTS: SubtitleOutput[] = ['separate', 'embedded', 'both'];
-	const AUDIO_FORMATS: AudioFormat[] = ['ac3_else_aac51', 'aac_stereo', 'aac_51', 'copy', 'preset'];
+	const AUDIO_FORMATS: AudioFormat[] = ['aac_best', 'ac3_else_aac51', 'aac_stereo', 'aac_51', 'copy', 'preset'];
 
 	let audioListMissing = $derived(value.audio_selection === 'languages' && value.audio_languages.length === 0);
 	let subtitleListMissing = $derived(value.subtitle_selection === 'languages' && value.subtitle_languages.length === 0);

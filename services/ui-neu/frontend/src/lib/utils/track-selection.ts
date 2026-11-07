@@ -19,7 +19,7 @@ export const DEFAULT_TRACKS: TrackSettings = {
 	subtitle_selection: 'all',
 	subtitle_languages: [],
 	subtitle_output: 'separate',
-	audio_format: 'ac3_else_aac51'
+	audio_format: 'aac_best'
 };
 
 /** Fill the fields an API value may leave out with the built-in default. */
@@ -47,6 +47,7 @@ export const SUBTITLE_OUTPUT_LABELS: Record<SubtitleOutput, string> = {
 };
 
 export const AUDIO_FORMAT_LABELS: Record<AudioFormat, string> = {
+	aac_best: 'One track per language: AAC from the best audio',
 	ac3_else_aac51: 'One track per language: AC-3 copy, else AAC 5.1',
 	aac_stereo: 'AAC stereo',
 	aac_51: 'AAC 5.1',
@@ -55,6 +56,8 @@ export const AUDIO_FORMAT_LABELS: Record<AudioFormat, string> = {
 };
 
 export const AUDIO_FORMAT_HELP: Record<AudioFormat, string> = {
+	aac_best:
+		"Keeps one track per language: its best track (lossless TrueHD or DTS-HD first) converted to AAC with up to 5.1 channels; a stereo or mono track stays so. Duplicate tracks such as the disc's AC-3 copy are dropped. Chrome and Firefox play AAC, unlike AC-3. Commentary tracks come after the main tracks.",
 	ac3_else_aac51:
 		"Keeps one track per language: the disc's Dolby Digital (AC-3) track, copied untouched. A language with no AC-3 track gets its best track converted to AAC with up to 5.1 channels; a stereo or mono track stays so. TrueHD and other duplicate tracks are dropped. Commentary tracks come after the main tracks.",
 	aac_stereo: 'Converts every kept track to AAC stereo. Surround sound is mixed down.',

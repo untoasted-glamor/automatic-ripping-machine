@@ -65,7 +65,7 @@ describe('JobTrackPicker', () => {
 				expect.objectContaining({
 					audio_selection: 'languages',
 					audio_languages: ['jpn'],
-					audio_format: 'ac3_else_aac51'
+					audio_format: 'aac_best'
 				})
 			)
 		);

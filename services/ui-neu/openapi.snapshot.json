@@ -9935,13 +9935,14 @@
         "type": "string",
         "enum": [
           "preset",
+          "aac_best",
           "ac3_else_aac51",
           "aac_stereo",
           "aac_51",
           "copy"
         ],
         "title": "AudioFormat",
-        "description": "What each kept audio track becomes (when ARM picks the audio tracks).\n\n`preset` leaves it to the engine (HandBrake: the preset's audio encoders;\nffmpeg VAAPI: every track copied). `ac3_else_aac51` keeps one track per\nlanguage: an untouched copy of its AC-3 (Dolby Digital) track, else its\nbest track converted to AAC with up to 5.1 channels. `aac_stereo`\nconverts every kept track to AAC stereo, `aac_51` to AAC with up to 5.1\nchannels, and `copy` keeps every kept track untouched."
+        "description": "What each kept audio track becomes (when ARM picks the audio tracks).\n\n`preset` leaves it to the engine (HandBrake: the preset's audio encoders;\nffmpeg VAAPI: every track copied). `aac_best` keeps one track per\nlanguage: its best track (lossless TrueHD first) converted to AAC with up\nto 5.1 channels. `ac3_else_aac51` keeps one track per language: an\nuntouched copy of its AC-3 (Dolby Digital) track, else its best track\nconverted to AAC with up to 5.1 channels. `aac_stereo`\nconverts every kept track to AAC stereo, `aac_51` to AAC with up to 5.1\nchannels, and `copy` keeps every kept track untouched."
       },
       "AudioSelection": {
         "type": "string",
@@ -19392,12 +19393,12 @@
           },
           "audio_format": {
             "$ref": "#/components/schemas/AudioFormat",
-            "default": "ac3_else_aac51"
+            "default": "aac_best"
           }
         },
         "type": "object",
         "title": "TrackSelectionSettings",
-        "description": "Which audio and subtitle tracks a transcode keeps and where the\nsubtitles go: the track fields of a transcode preset, and the shape of a\njob's own override (`jobs.track_selection`), which wins over the preset.\n\nThe defaults keep every audio language (one track each: its AC-3 copy,\nelse AAC 5.1) and write every subtitle as a separate file. `audio_format`\napplies only when `audio_selection` is not `preset`."
+        "description": "Which audio and subtitle tracks a transcode keeps and where the\nsubtitles go: the track fields of a transcode preset, and the shape of a\njob's own override (`jobs.track_selection`), which wins over the preset.\n\nThe defaults keep every audio language (one track each: its best track\nas AAC with up to 5.1 channels) and write every subtitle as a separate file. `audio_format`\napplies only when `audio_selection` is not `preset`."
       },
       "TrackStatus": {
         "type": "string",
@@ -19778,7 +19779,7 @@
           },
           "audio_format": {
             "$ref": "#/components/schemas/AudioFormat",
-            "default": "ac3_else_aac51"
+            "default": "aac_best"
           },
           "name": {
             "type": "string",

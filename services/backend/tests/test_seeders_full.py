@@ -323,7 +323,7 @@ async def test_run_seeders_builtin_track_selection(tmp_path: Path, monkeypatch: 
     by_id = {p.id: p for p in db.rows["transcode_presets"]}
     for preset in by_id.values():
         if preset.tool == TranscodeTool.HANDBRAKE:
-            expected = (AudioSelection.ALL, SubtitleSelection.ALL, SubtitleOutput.SEPARATE, AudioFormat.AC3_ELSE_AAC51)
+            expected = (AudioSelection.ALL, SubtitleSelection.ALL, SubtitleOutput.SEPARATE, AudioFormat.AAC_BEST)
         else:
             expected = (AudioSelection.PRESET, SubtitleSelection.PRESET, SubtitleOutput.EMBEDDED, AudioFormat.PRESET)
         got = (preset.audio_selection, preset.subtitle_selection, preset.subtitle_output, preset.audio_format)
@@ -332,8 +332,8 @@ async def test_run_seeders_builtin_track_selection(tmp_path: Path, monkeypatch: 
     tv = by_id["tpr_builtin_tv_plex_1080p_h265"]
     tv.audio_selection = AudioSelection.PRESET
     tv.subtitle_output = SubtitleOutput.EMBEDDED
-    tv.audio_format = AudioFormat.AAC_STEREO
+    tv.audio_format = AudioFormat.AC3_ELSE_AAC51  # an install upgraded from 0049's built-in value
     await run_seeders(db)
     assert tv.audio_selection == AudioSelection.ALL
-    assert tv.audio_format == AudioFormat.AC3_ELSE_AAC51
+    assert tv.audio_format == AudioFormat.AAC_BEST
     assert tv.subtitle_output == SubtitleOutput.SEPARATE

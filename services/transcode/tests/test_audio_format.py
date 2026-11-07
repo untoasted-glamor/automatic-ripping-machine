@@ -90,6 +90,24 @@ def test_a_language_with_only_commentary_keeps_it_as_its_track() -> None:
     assert _summary(plan_audio(streams, AudioFormat.AC3_ELSE_AAC51)) == [(0, "copy"), (1, "aac2")]
 
 
+def test_aac_best_converts_each_languages_lossless_track() -> None:
+    outs = plan_audio(HANAKO, AudioFormat.AAC_BEST)
+    assert _summary(outs) == [(0, "aac6"), (2, "aac2")]
+    assert outs is not None and [o.title for o in outs] == ["English AAC 5.1", "Japanese AAC Stereo"]
+
+
+def test_aac_best_ranks_channels_then_codec_and_ac3_above_aac() -> None:
+    streams = [
+        _a(0, "ac3", "eng", 6),
+        _a(1, "dts", "eng", 6, profile="DTS"),  # beats AC-3 at the same channels
+        _a(2, "truehd", "eng", 2),  # fewer channels lose, lossless or not
+        _a(3, "aac", "jpn", 2),
+        _a(4, "ac3", "jpn", 2),
+        _a(5, "ac3", "eng", 2, title="Commentary", extra=True),
+    ]
+    assert _summary(plan_audio(streams, AudioFormat.AAC_BEST)) == [(1, "aac6"), (4, "aac2"), (5, "aac2")]
+
+
 def test_other_formats() -> None:
     assert plan_audio(HANAKO, AudioFormat.PRESET) is None
     assert _summary(plan_audio(HANAKO, AudioFormat.COPY)) == [(0, "copy"), (1, "copy"), (2, "copy"), (3, "copy")]

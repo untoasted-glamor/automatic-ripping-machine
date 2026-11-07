@@ -127,8 +127,8 @@ class TrackSelectionSettings(BaseModel):
     subtitles go: the track fields of a transcode preset, and the shape of a
     job's own override (`jobs.track_selection`), which wins over the preset.
 
-    The defaults keep every audio language (one track each: its AC-3 copy,
-    else AAC 5.1) and write every subtitle as a separate file. `audio_format`
+    The defaults keep every audio language (one track each: its best track
+    as AAC with up to 5.1 channels) and write every subtitle as a separate file. `audio_format`
     applies only when `audio_selection` is not `preset`."""
 
     audio_selection: AudioSelection = AudioSelection.ALL
@@ -136,7 +136,7 @@ class TrackSelectionSettings(BaseModel):
     subtitle_selection: SubtitleSelection = SubtitleSelection.ALL
     subtitle_languages: list[str] = Field(default_factory=list)
     subtitle_output: SubtitleOutput = SubtitleOutput.SEPARATE
-    audio_format: AudioFormat = AudioFormat.AC3_ELSE_AAC51
+    audio_format: AudioFormat = AudioFormat.AAC_BEST
 
     @field_validator("audio_languages", "subtitle_languages")
     @classmethod

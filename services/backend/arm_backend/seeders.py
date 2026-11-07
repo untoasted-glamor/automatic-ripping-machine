@@ -256,11 +256,12 @@ RIP_PRESETS: list[dict[str, Any]] = [
 # --- Built-in transcode presets -----------------------------------------------
 
 # Track selection for the HandBrake built-ins: every audio language, one
-# track each (an untouched copy of its AC-3 track, else its best track as
-# AAC with up to 5.1 channels; the first stays the default), and every
-# subtitle track as a separate file next to the video. HandBrake's own
-# presets keep only the first audio track, as AAC stereo, and no subtitles.
-# Migrations 0047 and 0049 write the same values to existing installs. The
+# track each (its best track, lossless first, as AAC with up to 5.1
+# channels; the first stays the default), and every subtitle track as a
+# separate file next to the video. HandBrake's own presets keep only the
+# first audio track, as AAC stereo, and no subtitles. The seeder syncs these
+# fields on existing installs at every start (migrations 0047 and 0049 wrote
+# the values of their day). The
 # passthrough and music presets keep the engine's choice (a passthrough move
 # keeps every track anyway).
 _KEEP_ALL_TRACKS: dict[str, Any] = {
@@ -269,7 +270,7 @@ _KEEP_ALL_TRACKS: dict[str, Any] = {
     "subtitle_selection": SubtitleSelection.ALL,
     "subtitle_languages": [],
     "subtitle_output": SubtitleOutput.SEPARATE,
-    "audio_format": AudioFormat.AC3_ELSE_AAC51,
+    "audio_format": AudioFormat.AAC_BEST,
 }
 _ENGINE_TRACKS: dict[str, Any] = {
     "audio_selection": AudioSelection.PRESET,

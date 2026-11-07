@@ -18,15 +18,19 @@ Selection rules:
   A subtitle selection that matches nothing keeps none.
 
 Audio format (`audio_format`, used when ARM picks the audio tracks):
+- `aac_best` keeps one track per language: its best track (most channels,
+  then TrueHD, DTS-HD, LPCM, FLAC, DTS, E-AC-3, AC-3, AAC, others) converted
+  to AAC with the source's channels up to 5.1 (a stereo or mono source stays
+  so). The lossless track is the one converted, never its lossy twin.
 - `ac3_else_aac51` keeps one track per language: an untouched copy of its
-  AC-3 track with the most channels, else its best track (most channels,
-  then TrueHD, DTS-HD, LPCM, FLAC, DTS, E-AC-3, others) converted to AAC with
-  the source's channels up to 5.1 (a stereo or mono source stays so).
+  AC-3 track with the most channels, else its best track converted to AAC as
+  `aac_best` does.
   Commentary and audio-description tracks (the source's `comment` /
   `visual_impaired` disposition, or a title naming one) never stand in for
   the main track: they follow every language's main track, chosen by the same
   rule. Candidates that still tie (two AC-3 5.1 tracks of one language that
-  nothing marks apart) are all kept, in disc order.
+  nothing marks apart) are all kept, in disc order. The same holds for
+  `aac_best`.
 - `aac_stereo` converts every kept track to AAC stereo, `aac_51` to AAC with
   up to 5.1 channels, and `copy` keeps every kept track untouched.
 - `preset` leaves it to the engine.
@@ -196,8 +200,8 @@ def _is_extra(disposition: dict[str, object], title: str | None) -> bool:
     return bool(title and _EXTRA_TITLE_RE.search(title))
 
 
-# Fallback ranking when a language has no AC-3 track: lossless first.
-_CODEC_RANK = {"truehd": 0, "dts_hd": 1, "flac": 3, "dts": 4, "eac3": 5, "aac": 6, "mp2": 7, "mp3": 7}
+# Best-track ranking among tracks with the same channel count: lossless first.
+_CODEC_RANK = {"truehd": 0, "dts_hd": 1, "flac": 3, "dts": 4, "eac3": 5, "ac3": 6, "aac": 7, "mp2": 8, "mp3": 8}
 
 
 def _codec_rank(stream: SourceStream) -> int:
@@ -205,7 +209,7 @@ def _codec_rank(stream: SourceStream) -> int:
         return _CODEC_RANK["dts_hd"]
     if stream.codec.startswith("pcm_"):
         return 2
-    return _CODEC_RANK.get(stream.codec, 8)
+    return _CODEC_RANK.get(stream.codec, 9)
 
 
 def _aac_channels(stream: SourceStream, *, stereo: bool) -> int:
@@ -224,9 +228,9 @@ def _converted(stream: SourceStream, *, stereo: bool) -> AudioOut:
     return AudioOut(stream=stream, channels=channels, title=title)
 
 
-def _best_of(candidates: list[SourceStream]) -> list[AudioOut]:
+def _best_of(candidates: list[SourceStream], *, prefer_ac3: bool) -> list[AudioOut]:
     """One language's pick (see the module doc); ties are all kept."""
-    ac3 = [s for s in candidates if s.codec == "ac3"]
+    ac3 = [s for s in candidates if s.codec == "ac3"] if prefer_ac3 else []
     if ac3:
         most = max(s.channels or 0 for s in ac3)
         return [AudioOut(stream=s) for s in ac3 if (s.channels or 0) == most]
@@ -242,6 +246,7 @@ def plan_audio(streams: list[SourceStream], audio_format: AudioFormat) -> list[A
         return [AudioOut(stream=s) for s in streams]
     if audio_format in (AudioFormat.AAC_STEREO, AudioFormat.AAC_51):
         return [_converted(s, stereo=audio_format == AudioFormat.AAC_STEREO) for s in streams]
+    prefer_ac3 = audio_format == AudioFormat.AC3_ELSE_AAC51
     by_language: dict[str, list[SourceStream]] = {}
     for stream in streams:
         by_language.setdefault(stream.language, []).append(stream)
@@ -253,9 +258,9 @@ def plan_audio(streams: list[SourceStream], audio_format: AudioFormat) -> list[A
         if not main:
             # Only commentary in this language: it is the language's track.
             main, extra = extra, []
-        mains += _best_of(main)
+        mains += _best_of(main, prefer_ac3=prefer_ac3)
         if extra:
-            extras += _best_of(extra)
+            extras += _best_of(extra, prefer_ac3=prefer_ac3)
     return mains + extras
 
 

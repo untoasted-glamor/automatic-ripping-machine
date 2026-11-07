@@ -366,7 +366,7 @@ def test_create_defaults_keep_every_track_and_write_separate_subtitles(signing_k
     assert r.status_code == 201, r.text
     out = r.json()
     assert (out["audio_selection"], out["subtitle_selection"], out["subtitle_output"]) == ("all", "all", "separate")
-    assert out["audio_format"] == "ac3_else_aac51"
+    assert out["audio_format"] == "aac_best"
     assert out["audio_languages"] == [] and out["subtitle_languages"] == []
 
 

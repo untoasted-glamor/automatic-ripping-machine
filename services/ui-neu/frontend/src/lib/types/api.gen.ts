@@ -83,13 +83,15 @@ export type AppriseChannelConfig = {
  * What each kept audio track becomes (when ARM picks the audio tracks).
  *
  * `preset` leaves it to the engine (HandBrake: the preset's audio encoders;
- * ffmpeg VAAPI: every track copied). `ac3_else_aac51` keeps one track per
- * language: an untouched copy of its AC-3 (Dolby Digital) track, else its
- * best track converted to AAC with up to 5.1 channels. `aac_stereo`
+ * ffmpeg VAAPI: every track copied). `aac_best` keeps one track per
+ * language: its best track (lossless TrueHD first) converted to AAC with up
+ * to 5.1 channels. `ac3_else_aac51` keeps one track per language: an
+ * untouched copy of its AC-3 (Dolby Digital) track, else its best track
+ * converted to AAC with up to 5.1 channels. `aac_stereo`
  * converts every kept track to AAC stereo, `aac_51` to AAC with up to 5.1
  * channels, and `copy` keeps every kept track untouched.
  */
-export type AudioFormat = 'preset' | 'ac3_else_aac51' | 'aac_stereo' | 'aac_51' | 'copy';
+export type AudioFormat = 'preset' | 'aac_best' | 'ac3_else_aac51' | 'aac_stereo' | 'aac_51' | 'copy';
 
 /**
  * AudioSelection
@@ -5194,8 +5196,8 @@ export type TrackSelection = 'main_feature' | 'all_tracks' | 'archive' | 'custom
  * subtitles go: the track fields of a transcode preset, and the shape of a
  * job's own override (`jobs.track_selection`), which wins over the preset.
  *
- * The defaults keep every audio language (one track each: its AC-3 copy,
- * else AAC 5.1) and write every subtitle as a separate file. `audio_format`
+ * The defaults keep every audio language (one track each: its best track
+ * as AAC with up to 5.1 channels) and write every subtitle as a separate file. `audio_format`
  * applies only when `audio_selection` is not `preset`.
  */
 export type TrackSelectionSettings = {

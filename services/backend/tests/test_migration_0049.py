@@ -1,6 +1,7 @@
 """0049_transcode_audio_format: transcode_presets.audio_format, VARCHAR with
 `preset` for existing rows and `ac3_else_aac51` for the HandBrake built-ins
-(checked by value against an in-memory SQLite table)."""
+(checked by value against an in-memory SQLite table). The seeder has since
+moved the built-ins on to `aac_best` at startup."""
 
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ def test_0049_upgrade_adds_a_varchar_column() -> None:
     assert "CREATE TYPE" not in sql
 
 
-def test_0049_backfills_only_the_handbrake_builtins_like_the_seeder() -> None:
+def test_0049_backfills_only_the_handbrake_builtins() -> None:
     match = re.search(r"UPDATE transcode_presets SET.*?;", _render_sql(_PARENT, _REV), re.DOTALL)
     assert match is not None
     conn = sqlite3.connect(":memory:")
@@ -36,8 +37,8 @@ def test_0049_backfills_only_the_handbrake_builtins_like_the_seeder() -> None:
     conn.execute(match.group(0))
     got = dict(conn.execute("SELECT id, audio_format FROM transcode_presets").fetchall())
     for row in seeders.TRANSCODE_PRESETS:
-        assert got[row["id"]] == row["audio_format"], row["id"]
-    assert got["tpr_builtin_tv_plex_1080p_h265"] == "ac3_else_aac51"
+        expected = "preset" if row["audio_format"] == "preset" else "ac3_else_aac51"
+        assert got[row["id"]] == expected, row["id"]
     assert got["tpr_user_hb"] == "preset"
 
 

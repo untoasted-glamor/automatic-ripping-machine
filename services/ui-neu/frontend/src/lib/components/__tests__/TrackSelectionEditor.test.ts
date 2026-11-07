@@ -73,7 +73,7 @@ describe('TrackSelectionEditor', () => {
 
 	it('picks the audio format, with help, and hides it when the preset picks the audio', async () => {
 		const onchange = render();
-		expect(screen.getByTestId('te-audio-format-help')).toHaveTextContent("the disc's Dolby Digital (AC-3) track");
+		expect(screen.getByTestId('te-audio-format-help')).toHaveTextContent('converted to AAC');
 		await fireEvent.change(screen.getByTestId('te-audio-format'), { target: { value: 'copy' } });
 		expect(onchange).toHaveBeenLastCalledWith(expect.objectContaining({ audio_format: 'copy' }));
 		cleanup();
@@ -102,7 +102,7 @@ describe('TrackSelectionEditor', () => {
 describe('track-selection helpers', () => {
 	it('describes the built-in default and other choices', () => {
 		expect(describeTracks(DEFAULT_TRACKS)).toBe(
-			'Every audio language, one track each: AC-3 copy, else AAC 5.1; every subtitle track as separate files.'
+			'Every audio language, one track each: AAC from the best audio; every subtitle track as separate files.'
 		);
 		expect(
 			describeTracks({
