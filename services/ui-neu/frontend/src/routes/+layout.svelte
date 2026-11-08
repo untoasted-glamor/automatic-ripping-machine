@@ -22,6 +22,7 @@
 	import { isScreenEnabled } from '$lib/features';
 	import { logout as apiLogout } from '$lib/api/auth';
 	import { countRipping } from '$lib/utils/job-status';
+	import { encodeTasks } from '$lib/utils/transcode-kind';
 	import BottomStatsBar from '$lib/components/BottomStatsBar.svelte';
 	import LiveUpdatesBanner from '$lib/components/LiveUpdatesBanner.svelte';
 	import SidebarStats from '$lib/components/SidebarStats.svelte';
@@ -48,6 +49,8 @@
 	let redirectingToLogin = false;
 
 	const rippingCount = $derived(countRipping($dashboard.active_jobs ?? []));
+	// Encodes only; a subtitle OCR task is not a transcode in this count.
+	const transcodingCount = $derived(encodeTasks($dashboard.active_transcodes).length);
 
 	function handleQuickAction(action: string) {
 		if (action === 'rip-iso' || action === 'rip-folder') {
@@ -312,10 +315,8 @@
 						{#if rippingCount > 0}
 							<span class="layout-activity-ripping">{rippingCount} ripping</span>
 						{/if}
-						{#if $dashboard.active_transcodes.length > 0}
-							<a href="/transcoder" class="layout-activity-transcoding"
-								>{$dashboard.active_transcodes.length} transcoding</a
-							>
+						{#if transcodingCount > 0}
+							<a href="/transcoder" class="layout-activity-transcoding">{transcodingCount} transcoding</a>
 						{/if}
 						{#if $dashboard.transcoder_online && (Number($dashboard.transcoder_stats?.pending) || 0) > 0}
 							<span class="layout-activity-queued">{$dashboard.transcoder_stats?.pending} queued</span>

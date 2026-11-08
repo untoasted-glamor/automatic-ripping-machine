@@ -22,6 +22,7 @@ from arm_common.enums import (
     SubtitleOutput,
     SubtitleSelection,
     TrackSelection,
+    TranscodeTaskKind,
     TranscodeTaskStatus,
     TranscodeTool,
 )
@@ -254,6 +255,10 @@ class TranscodeTaskView(BaseModel):
     job_id: str | None = None
     source_track_id: str
     status: TranscodeTaskStatus
+    # `encode`, or `subtitle_ocr` (text subtitles read from the image
+    # subtitles its parent encode task wrote; `output_path` is that video).
+    kind: TranscodeTaskKind = TranscodeTaskKind.ENCODE
+    parent_task_id: str | None = None
     output_path: str | None
     # Subtitle files written next to the video (media-root-relative).
     sidecar_paths: list[str] | None = None

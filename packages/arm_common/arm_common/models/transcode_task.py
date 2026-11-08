@@ -5,7 +5,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 from arm_common.models._columns import created_at_column, enum_column, updated_at_column
-from arm_common.enums import TranscodeTaskStatus
+from arm_common.enums import TranscodeTaskKind, TranscodeTaskStatus
 from arm_common.ulid import new_id
 
 
@@ -34,12 +34,36 @@ class TranscodeTask(SQLModel, table=True):
             index=True,
         )
     )
+    # `encode` (the default) or `subtitle_ocr`; see `TranscodeTaskKind`.
+    kind: TranscodeTaskKind = Field(
+        default=TranscodeTaskKind.ENCODE,
+        sa_column=enum_column(
+            TranscodeTaskKind,
+            "transcode_task_kind",
+            server_default=TranscodeTaskKind.ENCODE.value,
+        ),
+    )
+    # A `subtitle_ocr` task's encode task: the one whose image subtitle
+    # sidecars it reads. It shares that task's session application, source
+    # track and `output_path` (the video), and is created only once that task
+    # is done. SET NULL so a deleted encode row leaves the subtitle task, and
+    # the `.srt` files it recorded, in place.
+    parent_task_id: str | None = Field(
+        default=None,
+        sa_column=Column(
+            String,
+            ForeignKey("transcode_tasks.id", ondelete="SET NULL"),
+            nullable=True,
+            index=True,
+        ),
+    )
     claimed_by: str | None = Field(default=None)
     claim_heartbeat_at: datetime | None = Field(sa_column=Column(DateTime(timezone=True), nullable=True))
     attempts: int = Field(sa_column=Column(Integer, nullable=False, server_default="0"))
     output_path: str | None = Field(default=None)
     # Subtitle files written next to `output_path` (same media-root-relative
-    # form), reported by the transcoder at /complete. Job delete removes them
+    # form), reported by the transcoder at /complete (a `subtitle_ocr` task:
+    # the `.srt` files it wrote, also at /fail for those it finished). Job delete removes them
     # with the video; an overwrite re-apply hands them to the replacing task
     # (`replaced_sidecar_paths`).
     sidecar_paths: list[str] | None = Field(default=None, sa_column=Column(JSONB, nullable=True))

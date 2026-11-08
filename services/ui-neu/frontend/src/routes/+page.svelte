@@ -13,6 +13,7 @@
 	import { ripProgress, startWS, stopWS, reconcileSubscriptions } from '$lib/stores/rips.svelte';
 	import JobRow from '$lib/components/JobRow.svelte';
 	import TranscodeCard from '$lib/components/TranscodeCard.svelte';
+	import { activeTranscodesLabel } from '$lib/utils/transcode-kind';
 	import SectionFrame from '$lib/components/SectionFrame.svelte';
 	import JobFilterBar from '$lib/components/JobFilterBar.svelte';
 	import BulkActionsMenu from '$lib/components/BulkActionsMenu.svelte';
@@ -393,11 +394,7 @@
 	<!-- Active transcodes -->
 	{#if $transcoderEnabled && dash.active_transcodes.length > 0}
 		<section in:fade={fadeIn} out:fade={fadeOut}>
-			<SectionFrame
-				variant="full"
-				accent="var(--color-primary)"
-				label="TRANSCODING - {dash.active_transcodes.length} ACTIVE"
-			>
+			<SectionFrame variant="full" accent="var(--color-primary)" label={activeTranscodesLabel(dash.active_transcodes)}>
 				<div class="space-y-2">
 					{#each dash.active_transcodes as tc (tc.id)}
 						<div in:fade|local={fadeIn} out:fade|local={fadeOut}>

@@ -14,6 +14,11 @@ The dispatcher is a single asyncio task started in `main.py` lifespan. Every
 Cancel-running flow lives here too: emit `task.cancel` on
 `transcoder.commands.{task_id}`, wait 10 s for the transcoder to call
 /fail, then docker-stop any survivor by label scan.
+
+Subtitle OCR tasks (`arm_backend.subtitle_ocr_tasks`) spawn the same
+transcoder image under the same gates, but with no preset, encoder or GPU,
+the media root as their only data mount, and their own parallel limit
+(`ARM_SUBTITLE_OCR_MAX_PARALLEL`), so they never take an encode slot.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from sqlmodel import col, select
 from arm_backend.config import Settings, settings
 from arm_backend.docker_probe import TtlProbe, probe_backend_url, probe_docker
 from arm_backend.sidecars import is_sidecar_of
+from arm_backend.subtitle_ocr_tasks import is_subtitle_ocr, subtitle_ocr_inputs
 from arm_backend.transcode_images import (
     VARIANT_SUFFIX,
     image_for,
@@ -51,6 +57,7 @@ from arm_common import (
     SessionApplicationStatus,
     TranscodePreset,
     TranscodeTask,
+    TranscodeTaskKind,
     TranscodeTaskStatus,
     with_log_context,
 )
@@ -192,7 +199,13 @@ async def count_queued_encode_tasks(db: AsyncSession) -> int:
 
     # One query per table, not per task: the Transcoder page polls this.
     queued = (
-        (await db.execute(select(TranscodeTask).where(col(TranscodeTask.status) == TranscodeTaskStatus.QUEUED)))
+        (
+            await db.execute(
+                select(TranscodeTask)
+                .where(col(TranscodeTask.status) == TranscodeTaskStatus.QUEUED)
+                .where(col(TranscodeTask.kind) == TranscodeTaskKind.ENCODE)
+            )
+        )
         .scalars()
         .all()
     )
@@ -506,6 +519,11 @@ class TranscodeDispatcher:
         Acts only on apps with zero or only-terminal tasks — disjoint from every
         live writer, so it cannot race fan-out/claim/aggregate. Does NOT commit;
         the caller commits. Returns the number of applications acted on.
+
+        Only encode tasks decide, as in `aggregate_session_application`: an
+        application whose encodes are all terminal is settled even while a
+        subtitle OCR task of it runs, and one holding only OCR tasks is no
+        husk (its encode rows were deleted; the OCR rows keep their `.srt`).
         """
         from arm_backend.transcode_apply import aggregate_session_application
 
@@ -539,7 +557,9 @@ class TranscodeDispatcher:
                 .scalars()
                 .all()
             )
-            statuses = [t.status for t in tasks]
+            statuses = [t.status for t in tasks if t.kind == TranscodeTaskKind.ENCODE]
+            if tasks and not statuses:
+                continue
             has_live = any(s in (TranscodeTaskStatus.QUEUED, TranscodeTaskStatus.IN_PROGRESS) for s in statuses)
             if has_live:
                 # Not an orphan — a live task will drive aggregate on completion.
@@ -619,7 +639,11 @@ class TranscodeDispatcher:
 
         Passthrough (no preset, or TranscodeTool.NONE) never spawns a
         container and is not counted against encode slots; it always runs
-        when queued, FIFO. Encode tasks are additionally gated by
+        when queued, FIFO. A subtitle OCR task spawns a container under the
+        same gates as an encode, but counts against its own slots
+        (`ARM_SUBTITLE_OCR_MAX_PARALLEL`) and claims no GPU; one that can
+        never run (its encode task gone, or no image subtitles) is failed
+        before any spawn. Encode tasks are additionally gated by
         `config.transcode_enabled` (held in QUEUED when off) and by having a
         docker client + host paths at all (a ripper-only deployment has
         neither); held tasks stay queued for a later tick, never dropped.
@@ -669,9 +693,11 @@ class TranscodeDispatcher:
             .scalars()
             .all()
         )
-        encode_slots = await max_parallel_transcodes(db, default=self._settings.MAX_PARALLEL_TRANSCODES) - len(
-            in_progress
+        ocr_running = sum(1 for t in in_progress if is_subtitle_ocr(t))
+        encode_slots = await max_parallel_transcodes(db, default=self._settings.MAX_PARALLEL_TRANSCODES) - (
+            len(in_progress) - ocr_running
         )
+        ocr_slots = self._settings.ARM_SUBTITLE_OCR_MAX_PARALLEL - ocr_running
 
         queued_rows = (
             (
@@ -686,6 +712,8 @@ class TranscodeDispatcher:
             .all()
         )
         queued_ids = [row.id for row in queued_rows]
+        # Read now: any commit below expires these objects (see docstring).
+        ocr_ids = {row.id for row in queued_rows if is_subtitle_ocr(row)}
         # A starting task leaves the map once it is claimed (or failed or
         # deleted), or when its container has not claimed it within the
         # stale threshold; the next spawn then removes that container.
@@ -696,8 +724,11 @@ class TranscodeDispatcher:
             for task_id, spawned_at in self._starting.items()
             if task_id in queued_id_set and now - spawned_at < self._settings.ARM_TRANSCODE_STALE_THRESHOLD_SECONDS
         }
-        encode_slots -= len(self._starting)
+        starting_ocr = sum(1 for task_id in self._starting if task_id in ocr_ids)
+        encode_slots -= len(self._starting) - starting_ocr
+        ocr_slots -= starting_ocr
         spawned = 0
+        spawned_ocr = 0
         held_encode = 0
         encode_examined = 0
         for task_id in queued_ids:
@@ -727,8 +758,9 @@ class TranscodeDispatcher:
             ).scalar_one_or_none()
             job_id = application.job_id if application is not None else None
             with with_log_context(job_id=job_id, session_application_id=task.session_application_id):
-                preset = await self._resolve_preset_for_task(db, task)
-                if is_passthrough_preset(preset):
+                ocr = is_subtitle_ocr(task)
+                preset = None if ocr else await self._resolve_preset_for_task(db, task)
+                if not ocr and is_passthrough_preset(preset):
                     # Never counted against encode_slots/encode_examined and
                     # never held by the disabled/docker-less gates below: a
                     # file move needs neither a container nor an encode slot.
@@ -757,9 +789,20 @@ class TranscodeDispatcher:
                     # Its container is starting up and claims the task once it
                     # registers.
                     continue
+                if ocr:
+                    _, unrunnable = await subtitle_ocr_inputs(db, task)
+                    if unrunnable is not None:
+                        # Never spawned: its register would only refuse it.
+                        try:
+                            await self._fail_queued_task(db, task, f"subtitle OCR cannot run: {unrunnable}")
+                        except Exception as exc:
+                            logger.exception("failing unrunnable subtitle OCR task failed task_id=%s: %s", task_id, exc)
+                            await db.rollback()
+                        continue
                 if encode_examined >= _QUEUE_SCAN_LIMIT:
-                    # Encode-only cap; passthrough tasks further back in the
-                    # queue are still scanned and still run.
+                    # Container-task cap (encodes and subtitle OCR);
+                    # passthrough tasks further back in the queue are still
+                    # scanned and still run.
                     continue
                 encode_examined += 1
                 if not enabled:
@@ -768,7 +811,7 @@ class TranscodeDispatcher:
                 if self._docker is None or not self.host_paths_set():
                     held_encode += 1
                     continue
-                if encode_slots - spawned <= 0:
+                if (ocr_slots - spawned_ocr if ocr else encode_slots - spawned) <= 0:
                     # No free slot this tick; later passthrough tasks in the
                     # queue must still run, so `continue` (not `break`).
                     continue
@@ -785,7 +828,10 @@ class TranscodeDispatcher:
                 # `populate_existing`-forced, FOR UPDATE-locked load at the
                 # top of this iteration already confirmed `task` is
                 # current and still QUEUED, right before we act on it.
-                assignment = await self._claim_gpu_for_task(db, task, preset)
+                if ocr:
+                    assignment = GpuAssignment(gpu=None, encoder=None, action="spawn")
+                else:
+                    assignment = await self._claim_gpu_for_task(db, task, preset)
                 if assignment.action == "queue":
                     logger.info(
                         "transcode task waiting for GPU encoder=%s task_id=%s%s",
@@ -824,7 +870,10 @@ class TranscodeDispatcher:
                     await asyncio.to_thread(self._spawn_container, task, assignment=assignment)
                     started = True
                     self._starting[task_id] = time.monotonic()
-                    spawned += 1
+                    if ocr:
+                        spawned_ocr += 1
+                    else:
+                        spawned += 1
                     self.last_spawn_error = None
                     # Commit this task's GPU claim promptly, per-task, right
                     # after its container is confirmed running: a later
@@ -900,7 +949,7 @@ class TranscodeDispatcher:
                 "%d encode task(s) held (enabled=%s docker=%s)", held_encode, enabled, self._docker is not None
             )
         await db.commit()
-        return spawned
+        return spawned + spawned_ocr
 
     def _log_probe_hold(self, host_probe: tuple[bool, str | None]) -> None:
         ok, detail = host_probe
@@ -1321,6 +1370,9 @@ class TranscodeDispatcher:
             self._settings.ARM_HOST_LOGS_PATH: {"bind": "/logs", "mode": "rw"},
             str(certs_root / "arm-ca.crt"): {"bind": "/etc/ssl/arm/arm-ca.crt", "mode": "ro"},
         }
+        if is_subtitle_ocr(task):
+            # It reads and writes subtitle files next to the video only.
+            del volumes[self._settings.ARM_HOST_RAW_PATH]
         extra_run_kwargs: dict[str, Any] = {}
         if assignment is not None and assignment.encoder is not None:
             # The worker resolves everything from the catalog id. The

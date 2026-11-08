@@ -8,6 +8,10 @@ The hazard: a task's `output_path` is recorded at fan-out, before the file
 lands. A disc backup task whose move was refused (its destination folder
 already existed: another job's, or the user's) ends FAILED still naming
 that folder. Deleting the failed job with its files must not remove it.
+
+A subtitle OCR task's `output_path` is its encode's video: it adds only the
+`.srt` files it recorded (a FAILED one too, for those it finished), and the
+video is listed once.
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ from arm_common import (  # noqa: E402
     Track,
     TrackKind,
     TranscodeTask,
+    TranscodeTaskKind,
     TranscodeTaskStatus,
     User,
 )
@@ -67,6 +72,11 @@ async def test_deleting_a_failed_backup_job_keeps_the_folder_it_never_filed(
     sidecar.write_bytes(b"pgs")
     users_srt = media_root / "Extras" / "extra.eng.srt"
     users_srt.write_text("1")
+    # Text subtitles its OCR tasks wrote: a done one's, and one a failed task kept.
+    ocr_srt = media_root / "Extras" / "extra.eng.2.srt"
+    ocr_srt.write_text("1")
+    kept_srt = media_root / "Extras" / "extra.fra.srt"
+    kept_srt.write_text("1")
     monkeypatch.setattr(jobs_router.settings, "RAW_ROOT", str(raw_root))
     monkeypatch.setattr(jobs_router.settings, "MEDIA_ROOT", str(media_root))
 
@@ -110,13 +120,39 @@ async def test_deleting_a_failed_backup_job_keeps_the_folder_it_never_filed(
                         output_path="Extras/extra.mkv",
                         sidecar_paths=["Extras/extra.eng.sup"],
                     ),
+                    TranscodeTask(
+                        id="txt_ocr",
+                        session_application_id="sap_x",
+                        source_track_id="trk_e",
+                        kind=TranscodeTaskKind.SUBTITLE_OCR,
+                        parent_task_id="txt_done",
+                        status=TranscodeTaskStatus.DONE,
+                        attempts=1,
+                        progress_pct=100,
+                        output_path="Extras/extra.mkv",
+                        sidecar_paths=["Extras/extra.eng.2.srt"],
+                    ),
+                    TranscodeTask(
+                        id="txt_ocr_failed",
+                        session_application_id="sap_x",
+                        source_track_id="trk_e",
+                        kind=TranscodeTaskKind.SUBTITLE_OCR,
+                        parent_task_id="txt_done",
+                        status=TranscodeTaskStatus.FAILED,
+                        attempts=1,
+                        progress_pct=50,
+                        output_path="Extras/extra.mkv",
+                        sidecar_paths=["Extras/extra.fra.srt"],
+                    ),
                 ]
             )
             await db.commit()
 
         async with factory() as db:
             outputs = await jobs_router._resolve_media_outputs(db, _JOB)
-        assert outputs == [media_root / "Extras" / "extra.mkv", media_root / "Extras" / "extra.eng.sup"]
+        assert sorted(outputs) == sorted(
+            media_root / "Extras" / name for name in ("extra.mkv", "extra.eng.sup", "extra.eng.2.srt", "extra.fra.srt")
+        )
 
         app = FastAPI()
         app.state.signing_key = secrets.token_bytes(32)
@@ -138,5 +174,6 @@ async def test_deleting_a_failed_backup_job_keeps_the_folder_it_never_filed(
     assert (foreign / "BDMV" / "index.bdmv").read_bytes() == b"theirs"
     assert not done_file.exists()
     assert not sidecar.exists()
+    assert not ocr_srt.exists() and not kept_srt.exists()
     assert users_srt.exists()
     assert not (raw_root / _JOB).exists()

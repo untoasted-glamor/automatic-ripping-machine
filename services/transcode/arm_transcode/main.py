@@ -19,6 +19,12 @@ Run order:
 8. If a heartbeat shows the Backend revoked our claim, stop the encode and
    exit without /fail: the task is no longer ours to report on.
 
+A `subtitle_ocr` task (register says so in `task.kind`) runs
+`subtitle_ocr.task.make_text_subtitles` over the register's
+`input_sidecar_paths` instead of an encoder, and reports the `.srt` files as
+its sidecars: at /complete, or at /fail for the ones finished before a
+sidecar failed.
+
 Container exits when the run() coroutine returns.
 """
 
@@ -42,7 +48,7 @@ from arm_common.schemas import (
     TranscodePresetView,
     WSEnvelope,
 )
-from arm_common.enums import GpuVendor, TranscodeTool
+from arm_common.enums import GpuVendor, TranscodeTaskKind, TranscodeTool
 from arm_common.fileops import atomic_output, transcode_none
 
 from arm_transcode.api_client import BackendClient
@@ -55,6 +61,7 @@ from arm_transcode.engines.handbrake_engine import preset_audio, track_args
 from arm_transcode.ffmpeg_audio import transcode_audio
 from arm_transcode.handbrake import transcode_handbrake
 from arm_transcode.heartbeat import HeartbeatPump, ProgressState
+from arm_transcode.subtitle_ocr.task import SubtitleOcrFailed, make_text_subtitles
 from arm_transcode.tracks import (
     TrackPlan,
     extract_sidecars,
@@ -221,6 +228,18 @@ async def _run_encoder(
     raise RuntimeError(f"unknown transcode tool={tool.value}")
 
 
+async def _run_subtitle_ocr(media_root: Path, inputs: list[str], state: ProgressState) -> EncodeResult:
+    """Write a `.srt` beside each image subtitle sidecar (media-root-relative
+    `inputs`). The `.srt` files are the result's sidecars; no video is written."""
+
+    def _on_progress(pct: int) -> None:
+        state.pct = pct
+        state.current_pass = "text subtitles"
+
+    written = await make_text_subtitles([media_root / p for p in inputs], on_progress=_on_progress)
+    return EncodeResult(size=sum(p.stat().st_size for p in written), sidecars=written)
+
+
 _T = TypeVar("_T")
 
 
@@ -302,24 +321,33 @@ async def run() -> int:
             ):
                 await api.claim(cfg.task_id)
 
-                raw_input = Path(registered.raw_input_path)
-                final_output = Path(registered.media_root) / (registered.task.output_path or "")
+                media_root = Path(registered.media_root)
+                final_output = media_root / (registered.task.output_path or "")
                 preset = registered.transcode_preset
                 tool = preset.tool if preset is not None else TranscodeTool.NONE
                 duration = registered.source_track.duration_seconds
 
                 state = ProgressState()
+                ocr = registered.task.kind == TranscodeTaskKind.SUBTITLE_OCR
+                if ocr:
+                    duration = None
+
+                def _work() -> Coroutine[Any, Any, EncodeResult]:
+                    if ocr:
+                        return _run_subtitle_ocr(media_root, registered.input_sidecar_paths, state)
+                    return _run_encoder(
+                        tool=tool,
+                        preset=preset,
+                        raw_input=Path(registered.raw_input_path or ""),
+                        final_output=final_output,
+                        duration_seconds=duration,
+                        state=state,
+                    )
+
                 try:
                     async with HeartbeatPump(api=api, ws=ws, task_id=cfg.task_id, state=state) as pump:
                         result = await _encode_until_stopped(
-                            _run_encoder(
-                                tool=tool,
-                                preset=preset,
-                                raw_input=raw_input,
-                                final_output=final_output,
-                                duration_seconds=duration,
-                                state=state,
-                            ),
+                            _work(),
                             cancel_event=cancel_event,
                             revoked_event=pump.revoked,
                         )
@@ -330,6 +358,11 @@ async def run() -> int:
                 except ClaimRevoked:
                     logger.warning("encode stopped: the Backend revoked this task's claim")
                     rc = 0
+                except SubtitleOcrFailed as exc:
+                    logger.exception("subtitle OCR failed: %s", exc)
+                    kept = [p.relative_to(media_root).as_posix() for p in exc.written]
+                    await api.fail(cfg.task_id, last_error=_clip_error(str(exc)), sidecar_paths=kept)
+                    rc = 1
                 except Exception as exc:
                     logger.exception("encoder failed: %s", exc)
                     await api.fail(cfg.task_id, last_error=_clip_error(str(exc)))

@@ -38,6 +38,20 @@ describe('TranscodeCard', () => {
 		expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
 	});
 
+	describe('task kind', () => {
+		it('labels a subtitle OCR task and gives it no time estimate', () => {
+			renderComponent(TranscodeCard, { props: { job: createTranscodeTask({ kind: 'subtitle_ocr' }) } });
+			expect(screen.getByTestId('task-kind-chip')).toHaveTextContent('Text subtitles');
+			expect(screen.getByTitle('Estimated time remaining').textContent).not.toContain('~');
+		});
+
+		it('shows no kind chip and an estimate for an encode', () => {
+			renderComponent(TranscodeCard, { props: { job: createTranscodeTask({ kind: 'encode' }) } });
+			expect(screen.queryByTestId('task-kind-chip')).toBeNull();
+			expect(screen.getByTitle('Estimated time remaining').textContent).toContain('~');
+		});
+	});
+
 	describe('collapsed state', () => {
 		it('renders the output basename as the title', () => {
 			renderComponent(TranscodeCard, { props: { job: createTranscodeTask() } });

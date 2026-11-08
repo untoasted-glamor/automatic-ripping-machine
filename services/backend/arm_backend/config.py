@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     # = 'in_progress'` so the value survives Backend restarts.
     MAX_PARALLEL_TRANSCODES: int = 1
 
+    # How many subtitle OCR containers (text subtitles from a finished
+    # encode's image subtitles) may run at once. Counted apart from
+    # MAX_PARALLEL_TRANSCODES: each needs one CPU core and no GPU.
+    ARM_SUBTITLE_OCR_MAX_PARALLEL: int = 1
+
     # The image name the dispatcher passes to docker. Dev builds it locally as
     # arm-transcode:latest (the arm-transcode compose service, deploy.replicas:0,
     # built by `docker compose up --build` but never run); production overrides

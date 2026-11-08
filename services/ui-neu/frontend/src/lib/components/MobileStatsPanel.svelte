@@ -2,6 +2,7 @@
 	import { isGuest } from '$lib/stores/auth';
 	import { dashboard } from '$lib/stores/dashboard';
 	import { countRipping } from '$lib/utils/job-status';
+	import { encodeTasks } from '$lib/utils/transcode-kind';
 	import SidebarStats from './SidebarStats.svelte';
 
 	interface Props {
@@ -12,6 +13,8 @@
 	let { onnavigate }: Props = $props();
 
 	const rippingCount = $derived(countRipping($dashboard.active_jobs ?? []));
+	// Encodes only; a subtitle OCR task is not a transcode in this count.
+	const transcodingCount = $derived(encodeTasks($dashboard.active_transcodes).length);
 
 	// Links inside SidebarStats (storage rows) must also close the drawer, so
 	// catch link clicks at the panel root instead of per-anchor. Keyboard
@@ -84,9 +87,9 @@
 			{#if rippingCount > 0}
 				<p class="nav-item mobile-stats-ripping">{rippingCount} ripping</p>
 			{/if}
-			{#if $dashboard.active_transcodes.length > 0}
+			{#if transcodingCount > 0}
 				<a href="/transcoder" class="nav-item mobile-stats-transcoding">
-					{$dashboard.active_transcodes.length} transcoding
+					{transcodingCount} transcoding
 				</a>
 			{/if}
 			{#if $dashboard.transcoder_online && (Number($dashboard.transcoder_stats?.pending) || 0) > 0}

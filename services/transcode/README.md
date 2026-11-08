@@ -70,7 +70,7 @@ re-encodes those WAVs to FLAC/MP3 via ffmpeg.
 ## Volumes
 
 - `/raw:ro` — the rip-stage outputs (`title_tNN.mkv`, `track_NN.wav`,
-  `dump.iso`).
+  `dump.iso`). Not mounted for a subtitle OCR task.
 - `/media:rw` — final library destination. The transcoder writes
   `<final>.arm-inprogress`, fsyncs the parent dir, then `rename(2)` to
   `<final>` on success. On crash or kill, partial files stay for the
@@ -128,6 +128,24 @@ Cancellation: the dispatcher emits `task.cancel` on
 `transcoder.commands.{task_id}` over WS; the transcoder's main loop
 catches it via the WS subscription and SIGTERMs the encoder. After a
 10s grace, the dispatcher falls back to `docker stop`.
+
+## Subtitle OCR tasks
+
+A `transcode_tasks` row of kind `subtitle_ocr` runs in the same image and
+through the same lifecycle, in place of an encode:
+
+- Its parent is a finished encode task. Register returns that encode's PGS
+  sidecars (`input_sidecar_paths`, relative to `/media`) and no raw input or
+  preset.
+- For each sidecar, the container runs `python -m arm_transcode.subtitle_ocr`
+  (the bundled model, one ONNX Runtime thread) and writes the `.srt` beside
+  it (`….eng.2.sup` gives `….eng.2.srt`) through `*.arm-inprogress`.
+- `/complete` reports the `.srt` files as the task's sidecars. A sidecar that
+  fails fails the task; the `.srt` files already written stay and are sent
+  with `/fail`. A cancel removes them.
+- The dispatcher spawns it with `/media` but no `/raw` and no GPU, and
+  counts it against `ARM_SUBTITLE_OCR_MAX_PARALLEL` (default 1), not
+  `MAX_PARALLEL_TRANSCODES`.
 
 ## GPU transcoding (Phase 7b)
 

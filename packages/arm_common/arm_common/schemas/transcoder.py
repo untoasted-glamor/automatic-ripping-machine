@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from arm_common.enums import GpuStatus, GpuVendor
+from arm_common.enums import GpuStatus, GpuVendor, TranscodeTaskKind
 from arm_common.schemas.jobs import TrackView
 from arm_common.schemas.sessions import (
     SessionView,
@@ -40,18 +40,23 @@ class RegisterTranscoderRequest(BaseModel):
 class RegisterTranscoderResponse(BaseModel):
     """Bootstrap bundle the transcoder needs before it can claim + run.
 
-    `raw_input_path` is the absolute path the transcoder should read from
-    (`/raw/<job>/title_tNN.mkv` for video, `/raw/<job>/track_NN.wav` for
-    audio, `/raw/<job>/dump.iso` for data). `media_root` plus the task's
-    `output_path` is where the final file lands.
+    For an `encode` task, `raw_input_path` is the absolute path the
+    transcoder should read from (`/raw/<job>/title_tNN.mkv` for video,
+    `/raw/<job>/track_NN.wav` for audio, `/raw/<job>/dump.iso` for data).
+    `media_root` plus the task's `output_path` is where the final file lands.
+
+    A `subtitle_ocr` task has no raw input and no preset: it reads
+    `input_sidecar_paths` (the image subtitle sidecars of its parent encode
+    task, relative to `media_root`) and writes a `.srt` beside each.
     """
 
     task: TranscodeTaskView
     session: SessionView
     transcode_preset: TranscodePresetView | None
     source_track: TrackView
-    raw_input_path: str
+    raw_input_path: str | None
     media_root: str
+    input_sidecar_paths: list[str] = Field(default_factory=list)
 
 
 class ClaimTaskResponse(BaseModel):
@@ -76,11 +81,18 @@ class CompleteTaskRequest(BaseModel):
 
 class FailTaskRequest(BaseModel):
     last_error: str = Field(min_length=1)
+    # Files the task finished before it failed and leaves in place (a
+    # `subtitle_ocr` task keeps each `.srt` it wrote), relative to the media
+    # root and next to the task's `output_path`. Recorded like /complete's,
+    # so job delete removes them.
+    sidecar_paths: list[str] = Field(default_factory=list, max_length=256)
 
 
 class TranscodeStatsView(BaseModel):
+    # Encode tasks only; subtitle OCR tasks are counted on their own.
     tasks_by_status: dict[str, int]
     total_tasks: int
+    subtitle_ocr_tasks_by_status: dict[str, int] = Field(default_factory=dict)
     gpus_total: int
     gpus_available: int
     max_parallel: int
@@ -154,6 +166,7 @@ class EncoderAvailabilityView(BaseModel):
 
 class TranscodeWorkerView(BaseModel):
     task_id: str
+    kind: TranscodeTaskKind = TranscodeTaskKind.ENCODE
     claimed_by: str | None = None
     progress_pct: int
     claim_heartbeat_at: datetime | None = None

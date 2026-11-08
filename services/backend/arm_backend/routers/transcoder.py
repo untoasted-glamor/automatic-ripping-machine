@@ -12,6 +12,12 @@ Five endpoints per `03-protocol.md § Transcode container ↔ Backend`:
   reads.
 - `PATCH /tasks/{task_id}/complete` — `done`. Aggregator runs.
 - `PATCH /tasks/{task_id}/fail` — `failed` + `last_error`. Aggregator runs.
+
+A `subtitle_ocr` task (`arm_backend.subtitle_ocr_tasks`) uses the same five
+endpoints. Its register returns the image subtitle sidecars to read instead
+of a raw input and a preset; its /complete and /fail record the `.srt` files
+it wrote; and the aggregator ignores it, so it never changes the session
+application's status.
 """
 
 import logging
@@ -26,7 +32,8 @@ from arm_backend.auth import require_service_token
 from arm_backend.db import get_session
 from arm_backend.job_track_selection import effective_preset_view
 from arm_backend.log_context import job_log_context
-from arm_backend.sidecars import accepted_sidecars, drop_replaced_sidecars
+from arm_backend.sidecars import TEXT_SUBTITLE_SUFFIX, accepted_sidecars, drop_replaced_sidecars
+from arm_backend.subtitle_ocr_tasks import is_subtitle_ocr, subtitle_ocr_inputs
 from arm_backend.transcode_apply import aggregate_session_application
 from arm_backend.transcode_dispatcher import release_gpu_for_task
 from arm_backend.ws import WSHub
@@ -83,6 +90,16 @@ async def _bind_task_job(db: AsyncSession, task: TranscodeTask) -> None:
     bind_log_context(job_id=application.job_id if application is not None else None)
 
 
+def _accepted_sidecars(task: TranscodeTask, output_path: str, reported: list[str]) -> list[str] | None:
+    """The reported sidecars to record: next to the video, and for a
+    subtitle OCR task only the `.srt` files (never the `.sup` it read, which
+    is its encode task's)."""
+    kept = accepted_sidecars(output_path, reported)
+    if is_subtitle_ocr(task):
+        kept = [p for p in kept if p.lower().endswith(TEXT_SUBTITLE_SUFFIX)]
+    return kept or None
+
+
 def _require_owner(task: TranscodeTask, hostname: str | None) -> None:
     if not hostname:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing X-ARM-Hostname header")
@@ -124,6 +141,22 @@ async def register(
             await db.execute(select(TranscodePreset).where(col(TranscodePreset.id) == sess.transcode_preset_id))
         ).scalar_one_or_none()
     track = (await db.execute(select(Track).where(col(Track.id) == task.source_track_id))).scalar_one()
+
+    if is_subtitle_ocr(task):
+        # Reads its encode's subtitle sidecars under the media root; the raw
+        # rip and the preset don't matter to it.
+        inputs, reason = await subtitle_ocr_inputs(db, task)
+        if reason is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"subtitle OCR task cannot run: {reason}")
+        return RegisterTranscoderResponse(
+            task=TranscodeTaskView.model_validate(task),
+            session=SessionView.model_validate(sess),
+            transcode_preset=None,
+            source_track=TrackView.model_validate(track),
+            raw_input_path=None,
+            media_root=request_media_root(),
+            input_sidecar_paths=inputs,
+        )
 
     if not track.output_path:
         raise HTTPException(
@@ -265,7 +298,7 @@ async def complete(
     task.status = TranscodeTaskStatus.DONE
     task.progress_pct = 100
     task.output_path = req.output_path
-    task.sidecar_paths = accepted_sidecars(req.output_path, req.sidecar_paths) or None
+    task.sidecar_paths = _accepted_sidecars(task, req.output_path, req.sidecar_paths)
     if task.replaced_sidecar_paths:
         # The new video has replaced the old one: its subtitle files go now.
         drop_replaced_sidecars(Path(request_media_root()), task.replaced_sidecar_paths, task.sidecar_paths)
@@ -284,6 +317,7 @@ async def complete(
         event_type="task.completed",
         payload={
             "task_id": task.id,
+            "kind": task.kind.value,
             "session_application_id": task.session_application_id,
             "output_path": task.output_path,
             "sidecar_paths": task.sidecar_paths or [],
@@ -334,6 +368,9 @@ async def fail(
         )
     task.status = TranscodeTaskStatus.FAILED
     task.last_error = req.last_error
+    if req.sidecar_paths and task.output_path:
+        # Files it finished and left in place (a subtitle OCR task's `.srt`).
+        task.sidecar_paths = _accepted_sidecars(task, task.output_path, req.sidecar_paths)
     await release_gpu_for_task(db, task.id)
     await db.flush()
 
@@ -347,6 +384,7 @@ async def fail(
         event_type="task.failed",
         payload={
             "task_id": task.id,
+            "kind": task.kind.value,
             "session_application_id": task.session_application_id,
             "last_error": task.last_error,
         },

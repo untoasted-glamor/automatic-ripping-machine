@@ -12,6 +12,10 @@ An overwrite re-apply evicts the old task but keeps its sidecars: the new
 task carries them as `replaced_sidecar_paths` and `drop_replaced_sidecars`
 removes them only when it completes, when its video has replaced the old one.
 A failed re-encode leaves the old video with its subtitles.
+
+A `subtitle_ocr` task (`arm_backend.subtitle_ocr_tasks`) reads its encode
+task's image subtitle sidecars (`IMAGE_SUBTITLE_SUFFIXES`) and records the
+`.srt` files it writes beside them as its own sidecars.
 """
 
 from __future__ import annotations
@@ -23,6 +27,16 @@ from pathlib import Path, PurePosixPath
 from arm_common.fileops import is_within
 
 logger = logging.getLogger("arm_backend.sidecars")
+
+# Image subtitle sidecars a `subtitle_ocr` task can read (PGS from Blu-ray).
+IMAGE_SUBTITLE_SUFFIXES = (".sup",)
+# What a `subtitle_ocr` task writes.
+TEXT_SUBTITLE_SUFFIX = ".srt"
+
+
+def image_subtitle_sidecars(sidecar_paths: Iterable[str] | None) -> list[str]:
+    """The image subtitles among recorded sidecars, in their recorded order."""
+    return [p for p in sidecar_paths or () if PurePosixPath(p).suffix.lower() in IMAGE_SUBTITLE_SUFFIXES]
 
 
 def is_sidecar_of(output_path: str, candidate: str) -> bool:

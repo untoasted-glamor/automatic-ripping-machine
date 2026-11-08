@@ -23,6 +23,8 @@
 	import { isAdmin } from '$lib/stores/auth';
 	import { transcoderEnabled, transcodeRuntimeEnabled } from '$lib/stores/config';
 	import GpuInventoryRow from '$lib/components/GpuInventoryRow.svelte';
+	import TaskKindChip from '$lib/components/TaskKindChip.svelte';
+	import { encodeTasks } from '$lib/utils/transcode-kind';
 
 	const emptyJobs: TranscodeTaskView[] = [];
 
@@ -51,8 +53,12 @@
 	};
 
 	let s = $derived($stats);
+	// Encode tasks; subtitle OCR tasks are counted apart (ocrStatusCount).
 	function statusCount(status: string): number {
 		return s.tasks_by_status?.[status] ?? 0;
+	}
+	function ocrStatusCount(status: string): number {
+		return s.subtitle_ocr_tasks_by_status?.[status] ?? 0;
 	}
 
 	function formatDuration(startISO: string | null, endISO?: string | null): string | null {
@@ -127,7 +133,8 @@
 
 	// Auto-refresh jobs when any are queued or in progress.
 	$effect(() => {
-		if (statusCount('in_progress') > 0 || statusCount('queued') > 0) {
+		const live = ['in_progress', 'queued'].some((st) => statusCount(st) > 0 || ocrStatusCount(st) > 0);
+		if (live) {
 			startJobsPolling();
 		} else {
 			stopJobsPolling();
@@ -285,6 +292,7 @@
 		{:else}
 			<!-- Worker pool + Stats cards -->
 			{@const w = $workers}
+			{@const encodeWorkers = encodeTasks(w)}
 			<div in:fade={fadeIn} out:fade={fadeOut} class="stack">
 				<!-- Worker pool status -->
 				<div class="panel">
@@ -292,7 +300,7 @@
 						<div class="flex items-center gap-2">
 							<div class="transcoder-page-worker-dot" data-active={w.length > 0}></div>
 							<span class="transcoder-page-worker-title">
-								Workers {w.length}/{s.max_parallel} active
+								Workers {encodeWorkers.length}/{s.max_parallel} active
 							</span>
 						</div>
 						<span class="transcoder-page-worker-summary">
@@ -320,6 +328,7 @@
 											title={worker.output_path ?? worker.source_track_id}
 										>
 											Task #{worker.task_id}
+											<TaskKindChip kind={worker.kind} />
 											{#if worker.claimed_by}
 												<span class="transcoder-page-worker-claimed"> &mdash; {worker.claimed_by}</span>
 											{/if}
@@ -452,6 +461,7 @@
 										{:else}
 											<span class="chip transcoder-page-no-job-chip">No job</span>
 										{/if}
+										<TaskKindChip kind={job.kind} />
 										{#if job.attempts > 0}
 											<span class="transcoder-page-attempt">Attempt {job.attempts}</span>
 										{/if}

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderComponent, screen, cleanup, waitFor } from '$lib/test-utils';
 import TranscoderPage from '../+page.svelte';
 import { setTranscoderEnabled, setTranscodeRuntimeEnabled } from '$lib/stores/config';
-import { fetchTranscoderJobs, fetchTranscoderStats } from '$lib/api/transcoder';
+import { fetchTranscoderJobs, fetchTranscoderStats, fetchTranscoderWorkers } from '$lib/api/transcoder';
 import { fetchGpus } from '$lib/api/gpus';
 
 vi.mock('$lib/stores/auth', async () => {
@@ -257,6 +257,53 @@ describe('Transcoder Page', () => {
 			);
 		});
 	});
+});
+
+it('labels subtitle OCR tasks and counts only encodes as workers', async () => {
+	const ocrTask = {
+		id: 't-ocr',
+		session_application_id: 'sap_1',
+		job_id: 'job_abc',
+		source_track_id: 'track-1',
+		kind: 'subtitle_ocr' as const,
+		parent_task_id: 't-1',
+		status: 'in_progress' as const,
+		output_path: '/media/transcode/movie1.mkv',
+		progress_pct: 50,
+		attempts: 1,
+		claimed_by: 'arm-transcode-ocr',
+		claim_heartbeat_at: '2025-06-15T10:05:00Z',
+		last_error: null,
+		created_at: '2025-06-15T10:00:00Z',
+		updated_at: '2025-06-15T10:05:00Z'
+	};
+	vi.mocked(fetchTranscoderJobs).mockResolvedValueOnce([ocrTask]);
+	vi.mocked(fetchTranscoderWorkers).mockResolvedValue([
+		{
+			task_id: 't-1',
+			kind: 'encode',
+			claimed_by: 'gpu-0',
+			progress_pct: 50,
+			claim_heartbeat_at: '2025-06-15T10:05:00Z',
+			gpu_id: 'gpu-0',
+			source_track_id: 'track-1',
+			output_path: '/media/transcode/movie1.mkv'
+		},
+		{
+			task_id: 't-ocr',
+			kind: 'subtitle_ocr',
+			claimed_by: 'arm-transcode-ocr',
+			progress_pct: 50,
+			claim_heartbeat_at: '2025-06-15T10:05:00Z',
+			gpu_id: null,
+			source_track_id: 'track-1',
+			output_path: '/media/transcode/movie1.mkv'
+		}
+	]);
+	renderComponent(TranscoderPage);
+	await waitFor(() => expect(screen.getByText('Workers 1/2 active')).toBeInTheDocument());
+	await waitFor(() => expect(screen.getAllByTestId('task-kind-chip')).toHaveLength(2)); // worker + card
+	vi.mocked(fetchTranscoderWorkers).mockReset();
 });
 
 it('renders per-GPU inventory rows with status and a manage link', async () => {

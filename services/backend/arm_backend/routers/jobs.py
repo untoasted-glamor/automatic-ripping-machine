@@ -51,6 +51,7 @@ from arm_common import (
     SessionApplication,
     SessionApplicationStatus,
     TrackStatus,
+    TranscodeTaskKind,
     TranscodeTaskStatus,
     bind_log_context,
     User,
@@ -344,9 +345,10 @@ async def list_jobs(
             task_rows = (
                 (
                     await session.execute(
-                        select(TranscodeTask).where(
-                            col(TranscodeTask.session_application_id).in_(list(sa_id_to_job.keys()))
-                        )
+                        select(TranscodeTask)
+                        .where(col(TranscodeTask.session_application_id).in_(list(sa_id_to_job.keys())))
+                        # The job's transcode rollup counts encodes only.
+                        .where(col(TranscodeTask.kind) == TranscodeTaskKind.ENCODE)
                     )
                 )
                 .scalars()
@@ -421,8 +423,16 @@ async def get_job_detail(
     sa_ids = [sa.id for sa in sas]
     job_tasks: list[TranscodeTask] = []
     if sa_ids:
+        # Encodes only: the rollup and each track's transcode status are about
+        # its video, not the subtitle OCR task that shares its track.
         job_tasks = list(
-            (await session.execute(select(TranscodeTask).where(col(TranscodeTask.session_application_id).in_(sa_ids))))
+            (
+                await session.execute(
+                    select(TranscodeTask)
+                    .where(col(TranscodeTask.session_application_id).in_(sa_ids))
+                    .where(col(TranscodeTask.kind) == TranscodeTaskKind.ENCODE)
+                )
+            )
             .scalars()
             .all()
         )
@@ -481,6 +491,7 @@ async def _previous_rip_view(db: AsyncSession, job: Job) -> PreviousRipView | No
                     select(TranscodeTask)
                     .where(col(TranscodeTask.source_track_id).in_(track_ids))
                     .where(col(TranscodeTask.status) == TranscodeTaskStatus.DONE)
+                    .where(col(TranscodeTask.kind) == TranscodeTaskKind.ENCODE)
                 )
             )
             .scalars()
@@ -814,22 +825,28 @@ async def _resolve_media_outputs(db: AsyncSession, job_id: str) -> list[Path]:
     because the destination already existed ends FAILED naming that folder,
     which belongs to another job or the user.
 
-    A task's subtitle sidecars (`sidecar_paths`) count as its outputs too."""
+    A task's subtitle sidecars (`sidecar_paths`) count as its outputs too,
+    and so do the `.srt` files a FAILED subtitle OCR task finished and kept.
+    An OCR task's `output_path` is its encode's video, listed once."""
     media_root = Path(settings.MEDIA_ROOT)
     rows = (
         await db.execute(
-            select(TranscodeTask.output_path, TranscodeTask.sidecar_paths)
+            select(TranscodeTask.output_path, TranscodeTask.sidecar_paths, TranscodeTask.status, TranscodeTask.kind)
             .join(Track, col(TranscodeTask.source_track_id) == col(Track.id))
             .where(col(Track.job_id) == job_id)
-            .where(col(TranscodeTask.status) == TranscodeTaskStatus.DONE)
+            .where(col(TranscodeTask.status).in_([TranscodeTaskStatus.DONE, TranscodeTaskStatus.FAILED]))
             .where(col(TranscodeTask.output_path).is_not(None))
         )
     ).all()
     outputs: list[Path] = []
-    for output_path, sidecar_paths in rows:
-        outputs.append(media_root / output_path)
+    for output_path, sidecar_paths, task_status, kind in rows:
+        if task_status == TranscodeTaskStatus.DONE:
+            if kind == TranscodeTaskKind.ENCODE:
+                outputs.append(media_root / output_path)
+        elif kind != TranscodeTaskKind.SUBTITLE_OCR:
+            continue
         outputs.extend(sidecar_files(media_root, sidecar_paths))
-    return outputs
+    return list(dict.fromkeys(outputs))
 
 
 def _prune_empty_dirs(leaf_parent: Path, root: Path) -> int:

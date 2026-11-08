@@ -36,6 +36,10 @@ _EXPECTED: dict[tuple[str, str], str] = {
     # session_application (which itself cascades from jobs) takes its
     # tasks with it. Already CASCADE since 0001.
     ("transcode_tasks", "session_application_id"): "CASCADE",
+    # transcode_tasks.parent_task_id → transcode_tasks: SET NULL so deleting
+    # an encode row leaves its subtitle OCR task and the `.srt` files that
+    # task recorded (job delete removes them).
+    ("transcode_tasks", "parent_task_id"): "SET NULL",
     # tracks → jobs, etc. — sanity-check the rest of the cascade chain
     # so a future model rewrite can't quietly downgrade these.
     ("tracks", "job_id"): "CASCADE",

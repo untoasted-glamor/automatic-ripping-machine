@@ -101,8 +101,8 @@ class BackendClient:
         r.raise_for_status()
         return TranscodeTaskView.model_validate(r.json())
 
-    async def fail(self, task_id: str, *, last_error: str) -> TranscodeTaskView:
-        req = FailTaskRequest(last_error=last_error)
+    async def fail(self, task_id: str, *, last_error: str, sidecar_paths: list[str] | None = None) -> TranscodeTaskView:
+        req = FailTaskRequest(last_error=last_error, sidecar_paths=sidecar_paths or [])
         r = await self._client.patch(
             f"/api/transcoder/tasks/{task_id}/fail",
             json=req.model_dump(),

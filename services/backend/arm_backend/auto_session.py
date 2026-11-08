@@ -55,6 +55,7 @@ from arm_common import (
     TrackStatus,
     TranscodePreset,
     TranscodeTask,
+    TranscodeTaskKind,
     TranscodeTaskStatus,
     TrackKind,
     with_log_context,
@@ -1086,6 +1087,10 @@ async def _evict_colliding_tasks(db: AsyncSession, paths: list[str], *, job_id: 
     stay on disk with the old video; the caller hands them to the replacing
     task (`replaced_sidecar_paths`), which removes them once its own video
     has landed.
+
+    A subtitle OCR task's `output_path` is its encode's video, so it is
+    evicted with that encode and its `.srt` files are handed on the same way;
+    one still running refuses the overwrite like a running encode.
     """
     own_application_ids = [
         row.id
@@ -1173,7 +1178,11 @@ _EVICTABLE_STATES: tuple[TranscodeTaskStatus, ...] = (
 
 
 async def _retry_failed_tasks(db: AsyncSession, tasks: list[TranscodeTask]) -> int:
-    """Reset every FAILED task back to QUEUED so the dispatcher retries it.
+    """Reset every FAILED encode task back to QUEUED so the dispatcher retries it.
+
+    A failed subtitle OCR task is left for the operator (the Transcoder
+    page's Retry): it doesn't count toward the application's status, so it
+    must not reopen a finished application.
 
     Clears `last_error`, `claimed_by`, `claim_heartbeat_at`, and `progress_pct`
     so a fresh spawn looks like a brand-new task. `attempts` is preserved —
@@ -1182,7 +1191,7 @@ async def _retry_failed_tasks(db: AsyncSession, tasks: list[TranscodeTask]) -> i
     """
     reset = 0
     for task in tasks:
-        if task.status != TranscodeTaskStatus.FAILED:
+        if task.status != TranscodeTaskStatus.FAILED or task.kind != TranscodeTaskKind.ENCODE:
             continue
         task.status = TranscodeTaskStatus.QUEUED
         task.last_error = None

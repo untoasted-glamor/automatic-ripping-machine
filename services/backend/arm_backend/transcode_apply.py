@@ -42,7 +42,7 @@ from arm_common import (
     TranscodePreset,
 )
 from arm_common.encoders import EncoderSpec, get_encoder, gpu_could_serve, gpu_is_eligible
-from arm_common.enums import SessionApplicationStatus, TranscodeTaskStatus, TranscodeTool
+from arm_common.enums import SessionApplicationStatus, TranscodeTaskKind, TranscodeTaskStatus, TranscodeTool
 from arm_common.models import SessionApplication, TranscodeTask
 from arm_common.schemas import CollisionInfo
 
@@ -291,7 +291,9 @@ async def find_collisions(
     paths: list[str],
     media_root: Path,
 ) -> list[CollisionInfo]:
-    """Return any `output_path` already claimed by a live task or sitting on disk."""
+    """Return any `output_path` already claimed by a live encode task or
+    sitting on disk. A subtitle OCR task's `output_path` names its encode's
+    video, so it claims nothing of its own."""
     if not paths:
         return []
 
@@ -299,6 +301,7 @@ async def find_collisions(
         select(TranscodeTask.id, TranscodeTask.output_path, TranscodeTask.session_application_id)
         .where(col(TranscodeTask.output_path).in_(paths))
         .where(col(TranscodeTask.status).in_(LIVE_STATES))
+        .where(col(TranscodeTask.kind) == TranscodeTaskKind.ENCODE)
     )
     result = await db.execute(stmt)
     db_hits: dict[str, str] = {}
@@ -477,9 +480,19 @@ async def aggregate_session_application(
     Called from the transcoder router on every task complete/fail. Mutates
     `application` in place when transitioning to a terminal state and stamps
     `completed_at`. Caller is responsible for committing.
+
+    Only encode tasks count: a subtitle OCR task's failure shows on that task
+    alone, and one queued after the encodes finished doesn't reopen the
+    application.
     """
     rows = (
-        (await db.execute(select(TranscodeTask).where(col(TranscodeTask.session_application_id) == application.id)))
+        (
+            await db.execute(
+                select(TranscodeTask)
+                .where(col(TranscodeTask.session_application_id) == application.id)
+                .where(col(TranscodeTask.kind) == TranscodeTaskKind.ENCODE)
+            )
+        )
         .scalars()
         .all()
     )

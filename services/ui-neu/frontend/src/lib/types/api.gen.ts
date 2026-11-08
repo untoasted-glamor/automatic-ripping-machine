@@ -1711,6 +1711,10 @@ export type FailTaskRequest = {
      * Last Error
      */
     last_error: string;
+    /**
+     * Sidecar Paths
+     */
+    sidecar_paths?: Array<string>;
 };
 
 /**
@@ -3838,10 +3842,14 @@ export type RegisterTranscoderRequest = {
  *
  * Bootstrap bundle the transcoder needs before it can claim + run.
  *
- * `raw_input_path` is the absolute path the transcoder should read from
- * (`/raw/<job>/title_tNN.mkv` for video, `/raw/<job>/track_NN.wav` for
- * audio, `/raw/<job>/dump.iso` for data). `media_root` plus the task's
- * `output_path` is where the final file lands.
+ * For an `encode` task, `raw_input_path` is the absolute path the
+ * transcoder should read from (`/raw/<job>/title_tNN.mkv` for video,
+ * `/raw/<job>/track_NN.wav` for audio, `/raw/<job>/dump.iso` for data).
+ * `media_root` plus the task's `output_path` is where the final file lands.
+ *
+ * A `subtitle_ocr` task has no raw input and no preset: it reads
+ * `input_sidecar_paths` (the image subtitle sidecars of its parent encode
+ * task, relative to `media_root`) and writes a `.srt` beside each.
  */
 export type RegisterTranscoderResponse = {
     task: TranscodeTaskView;
@@ -3851,11 +3859,15 @@ export type RegisterTranscoderResponse = {
     /**
      * Raw Input Path
      */
-    raw_input_path: string;
+    raw_input_path: string | null;
     /**
      * Media Root
      */
     media_root: string;
+    /**
+     * Input Sidecar Paths
+     */
+    input_sidecar_paths?: Array<string>;
 };
 
 /**
@@ -5558,6 +5570,12 @@ export type TranscodeStatsView = {
      */
     total_tasks: number;
     /**
+     * Subtitle Ocr Tasks By Status
+     */
+    subtitle_ocr_tasks_by_status?: {
+        [key: string]: number;
+    };
+    /**
      * Gpus Total
      */
     gpus_total: number;
@@ -5574,6 +5592,19 @@ export type TranscodeStatsView = {
      */
     queued_encode_tasks?: number;
 };
+
+/**
+ * TranscodeTaskKind
+ *
+ * What a `transcode_tasks` row runs in its transcoder container.
+ *
+ * `encode` writes a video (or audio) file from a raw rip. `subtitle_ocr`
+ * reads the image subtitle sidecars its parent encode task wrote (`.sup`)
+ * and writes a text subtitle (`.srt`) beside each; it needs no GPU, no
+ * preset and no raw rip, and never changes its session application's
+ * status.
+ */
+export type TranscodeTaskKind = 'encode' | 'subtitle_ocr';
 
 /**
  * TranscodeTaskStatus
@@ -5601,6 +5632,11 @@ export type TranscodeTaskView = {
      */
     source_track_id: string;
     status: TranscodeTaskStatus;
+    kind?: TranscodeTaskKind;
+    /**
+     * Parent Task Id
+     */
+    parent_task_id?: string | null;
     /**
      * Output Path
      */
@@ -5652,6 +5688,7 @@ export type TranscodeWorkerView = {
      * Task Id
      */
     task_id: string;
+    kind?: TranscodeTaskKind;
     /**
      * Claimed By
      */

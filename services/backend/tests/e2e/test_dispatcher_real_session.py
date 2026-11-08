@@ -56,6 +56,7 @@ from arm_common import (  # noqa: E402
     Track,
     TranscodePreset,
     TranscodeTask,
+    TranscodeTaskKind,
     TranscodeTaskStatus,
     TranscodeTool,
 )
@@ -541,6 +542,102 @@ async def test_failed_per_task_commit_does_not_abort_tick(tmp_path: Path) -> Non
             assert pt1.status == TranscodeTaskStatus.QUEUED
             # The task queued behind it was never blocked.
             assert pt2.status == TranscodeTaskStatus.DONE
+        finally:
+            await engine.dispose()
+    finally:
+        _restore_column_types(saved_types)
+
+
+async def test_unrunnable_ocr_task_fails_and_the_next_ocr_task_still_spawns(tmp_path: Path) -> None:
+    """A subtitle OCR task whose encode row is gone is failed before spawn (its
+    own commit), and the OCR task behind it still spawns in the same tick,
+    against a real session; neither touches the encode's application."""
+    saved_types = _retype_pg_columns_to_json()
+    try:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/x.db")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(SQLModel.metadata.create_all)
+            session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+            now = datetime.now(UTC)
+
+            def ocr(task_id: str, parent: str | None, at: datetime) -> TranscodeTask:
+                return TranscodeTask(
+                    id=task_id,
+                    session_application_id="sap_enc",
+                    source_track_id="trk_e",
+                    kind=TranscodeTaskKind.SUBTITLE_OCR,
+                    parent_task_id=parent,
+                    status=TranscodeTaskStatus.QUEUED,
+                    attempts=0,
+                    progress_pct=0,
+                    output_path="Movie (2020)/Movie.mkv",
+                    created_at=at,
+                )
+
+            async with session_factory() as db:
+                db.add_all(
+                    [
+                        SessionApplication(
+                            id="sap_enc",
+                            session_id="ses_enc",
+                            job_id="job_01JZXR7K3M5Q8N4VWA00000001",
+                            status=SessionApplicationStatus.DONE,
+                            overwrite=False,
+                        ),
+                        TranscodeTask(
+                            id="txt_enc",
+                            session_application_id="sap_enc",
+                            source_track_id="trk_e",
+                            status=TranscodeTaskStatus.DONE,
+                            attempts=1,
+                            progress_pct=100,
+                            output_path="Movie (2020)/Movie.mkv",
+                            sidecar_paths=["Movie (2020)/Movie.eng.sup"],
+                            created_at=now - timedelta(minutes=5),
+                        ),
+                        ocr("txt_orphan", None, now),
+                        ocr("txt_ocr", "txt_enc", now + timedelta(seconds=1)),
+                    ]
+                )
+                await db.commit()
+
+            settings = Settings.model_construct(
+                DATABASE_URL="x",
+                ARM_SERVICE_TOKEN="tok-service",
+                MAX_PARALLEL_TRANSCODES=1,
+                ARM_SUBTITLE_OCR_MAX_PARALLEL=1,
+                ARM_TRANSCODE_IMAGE="arm-transcode:latest",
+                ARM_HOST_RAW_PATH="/raw",
+                ARM_HOST_MEDIA_PATH="/media",
+                ARM_HOST_LOGS_PATH="/logs",
+                ARM_HOST_CERTS_PATH="/certs",
+                ARM_DOCKER_NETWORK="armv3_default",
+                ARM_TRANSCODE_DISPATCH_INTERVAL_SECONDS=5,
+                MEDIA_ROOT=str(tmp_path / "media"),
+                ARM_TRANSCODE_DOCKER_HOST="",
+                ARM_TRANSCODE_BACKEND_URL="",
+                ARM_LOG_LEVEL="INFO",
+                ARM_TRANSCODE_PUID="",
+                ARM_TRANSCODE_PGID="",
+                ARM_RENDER_GID="",
+            )
+            docker = MagicMock()
+            disp = TranscodeDispatcher(settings, session_factory, docker, WSHub())
+
+            async with session_factory() as db:
+                assert await disp.spawn_pending(db) == 1  # must not raise
+
+            assert [c.kwargs["labels"] for c in docker.containers.run.call_args_list] == [{"arm.task_id": "txt_ocr"}]
+            assert "/raw" not in docker.containers.run.call_args.kwargs["volumes"]
+            async with session_factory() as db:
+                orphan = (await db.execute(select(TranscodeTask).where(TranscodeTask.id == "txt_orphan"))).scalar_one()
+                sap = (
+                    await db.execute(select(SessionApplication).where(SessionApplication.id == "sap_enc"))
+                ).scalar_one()
+            assert orphan.status == TranscodeTaskStatus.FAILED
+            assert orphan.last_error == "subtitle OCR cannot run: its encode task is gone"
+            assert sap.status == SessionApplicationStatus.DONE
         finally:
             await engine.dispose()
     finally:

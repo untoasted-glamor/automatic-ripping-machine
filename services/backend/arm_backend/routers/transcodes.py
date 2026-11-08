@@ -25,7 +25,7 @@ from arm_backend.config import settings
 from arm_backend.transcode_dispatcher import count_queued_encode_tasks, max_parallel_transcodes, release_gpu_for_task
 from arm_backend.db import get_session
 from arm_backend.routers.logs import LOG_DIR
-from arm_common import Gpu, GpuStatus, SessionApplication, TranscodeTaskStatus, User
+from arm_common import Gpu, GpuStatus, SessionApplication, TranscodeTaskKind, TranscodeTaskStatus, User
 from arm_common.encoders import gpu_is_usable
 from arm_common.models import TranscodeTask
 from arm_common.schemas import TranscodeStatsView, TranscodeTaskView, TranscodeWorkerView
@@ -88,16 +88,23 @@ async def transcode_stats(
     db: AsyncSession = Depends(get_session),
 ) -> TranscodeStatsView:
     tasks = list((await db.execute(select(TranscodeTask))).scalars().all())
+    # Encodes and subtitle OCR tasks are counted apart: the Transcoder page's
+    # totals and worker slots are about encodes.
     by_status: dict[str, int] = {}
+    ocr_by_status: dict[str, int] = {}
+    encodes = 0
     for t in tasks:
         key = t.status.value if hasattr(t.status, "value") else str(t.status)
-        by_status[key] = by_status.get(key, 0) + 1
+        counts = ocr_by_status if t.kind == TranscodeTaskKind.SUBTITLE_OCR else by_status
+        counts[key] = counts.get(key, 0) + 1
+        encodes += t.kind != TranscodeTaskKind.SUBTITLE_OCR
     gpus = list((await db.execute(select(Gpu))).scalars().all())
     # Idle and usable by the dispatcher (enabled, probed, an encoder verified).
     gpus_available = len([g for g in gpus if g.status == GpuStatus.AVAILABLE and gpu_is_usable(g)])
     return TranscodeStatsView(
         tasks_by_status=by_status,
-        total_tasks=len(tasks),
+        total_tasks=encodes,
+        subtitle_ocr_tasks_by_status=ocr_by_status,
         gpus_total=len(gpus),
         gpus_available=gpus_available,
         max_parallel=await max_parallel_transcodes(db),
@@ -120,6 +127,7 @@ async def transcode_workers(
     return [
         TranscodeWorkerView(
             task_id=t.id,
+            kind=t.kind,
             claimed_by=t.claimed_by,
             progress_pct=t.progress_pct,
             claim_heartbeat_at=t.claim_heartbeat_at,

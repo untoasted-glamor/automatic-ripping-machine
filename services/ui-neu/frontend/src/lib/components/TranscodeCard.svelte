@@ -5,6 +5,8 @@
 	import { elapsedTime, etaTime, statusAccentVar } from '$lib/utils/format';
 	import TimeAgo from './TimeAgo.svelte';
 	import SkeletonCard from './SkeletonCard.svelte';
+	import TaskKindChip from './TaskKindChip.svelte';
+	import { isSubtitleOcr } from '$lib/utils/transcode-kind';
 	import { slide } from 'svelte/transition';
 
 	interface Props {
@@ -21,7 +23,10 @@
 	let hasError = $derived(!!job?.last_error);
 	let isActive = $derived(job?.status === 'in_progress');
 	let accentVar = $derived(statusAccentVar(job?.status));
-	let etaDisplay = $derived(isActive && job?.created_at ? etaTime(job.created_at, job.progress_pct) : null);
+	// Encodes only: a subtitle OCR task's progress counts files, not time.
+	let etaDisplay = $derived(
+		isActive && job?.created_at && !isSubtitleOcr(job) ? etaTime(job.created_at, job.progress_pct) : null
+	);
 
 	function toggle(e: MouseEvent) {
 		if ((e.target as HTMLElement).closest('a, button:not(.row-toggle)')) return;
@@ -53,6 +58,7 @@
 				<div class="shrink-0">
 					<StatusBadge status={job.status} />
 				</div>
+				<TaskKindChip kind={job.kind} />
 
 				<!-- Spacer -->
 				<span class="flex-1"></span>

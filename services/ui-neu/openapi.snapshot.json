@@ -13090,6 +13090,14 @@
             "type": "string",
             "minLength": 1,
             "title": "Last Error"
+          },
+          "sidecar_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 256,
+            "title": "Sidecar Paths"
           }
         },
         "type": "object",
@@ -16927,12 +16935,26 @@
             "$ref": "#/components/schemas/TrackView"
           },
           "raw_input_path": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Raw Input Path"
           },
           "media_root": {
             "type": "string",
             "title": "Media Root"
+          },
+          "input_sidecar_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Input Sidecar Paths"
           }
         },
         "type": "object",
@@ -16945,7 +16967,7 @@
           "media_root"
         ],
         "title": "RegisterTranscoderResponse",
-        "description": "Bootstrap bundle the transcoder needs before it can claim + run.\n\n`raw_input_path` is the absolute path the transcoder should read from\n(`/raw/<job>/title_tNN.mkv` for video, `/raw/<job>/track_NN.wav` for\naudio, `/raw/<job>/dump.iso` for data). `media_root` plus the task's\n`output_path` is where the final file lands."
+        "description": "Bootstrap bundle the transcoder needs before it can claim + run.\n\nFor an `encode` task, `raw_input_path` is the absolute path the\ntranscoder should read from (`/raw/<job>/title_tNN.mkv` for video,\n`/raw/<job>/track_NN.wav` for audio, `/raw/<job>/dump.iso` for data).\n`media_root` plus the task's `output_path` is where the final file lands.\n\nA `subtitle_ocr` task has no raw input and no preset: it reads\n`input_sidecar_paths` (the image subtitle sidecars of its parent encode\ntask, relative to `media_root`) and writes a `.srt` beside each."
       },
       "RenameRequest": {
         "properties": {
@@ -20195,6 +20217,13 @@
             "type": "integer",
             "title": "Total Tasks"
           },
+          "subtitle_ocr_tasks_by_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Subtitle Ocr Tasks By Status"
+          },
           "gpus_total": {
             "type": "integer",
             "title": "Gpus Total"
@@ -20222,6 +20251,15 @@
           "max_parallel"
         ],
         "title": "TranscodeStatsView"
+      },
+      "TranscodeTaskKind": {
+        "type": "string",
+        "enum": [
+          "encode",
+          "subtitle_ocr"
+        ],
+        "title": "TranscodeTaskKind",
+        "description": "What a `transcode_tasks` row runs in its transcoder container.\n\n`encode` writes a video (or audio) file from a raw rip. `subtitle_ocr`\nreads the image subtitle sidecars its parent encode task wrote (`.sup`)\nand writes a text subtitle (`.srt`) beside each; it needs no GPU, no\npreset and no raw rip, and never changes its session application's\nstatus."
       },
       "TranscodeTaskStatus": {
         "type": "string",
@@ -20260,6 +20298,21 @@
           },
           "status": {
             "$ref": "#/components/schemas/TranscodeTaskStatus"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TranscodeTaskKind",
+            "default": "encode"
+          },
+          "parent_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Task Id"
           },
           "output_path": {
             "anyOf": [
@@ -20384,6 +20437,10 @@
           "task_id": {
             "type": "string",
             "title": "Task Id"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TranscodeTaskKind",
+            "default": "encode"
           },
           "claimed_by": {
             "anyOf": [

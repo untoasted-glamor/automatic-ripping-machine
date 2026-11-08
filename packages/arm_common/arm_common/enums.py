@@ -337,6 +337,19 @@ class TranscodeTaskStatus(StrEnum):
     FAILED = "failed"
 
 
+class TranscodeTaskKind(StrEnum):
+    """What a `transcode_tasks` row runs in its transcoder container.
+
+    `encode` writes a video (or audio) file from a raw rip. `subtitle_ocr`
+    reads the image subtitle sidecars its parent encode task wrote (`.sup`)
+    and writes a text subtitle (`.srt`) beside each; it needs no GPU, no
+    preset and no raw rip, and never changes its session application's
+    status."""
+
+    ENCODE = "encode"
+    SUBTITLE_OCR = "subtitle_ocr"
+
+
 class GpuVendor(StrEnum):
     VAAPI = "vaapi"
     NVENC = "nvenc"

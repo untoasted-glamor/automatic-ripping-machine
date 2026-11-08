@@ -438,3 +438,134 @@ async def test_run_encoder_abcde_reports_no_sidecars(monkeypatch, tmp_path) -> N
         state=ProgressState(),
     )
     assert result == m.EncodeResult(size=4)
+
+
+# ---------------------------------------------------------------- run(): a subtitle OCR task
+
+
+class _FakeApi:
+    def __init__(self, registered: object) -> None:
+        self.registered = registered
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def register(self, *, task_id: str, hw_caps: object) -> object:
+        return self.registered
+
+    async def claim(self, task_id: str) -> None:
+        self.calls.append(("claim", {}))
+
+    async def complete(self, task_id: str, **kwargs: object) -> None:
+        self.calls.append(("complete", kwargs))
+
+    async def fail(self, task_id: str, **kwargs: object) -> None:
+        self.calls.append(("fail", kwargs))
+
+    async def close(self) -> None:
+        pass
+
+
+class _FakeWs:
+    def __init__(self, **kwargs: object) -> None:
+        pass
+
+    async def __aenter__(self) -> "_FakeWs":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        pass
+
+    async def subscribe(self, topic: str, callback: object) -> None:
+        pass
+
+    async def wait_until_connected(self, timeout: float) -> None:
+        pass
+
+
+class _FakePump:
+    def __init__(self, **kwargs: object) -> None:
+        import asyncio
+
+        self.revoked = asyncio.Event()
+
+    async def __aenter__(self) -> "_FakePump":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        pass
+
+
+def _ocr_run(monkeypatch, tmp_path, make):
+    from types import SimpleNamespace
+
+    import arm_transcode.main as m
+    from arm_common import TranscodeTaskKind
+
+    registered = SimpleNamespace(
+        task=SimpleNamespace(
+            kind=TranscodeTaskKind.SUBTITLE_OCR,
+            source_track_id="trk_1",
+            session_application_id="sap_1",
+            output_path="Show/Show - S01E01.mkv",
+        ),
+        source_track=SimpleNamespace(job_id="job_1", duration_seconds=1400),
+        transcode_preset=None,
+        raw_input_path=None,
+        media_root=str(tmp_path),
+        input_sidecar_paths=["Show/Show - S01E01.eng.sup", "Show/Show - S01E01.fra.sup"],
+    )
+    api = _FakeApi(registered)
+    for name, value in {
+        "ARM_TRANSCODE_TASK_ID": "txt_1",
+        "ARM_BACKEND_URL": "https://b",
+        "ARM_SERVICE_TOKEN": "t",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(m, "configure_service_logging", lambda *a, **k: None)
+    monkeypatch.setattr(m, "BackendClient", lambda **kwargs: api)
+    monkeypatch.setattr(m, "WSClient", _FakeWs)
+    monkeypatch.setattr(m, "HeartbeatPump", _FakePump)
+    monkeypatch.setattr(m, "make_text_subtitles", make)
+    return m, api
+
+
+async def test_run_subtitle_ocr_task_completes_with_its_srt(monkeypatch, tmp_path) -> None:
+    seen: list[list[str]] = []
+
+    async def make(sidecars, *, on_progress):
+        seen.append([p.relative_to(tmp_path).as_posix() for p in sidecars])
+        written = [p.with_suffix(".srt") for p in sidecars]
+        for p in written:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("1\n")
+        return written
+
+    m, api = _ocr_run(monkeypatch, tmp_path, make)
+    assert await m.run() == 0
+    assert seen == [["Show/Show - S01E01.eng.sup", "Show/Show - S01E01.fra.sup"]]
+    name, kwargs = api.calls[-1]
+    assert name == "complete"
+    assert kwargs == {
+        "output_path": "Show/Show - S01E01.mkv",
+        "size_bytes": 4,
+        "duration_seconds": None,
+        "sidecar_paths": ["Show/Show - S01E01.eng.srt", "Show/Show - S01E01.fra.srt"],
+    }
+
+
+async def test_run_subtitle_ocr_task_failure_reports_the_kept_srt(monkeypatch, tmp_path) -> None:
+    from arm_transcode.subtitle_ocr.task import SubtitleOcrFailed
+
+    async def make(sidecars, *, on_progress):
+        raise SubtitleOcrFailed(
+            "Show - S01E01.fra.sup: subtitle OCR failed (rc=1): PgsError", [sidecars[0].with_suffix(".srt")]
+        )
+
+    m, api = _ocr_run(monkeypatch, tmp_path, make)
+    assert await m.run() == 1
+    assert api.calls[-1] == (
+        "fail",
+        {
+            "last_error": "Show - S01E01.fra.sup: subtitle OCR failed (rc=1): PgsError",
+            "sidecar_paths": ["Show/Show - S01E01.eng.srt"],
+        },
+    )

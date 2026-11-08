@@ -1,5 +1,6 @@
 """Subtitle OCR (arm_transcode.subtitle_ocr): PGS decode, areas and events, the reader's
-preprocessing and decode, italics, SRT, and the runner and check, with a fake reader.
+preprocessing and decode, italics, SRT, the runner and check, and the transcode task
+(one reader process per sidecar), with a fake reader.
 
 No model is loaded: `OnnxLineReader` is exercised with a fake ONNX session. The real
 model is checked by `devtools/subtitle-ocr.sh --check` (see services/transcode/README.md).
@@ -7,8 +8,10 @@ model is checked by `devtools/subtitle-ocr.sh --check` (see services/transcode/R
 
 from __future__ import annotations
 
+import asyncio
 import json
 import struct
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -19,7 +22,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from arm_common.subtitle_ocr import BUNDLED_MODEL
 from arm_transcode.subtitle_ocr import __main__ as cli
-from arm_transcode.subtitle_ocr import areas, check, engine, italic, pgs, run, srt
+from arm_transcode.subtitle_ocr import areas, check, engine, italic, pgs, run, srt, task
 
 # ---------------------------------------------------------------- a small PGS encoder
 
@@ -602,3 +605,147 @@ def test_bundled_model_matches_the_dockerfile_and_notice() -> None:
     assert f"ARG OCR_MODEL_URL={BUNDLED_MODEL.source}" in dockerfile
     assert f"/opt/arm/models/{BUNDLED_MODEL.name}.onnx" == BUNDLED_MODEL.path
     assert BUNDLED_MODEL.sha256 in notice and f"{BUNDLED_MODEL.size:,}" in notice and BUNDLED_MODEL.source in notice
+
+
+# ---------------------------------------------------------------- the transcode task
+
+# The reader process with a fake engine: every line reads `L<width>`.
+FAKE_READER_SCRIPT = """
+import sys
+from arm_transcode.subtitle_ocr import __main__ as cli, engine
+
+class Fake:
+    def read(self, lines):
+        return [(f"L{line.shape[1]}", 0.99) for line in lines]
+
+engine.OnnxLineReader = lambda threads=1: Fake()
+sys.exit(cli.main(sys.argv[1:]))
+"""
+
+
+@pytest.fixture
+def fake_reader_process(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    script = tmp_path_factory.mktemp("reader") / "fake_reader.py"
+    script.write_text(FAKE_READER_SCRIPT)
+    commands: list[list[str]] = []
+    real_command = task.reader_command
+
+    def command(sidecar: Path, threads: int = task.THREADS) -> list[str]:
+        real = real_command(sidecar, threads)
+        commands.append(real)
+        return [sys.executable, str(script), *real[3:]]
+
+    monkeypatch.setattr(task, "reader_command", command)
+    return commands
+
+
+def _script(monkeypatch: pytest.MonkeyPatch, code: str) -> None:
+    monkeypatch.setattr(task, "reader_command", lambda sidecar, threads=1: [sys.executable, "-c", code, str(sidecar)])
+
+
+async def test_task_reads_each_sidecar_in_its_own_process(
+    sign_then_dialogue: bytes, tmp_path: Path, fake_reader_process: list[list[str]]
+) -> None:
+    sups = [tmp_path / "v.eng.sup", tmp_path / "v.eng.2.sup"]
+    for sup in sups:
+        sup.write_bytes(sign_then_dialogue)
+    (tmp_path / "v.eng.srt").write_text("old")  # replaced: the task decided to write it
+    progress: list[int] = []
+    written = await task.make_text_subtitles(sups, on_progress=progress.append)
+    assert written == [tmp_path / "v.eng.srt", tmp_path / "v.eng.2.srt"]
+    assert all("{\\an8}" in p.read_text(encoding="utf-8") for p in written)
+    assert progress == [0, 50, 100]
+    assert fake_reader_process[0][1:] == [
+        "-m",
+        "arm_transcode.subtitle_ocr",
+        "--overwrite",
+        "--threads",
+        "1",
+        str(sups[0]),
+    ]
+    assert not list(tmp_path.glob("*.arm-inprogress"))
+
+
+async def test_task_failure_keeps_the_finished_srt(
+    sign_then_dialogue: bytes, tmp_path: Path, fake_reader_process: list[list[str]]
+) -> None:
+    good, bad, never = tmp_path / "v.eng.sup", tmp_path / "v.fra.sup", tmp_path / "v.spa.sup"
+    good.write_bytes(sign_then_dialogue)
+    bad.write_bytes(b"nope" * 10)
+    never.write_bytes(sign_then_dialogue)
+    with pytest.raises(task.SubtitleOcrFailed, match=r"v\.fra\.sup: subtitle OCR failed \(rc=1\): PgsError") as caught:
+        await task.make_text_subtitles([good, bad, never], on_progress=lambda pct: None)
+    assert caught.value.written == [tmp_path / "v.eng.srt"]
+    assert (tmp_path / "v.eng.srt").exists() and not (tmp_path / "v.spa.srt").exists()
+
+
+async def test_task_reports_the_stderr_tail_of_a_reader_that_printed_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _script(monkeypatch, "import sys; print('not json'); sys.stderr.write('a\\nboom\\n'); sys.exit(3)")
+    with pytest.raises(RuntimeError, match=r"x\.sup: subtitle OCR failed \(rc=3\): a\nboom"):
+        await task.read_sidecar(tmp_path / "x.sup")
+
+
+async def test_task_refuses_a_report_without_an_srt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _script(monkeypatch, "import json; print(json.dumps({'sidecar': 'x', 'skipped': 'srt exists'}))")
+    with pytest.raises(RuntimeError, match=r"rc=0"):
+        await task.read_sidecar(tmp_path / "x.sup")
+
+
+async def test_task_cancel_kills_the_reader_and_removes_its_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    partial = tmp_path / "x.srt.arm-inprogress"
+    _script(monkeypatch, f"import pathlib, time; pathlib.Path({str(partial)!r}).write_text('half'); time.sleep(60)")
+    reading = asyncio.ensure_future(task.read_sidecar(tmp_path / "x.sup"))
+    for _ in range(200):
+        if partial.exists():
+            break
+        await asyncio.sleep(0.05)
+    assert partial.exists()
+    reading.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(reading, timeout=10)
+    assert not partial.exists()
+
+
+async def test_task_cancel_removes_the_srt_already_written(tmp_path: Path) -> None:
+    first = tmp_path / "v.eng.srt"
+    blocked = asyncio.Event()
+
+    async def reader(sidecar: Path) -> Path:
+        if sidecar.name == "v.eng.sup":
+            first.write_text("1")
+            return first
+        blocked.set()
+        await asyncio.sleep(60)
+        raise AssertionError("not cancelled")
+
+    making = asyncio.ensure_future(
+        task.make_text_subtitles(
+            [tmp_path / "v.eng.sup", tmp_path / "v.fra.sup"], on_progress=lambda pct: None, reader=reader
+        )
+    )
+    await blocked.wait()
+    making.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await making
+    assert not first.exists()
+
+
+async def test_main_runs_a_subtitle_ocr_task(
+    sign_then_dialogue: bytes, tmp_path: Path, fake_reader_process: list[list[str]]
+) -> None:
+    import arm_transcode.main as m
+    from arm_transcode.heartbeat import ProgressState
+
+    folder = tmp_path / "Show"
+    folder.mkdir()
+    (folder / "Show - S01E01.eng.sup").write_bytes(sign_then_dialogue)
+    state = ProgressState()
+    result = await m._run_subtitle_ocr(tmp_path, ["Show/Show - S01E01.eng.sup"], state)
+    srt_file = folder / "Show - S01E01.eng.srt"
+    assert result.sidecars == [srt_file]
+    assert result.size == srt_file.stat().st_size > 0
+    assert (state.pct, state.current_pass) == (100, "text subtitles")
