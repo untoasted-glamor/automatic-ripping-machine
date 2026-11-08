@@ -158,7 +158,9 @@ COPY services/backend/pyproject.toml /app/services/backend/pyproject.toml
 COPY services/ripper/pyproject.toml /app/services/ripper/pyproject.toml
 COPY services/transcode /app/services/transcode
 
-RUN uv sync --frozen --package arm_transcode --no-dev
+# --no-cache: uv's download cache would otherwise stay in this layer (about
+# 170 MB with onnxruntime and numpy) and is never used again.
+RUN uv sync --frozen --package arm_transcode --no-dev --no-cache
 
 COPY services/_common/docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
