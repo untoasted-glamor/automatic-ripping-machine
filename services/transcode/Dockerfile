@@ -123,6 +123,28 @@ RUN apt-get update \
 # Replace Debian's HW-less HandBrakeCLI with the HW-enabled build (NVENC/QSV/VCE).
 COPY --from=handbrake-builder /HandBrake/build/HandBrakeCLI /usr/bin/HandBrakeCLI
 
+# The text-line model for subtitle OCR (`arm_transcode.subtitle_ocr`): ARM never
+# downloads a model at run time, so it is built in here. Pinned by SHA-256 (the
+# build fails if the file changes); keep these values in step with
+# `arm_common/subtitle_ocr.py` (a test compares them) and the "Bundled model"
+# entry in services/transcode/README.md. Fetched from RapidOCR's model repo at
+# its v3.9.2 tag; if that is unreachable, the same bytes come out of the
+# rapidocr 3.9.2 wheel on PyPI.
+ARG OCR_MODEL_URL=https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx
+ARG OCR_MODEL_WHEEL_URL=https://files.pythonhosted.org/packages/py3/r/rapidocr/rapidocr-3.9.2-py3-none-any.whl
+ARG OCR_MODEL_SHA256=6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884
+RUN set -eux; \
+    mkdir -p /opt/arm/models; \
+    cd /opt/arm/models; \
+    if ! curl -fsSL --retry 3 --max-time 600 -o PP-OCRv6_rec_small.onnx "$OCR_MODEL_URL"; then \
+        curl -fsSL --retry 3 --max-time 600 -o /tmp/rapidocr.whl "$OCR_MODEL_WHEEL_URL"; \
+        python -c "import shutil, zipfile; shutil.copyfileobj(zipfile.ZipFile('/tmp/rapidocr.whl').open('rapidocr/models/PP-OCRv6_rec_small.onnx'), open('PP-OCRv6_rec_small.onnx', 'wb'))"; \
+        rm -f /tmp/rapidocr.whl; \
+    fi; \
+    echo "$OCR_MODEL_SHA256  PP-OCRv6_rec_small.onnx" | sha256sum -c -; \
+    chmod 0644 PP-OCRv6_rec_small.onnx
+COPY services/transcode/models/PP-OCRv6_rec_small.NOTICE /opt/arm/models/PP-OCRv6_rec_small.NOTICE
+
 COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /uvx /usr/local/bin/
 
 WORKDIR /app

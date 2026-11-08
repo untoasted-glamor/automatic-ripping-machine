@@ -19,6 +19,24 @@ ffmpeg against the raw input, writes the output through the
 - `ffmpeg`, `flac` — audio re-encoder for music sessions.
 - `arm_transcode` (this package) — claim/heartbeat client + encoder
   wrappers.
+- **Bundled model** — `/opt/arm/models/PP-OCRv6_rec_small.onnx`, the
+  text-line model `arm_transcode.subtitle_ocr` uses to turn PGS subtitle
+  sidecars (`.sup`) into `.srt`. ARM never downloads a model at run time; the
+  image build fetches this one and fails if its checksum changes.
+
+  | | |
+  |---|---|
+  | File | `PP-OCRv6_rec_small.onnx`, 21,234,383 bytes |
+  | SHA-256 | `6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884` |
+  | Version | as published by RapidOCR 3.9.2 |
+  | Source | `https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx`; fallback: the `rapidocr==3.9.2` wheel on PyPI (`rapidocr/models/`, same bytes) |
+  | Origin | PaddleOCR's PP-OCRv6 recognition model, converted to ONNX by RapidOCR |
+  | Licence | Apache-2.0; notice at `/opt/arm/models/PP-OCRv6_rec_small.NOTICE` |
+
+  The same values are in `arm_common/subtitle_ocr.py` (`BUNDLED_MODEL`) and
+  the `Dockerfile`'s `OCR_MODEL_*` build args; `tests/test_subtitle_ocr.py`
+  fails if they drift. To make `.srt` files by hand, or score the OCR against
+  a hand-read reference, see `devtools/subtitle-ocr.sh`.
 
 The Dockerfile builds three runtime targets from that common `base`:
 

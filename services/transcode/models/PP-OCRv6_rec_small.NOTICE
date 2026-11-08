@@ -1,0 +1,17 @@
+PP-OCRv6_rec_small.onnx
+=======================
+
+The text-line recognition model that arm-transcode uses to turn image
+subtitles (PGS) into text subtitles (.srt). It is built into the image; ARM
+never downloads a model at run time.
+
+  File     PP-OCRv6_rec_small.onnx (ONNX, with its character list in the model metadata)
+  Size     21,234,383 bytes
+  SHA-256  6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884
+  Version  as published by RapidOCR 3.9.2
+  Source   https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx
+           (the same bytes ship in the rapidocr 3.9.2 wheel on PyPI, rapidocr/models/)
+  Origin   PaddleOCR's PP-OCRv6 recognition model (https://github.com/PaddlePaddle/PaddleOCR),
+           converted to ONNX by RapidOCR (https://github.com/RapidAI/RapidOCR)
+  Licence  Apache License 2.0 (RapidOCR and PaddleOCR). The full text is in
+           /usr/share/common-licenses/Apache-2.0 in this image.
