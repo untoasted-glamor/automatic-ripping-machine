@@ -231,6 +231,59 @@ async def test_vaapi_available_claims_gpu_and_injects_devices() -> None:
     assert db.rows["gpus"][0].claimed_by_task_id == "txt_1"
 
 
+async def test_an_unclaimed_start_releases_its_gpu_for_the_next_spawn() -> None:
+    # The container exited before claiming (a refused register): the GPU it
+    # was given must not stay BUSY, or the task waits for itself for ever.
+    db = _build_db(
+        encoder="vaapi_h265",
+        gpus=[(GpuVendor.VAAPI, GpuStatus.AVAILABLE, ["h264", "h265"], None)],
+    )
+    docker = MagicMock()
+    docker.containers.list.return_value = []
+    disp = TranscodeDispatcher(_settings(), _db_factory(db), docker, WSHub())
+    assert await disp.spawn_pending(db) == 1
+    assert db.rows["gpus"][0].status == GpuStatus.BUSY
+
+    spawned_at, ocr = disp._starting["txt_1"]
+    disp._starting["txt_1"] = (spawned_at - 91, ocr)
+    assert await disp.spawn_pending(db) == 1
+
+    assert docker.containers.run.call_count == 2
+    assert docker.containers.run.call_args.kwargs["environment"]["ARM_GPU_DEVICE"] == "/dev/dri/renderD128"
+    assert (db.rows["gpus"][0].status, db.rows["gpus"][0].claimed_by_task_id) == (GpuStatus.BUSY, "txt_1")
+    assert db.rows["transcode_tasks"][0].attempts == 1
+
+
+async def test_a_queued_task_spawns_on_the_gpu_it_still_holds() -> None:
+    # After a restart (no `_starting` entry) a QUEUED task may still hold the
+    # GPU an earlier, never-claimed start was given; startup keeps that claim.
+    db = _build_db(
+        encoder="vaapi_h265",
+        gpus=[(GpuVendor.VAAPI, GpuStatus.BUSY, ["h264", "h265"], "txt_1")],
+    )
+    docker = MagicMock()
+    disp = TranscodeDispatcher(_settings(), _db_factory(db), docker, WSHub())
+
+    assert await disp.spawn_pending(db) == 1
+
+    assert docker.containers.run.call_args.kwargs["environment"]["ARM_GPU_DEVICE"] == "/dev/dri/renderD128"
+    assert (db.rows["gpus"][0].status, db.rows["gpus"][0].claimed_by_task_id) == (GpuStatus.BUSY, "txt_1")
+
+
+async def test_a_gpu_held_by_another_task_stays_busy() -> None:
+    db = _build_db(
+        encoder="vaapi_h265",
+        gpus=[(GpuVendor.VAAPI, GpuStatus.BUSY, ["h264", "h265"], "txt_other")],
+    )
+    docker = MagicMock()
+    disp = TranscodeDispatcher(_settings(), _db_factory(db), docker, WSHub())
+
+    assert await disp.spawn_pending(db) == 0
+
+    docker.containers.run.assert_not_called()
+    assert db.rows["gpus"][0].claimed_by_task_id == "txt_other"
+
+
 async def test_qsv_available_uses_devices_injection() -> None:
     db = _build_db(
         encoder="any_h265",

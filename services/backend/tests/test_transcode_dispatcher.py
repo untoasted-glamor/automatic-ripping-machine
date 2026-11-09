@@ -548,15 +548,101 @@ async def test_a_claimed_task_frees_its_starting_entry() -> None:
     assert set(disp._starting) == {"txt_2"}
 
 
-async def test_a_container_that_never_claims_is_spawned_again_after_the_stale_threshold() -> None:
+def _expire_start(disp: TranscodeDispatcher, task_id: str = "txt_1") -> None:
+    spawned_at, ocr = disp._starting[task_id]
+    disp._starting[task_id] = (spawned_at - 91, ocr)
+
+
+async def test_a_container_that_never_claims_is_removed_counted_and_spawned_again() -> None:
+    # Its register was refused, or it crashed while starting: nothing will
+    # claim the task, so the start is a failed attempt.
+    db = _app_with_one_task(TranscodeTaskStatus.QUEUED, created_at=datetime.now(UTC))
+    docker = MagicMock()
+    holder = MagicMock()
+    docker.containers.list.return_value = [holder]
+    disp = TranscodeDispatcher(_settings(), _db_factory(db), docker, WSHub())
+    assert await disp.spawn_pending(db) == 1
+
+    _expire_start(disp)
+    assert await disp.spawn_pending(db) == 1
+
+    docker.containers.list.assert_called_once_with(all=True, filters={"label": "arm.task_id=txt_1"})
+    holder.remove.assert_called_once_with(force=True)
+    assert docker.containers.run.call_count == 2
+    task = db.rows["transcode_tasks"][0]
+    assert (task.status, task.attempts) == (TranscodeTaskStatus.QUEUED, 1)
+    assert disp.last_spawn_error is None  # the new spawn worked
+
+
+async def test_a_task_no_container_claims_fails_after_max_attempts() -> None:
+    db = _app_with_one_task(TranscodeTaskStatus.QUEUED, created_at=datetime.now(UTC), attempts=2)
+    docker = MagicMock()
+    docker.containers.list.return_value = []
+    disp = TranscodeDispatcher(_settings(), _db_factory(db), docker, WSHub())
+    assert await disp.spawn_pending(db) == 1
+
+    _expire_start(disp)
+    assert await disp.spawn_pending(db) == 0
+
+    task = db.rows["transcode_tasks"][0]
+    assert task.status == TranscodeTaskStatus.FAILED
+    assert task.attempts == 3
+    assert task.last_error == (
+        "transcode container could not start (attempts=3): the transcoder did not claim the task within 90 s"
+    )
+    assert docker.containers.run.call_count == 1
+    assert disp._starting == {}
+
+
+async def test_an_unclaimed_start_waits_while_its_container_cannot_be_removed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     db = _app_with_one_task(TranscodeTaskStatus.QUEUED, created_at=datetime.now(UTC))
     docker = MagicMock()
     disp = TranscodeDispatcher(_settings(), _db_factory(db), docker, WSHub())
     assert await disp.spawn_pending(db) == 1
 
-    disp._starting["txt_1"] -= 91
+    _expire_start(disp)
+    docker.containers.list.side_effect = RuntimeError("docker socket read timed out")
+    with caplog.at_level(logging.WARNING):
+        assert await disp.spawn_pending(db) == 0
+
+    assert "unclaimed transcoder not removed; still waiting task_id=txt_1" in caplog.text
+    assert "txt_1" in disp._starting
+    assert db.rows["transcode_tasks"][0].attempts == 0
+    docker.containers.run.assert_called_once()
+
+
+async def test_a_failure_counting_an_unclaimed_start_does_not_abort_the_tick(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    db = _app_with_one_task(TranscodeTaskStatus.QUEUED, created_at=datetime.now(UTC))
+    docker = MagicMock()
+    docker.containers.list.return_value = []
+    disp = TranscodeDispatcher(_settings(), _db_factory(db), docker, WSHub())
     assert await disp.spawn_pending(db) == 1
-    assert docker.containers.run.call_count == 2
+
+    async def _boom(*_: Any) -> None:
+        raise RuntimeError("db went away")
+
+    monkeypatch.setattr(disp, "_count_failed_spawn", _boom)
+    _expire_start(disp)
+    with caplog.at_level(logging.ERROR):
+        assert await disp.spawn_pending(db) == 1
+
+    assert "could not count the unclaimed start task_id=txt_1" in caplog.text
+
+
+async def test_a_deleted_task_frees_its_starting_entry() -> None:
+    db = _two_queued_encode_tasks()
+    docker = MagicMock()
+    disp = TranscodeDispatcher(_settings(MAX_PARALLEL_TRANSCODES=1), _db_factory(db), docker, WSHub())
+    assert await disp.spawn_pending(db) == 1
+
+    db.rows["transcode_tasks"].pop(0)
+    assert await disp.spawn_pending(db) == 1
+
+    assert set(disp._starting) == {"txt_2"}
 
 
 async def test_a_name_conflict_removes_the_holder_without_counting_an_attempt() -> None:

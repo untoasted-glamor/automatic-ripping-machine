@@ -324,12 +324,13 @@ class TranscodeDispatcher:
         # querying live; it is only ever stale for the window between a GPU
         # being enabled and the next tick or claim.
         self._enabled_gpu_vendors: set[GpuVendor] = set()
-        # Encode tasks this process spawned a container for that have not
-        # claimed yet: task id -> time.monotonic() of the spawn. A task stays
-        # QUEUED until its transcoder calls /claim, which can take longer than
-        # a tick on a loaded host; until then it is not spawned again and its
-        # container counts against the parallel limit.
-        self._starting: dict[str, float] = {}
+        # Tasks this process spawned a container for that have not claimed
+        # yet: task id -> (time.monotonic() of the spawn, is subtitle OCR). A
+        # task stays QUEUED until its transcoder calls /claim, which can take
+        # longer than a tick on a loaded host; until then it is not spawned
+        # again and its container counts against its parallel limit. See
+        # `_settle_starting` for how an entry ends.
+        self._starting: dict[str, tuple[float, bool]] = {}
 
     @property
     def docker_client(self) -> Any:
@@ -683,6 +684,8 @@ class TranscodeDispatcher:
         # `probe()` (cached, blocking) is consulted once per tick, and only
         # when an encode task is actually ready to spawn.
         host_probe: tuple[bool, str | None] | None = None
+        # Before the slot count: a start given up on here frees its slot.
+        await self._settle_starting(db)
 
         in_progress = (
             (
@@ -712,19 +715,7 @@ class TranscodeDispatcher:
             .all()
         )
         queued_ids = [row.id for row in queued_rows]
-        # Read now: any commit below expires these objects (see docstring).
-        ocr_ids = {row.id for row in queued_rows if is_subtitle_ocr(row)}
-        # A starting task leaves the map once it is claimed (or failed or
-        # deleted), or when its container has not claimed it within the
-        # stale threshold; the next spawn then removes that container.
-        now = time.monotonic()
-        queued_id_set = set(queued_ids)
-        self._starting = {
-            task_id: spawned_at
-            for task_id, spawned_at in self._starting.items()
-            if task_id in queued_id_set and now - spawned_at < self._settings.ARM_TRANSCODE_STALE_THRESHOLD_SECONDS
-        }
-        starting_ocr = sum(1 for task_id in self._starting if task_id in ocr_ids)
+        starting_ocr = sum(1 for _, is_ocr in self._starting.values() if is_ocr)
         encode_slots -= len(self._starting) - starting_ocr
         ocr_slots -= starting_ocr
         spawned = 0
@@ -869,7 +860,7 @@ class TranscodeDispatcher:
                     # thread doesn't put any DB access off the loop.
                     await asyncio.to_thread(self._spawn_container, task, assignment=assignment)
                     started = True
-                    self._starting[task_id] = time.monotonic()
+                    self._starting[task_id] = (time.monotonic(), ocr)
                     if ocr:
                         spawned_ocr += 1
                     else:
@@ -950,6 +941,68 @@ class TranscodeDispatcher:
             )
         await db.commit()
         return spawned + spawned_ocr
+
+    async def _settle_starting(self, db: AsyncSession) -> None:
+        """End the `_starting` entries whose wait is over.
+
+        An entry ends when its task is no longer QUEUED (claimed, failed,
+        cancelled or deleted). Its status is read here rather than taken from
+        the spawn loop's `SKIP LOCKED` select, which leaves out a row another
+        transaction holds (a /claim in flight) as if it were gone.
+
+        A task still QUEUED after the stale threshold was never claimed: its
+        container exited first (register refused it, or it crashed while
+        starting) or is still not up. Its containers are removed, its GPU
+        claim is released, and the start counts toward
+        ARM_TRANSCODE_MAX_ATTEMPTS, so a task no container can claim ends
+        failed instead of being spawned again every threshold for ever. If
+        docker can't confirm the containers are gone, the entry stays and is
+        retried next tick: a spawn now would only hit their name.
+        """
+        if not self._starting:
+            return
+        tasks = (
+            (
+                await db.execute(
+                    select(TranscodeTask)
+                    .where(col(TranscodeTask.id).in_(list(self._starting)))
+                    .execution_options(populate_existing=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        queued = {task.id: task.session_application_id for task in tasks if task.status == TranscodeTaskStatus.QUEUED}
+        threshold = self._settings.ARM_TRANSCODE_STALE_THRESHOLD_SECONDS
+        now = time.monotonic()
+        for task_id, (spawned_at, _) in list(self._starting.items()):
+            if task_id not in queued:
+                del self._starting[task_id]
+                continue
+            if now - spawned_at < threshold:
+                continue
+            application_id = queued[task_id]
+            application = (
+                await db.execute(select(SessionApplication).where(col(SessionApplication.id) == application_id))
+            ).scalar_one_or_none()
+            job_id = application.job_id if application is not None else None
+            with with_log_context(job_id=job_id, session_application_id=application_id):
+                try:
+                    await asyncio.to_thread(self._remove_task_containers, task_id)
+                except Exception as exc:
+                    logger.warning("unclaimed transcoder not removed; still waiting task_id=%s: %s", task_id, exc)
+                    continue
+                del self._starting[task_id]
+                self.last_spawn_error = f"the transcoder did not claim the task within {threshold} s"
+                logger.warning(
+                    "transcoder did not claim task_id=%s within %d s; counting a failed start", task_id, threshold
+                )
+                try:
+                    await release_gpu_for_task(db, task_id)
+                    await self._count_failed_spawn(db, task_id)
+                except Exception:
+                    logger.exception("could not count the unclaimed start task_id=%s", task_id)
+                    await db.rollback()
 
     def _log_probe_hold(self, host_probe: tuple[bool, str | None]) -> None:
         ok, detail = host_probe
@@ -1042,6 +1095,15 @@ class TranscodeDispatcher:
         # SQLAlchemy ORM and the in-memory test fake doesn't grok them. The
         # gpus table is small (1-4 rows on real hosts) so the cost is trivial.
         all_gpus = (await db.execute(select(Gpu))).scalars().all()
+        for g in all_gpus:
+            if g.claimed_by_task_id == task.id:
+                # Left by an earlier start of this task that never claimed it
+                # (a restart forgets `_starting`, and startup keeps a QUEUED
+                # task's claim). The task is being spawned again, so no
+                # container of it holds the device; without this it would
+                # wait for its own GPU for ever.
+                g.status = GpuStatus.AVAILABLE
+                g.claimed_by_task_id = None
         self._enabled_gpu_vendors = {g.vendor for g in all_gpus if g.enabled}
         # An `any_*` WebM preset must not land on a VAAPI device, whose
         # ffmpeg engine cannot write WebM (a pinned vaapi_* + WebM preset is
