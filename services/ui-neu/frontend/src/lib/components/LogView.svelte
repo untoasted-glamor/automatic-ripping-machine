@@ -102,7 +102,11 @@
 		if (!entry.timestamp) return '';
 		const d = new Date(entry.timestamp);
 		if (Number.isNaN(d.getTime())) return '';
-		return d.toLocaleTimeString([], { hour12: false });
+		const time = d.toLocaleTimeString([], { hour12: false });
+		// A job's log can hold lines from days ago; without the date they read
+		// as happening now.
+		if (d.toDateString() === new Date().toDateString()) return time;
+		return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
 	}
 
 	function isAtBottom(): boolean {

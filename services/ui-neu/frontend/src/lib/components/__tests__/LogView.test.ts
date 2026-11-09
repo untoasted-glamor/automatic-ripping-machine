@@ -43,6 +43,21 @@ describe('LogView', () => {
 		expect(screen.getByText('transcode line')).toBeInTheDocument();
 	});
 
+	it('dates a line from an earlier day, not one from today', () => {
+		const today = new Date();
+		const earlier = new Date(today.getTime() - 7 * 24 * 3600 * 1000);
+		const line = (timestamp: string, event: string): LogEntry => ({ ...ENTRIES[0], timestamp, event });
+		renderComponent(LogView, {
+			props: { entries: [line(earlier.toISOString(), 'old line'), line(today.toISOString(), 'new line')] }
+		});
+		const times = screen.getAllByTestId('job-log-line').map((row) => row.querySelector('.log-view-time')?.textContent);
+		const day = earlier.toLocaleDateString([], { month: 'short', day: 'numeric' });
+		expect(times).toEqual([
+			`${day} ${earlier.toLocaleTimeString([], { hour12: false })}`,
+			today.toLocaleTimeString([], { hour12: false })
+		]);
+	});
+
 	it('shows the empty state when there are no lines', () => {
 		renderComponent(LogView, { props: { entries: [] } });
 		expect(screen.getByText('No log lines for this job yet.')).toBeInTheDocument();
