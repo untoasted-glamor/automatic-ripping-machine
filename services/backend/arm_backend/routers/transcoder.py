@@ -17,7 +17,8 @@ A `subtitle_ocr` task (`arm_backend.subtitle_ocr_tasks`) uses the same five
 endpoints. Its register returns the image subtitle sidecars to read instead
 of a raw input and a preset; its /complete and /fail record the `.srt` files
 it wrote; and the aggregator ignores it, so it never changes the session
-application's status.
+application's status. An encode's /complete queues its OCR task when the
+job's text subtitles choice is on (`subtitle_ocr_tasks.queue_after_encode`).
 """
 
 import logging
@@ -33,7 +34,7 @@ from arm_backend.db import get_session
 from arm_backend.job_track_selection import effective_preset_view
 from arm_backend.log_context import job_log_context
 from arm_backend.sidecars import TEXT_SUBTITLE_SUFFIX, accepted_sidecars, drop_replaced_sidecars
-from arm_backend.subtitle_ocr_tasks import is_subtitle_ocr, subtitle_ocr_inputs
+from arm_backend.subtitle_ocr_tasks import is_subtitle_ocr, queue_after_encode, subtitle_ocr_inputs
 from arm_backend.transcode_apply import aggregate_session_application
 from arm_backend.transcode_dispatcher import release_gpu_for_task
 from arm_backend.ws import WSHub
@@ -329,6 +330,10 @@ async def complete(
         track_id=task.source_track_id,
         session=db,
     )
+
+    # Text subtitles from the image subtitles it just wrote, when the job's
+    # choice is on. Only now: the `.sup` files exist from this point.
+    await queue_after_encode(db, task, job_id, hub)
 
     outcome = await aggregate_session_application(db, application)
     if outcome.event_type is not None:

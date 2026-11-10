@@ -23,6 +23,7 @@ from arm_common.schemas.identity import IdentityClaims
 from arm_common.schemas.job_metadata import ExternalIds, JobMetadata, MusicMeta
 from arm_common.schemas.ripper import ScanTitle
 from arm_common.schemas.sessions import TrackSelectionSettings
+from arm_common.schemas.subtitle_ocr import JobSubtitleOcrChoice
 
 
 class ResolveRequest(BaseModel):
@@ -359,6 +360,9 @@ class TrackView(BaseModel):
     # music, data tracks). NOT the rip status (`status` above) — this is the
     # transcode phase. Display-only; set by get_job_detail, not a Track column.
     transcode_status: TranscodeTaskStatus | None = None
+    # Status of the track's most recent text subtitles task (`subtitle_ocr`),
+    # None when it has none. Display-only, like `transcode_status`.
+    subtitle_ocr_status: TranscodeTaskStatus | None = None
     output_path: str | None
     size_bytes: int | None
     # `expected_size_bytes` is the scan-time MakeMKV estimate (TINFO:t,11);
@@ -531,9 +535,15 @@ class JobTrackSelectionView(BaseModel):
     # then through Apply session (re-transcode) instead.
     editable: bool
     locked_reason: str | None = None
+    # The job's text subtitles choice; None while text subtitles are off in
+    # Settings (the picker then hides it).
+    subtitle_ocr: JobSubtitleOcrChoice | None = None
 
 
 class JobTrackSelectionRequest(BaseModel):
     """PUT /api/jobs/{id}/track-selection. Null clears the override."""
 
     track_selection: TrackSelectionSettings | None = None
+    # The job's text subtitles choice. Sent: set it (null takes the Settings
+    # default). Left out: the job keeps what it has.
+    subtitle_ocr: bool | None = None

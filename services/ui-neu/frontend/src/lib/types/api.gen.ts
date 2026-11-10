@@ -32,6 +32,10 @@ export type ApplySessionRequest = {
      */
     overwrite?: boolean;
     track_selection?: TrackSelectionSettings | null;
+    /**
+     * Subtitle Ocr
+     */
+    subtitle_ocr?: boolean | null;
 };
 
 /**
@@ -716,6 +720,14 @@ export type ConfigUpdateRequest = {
     review_requires_confirm?: boolean | null;
     on_previously_ripped?: PreviouslyRippedAction | null;
     /**
+     * Subtitle Ocr Enabled
+     */
+    subtitle_ocr_enabled?: boolean | null;
+    /**
+     * Subtitle Ocr Default On
+     */
+    subtitle_ocr_default_on?: boolean | null;
+    /**
      * Notifications Enabled
      */
     notifications_enabled?: boolean | null;
@@ -836,6 +848,15 @@ export type ConfigView = {
      */
     review_requires_confirm: boolean;
     on_previously_ripped: PreviouslyRippedAction;
+    /**
+     * Subtitle Ocr Enabled
+     */
+    subtitle_ocr_enabled: boolean;
+    /**
+     * Subtitle Ocr Default On
+     */
+    subtitle_ocr_default_on: boolean;
+    subtitle_ocr_model: SubtitleOcrModelView;
     default_retention_policy: RetentionPolicy;
     /**
      * Notification Apprise Urls
@@ -2311,6 +2332,10 @@ export type Job = {
         [key: string]: unknown;
     } | null;
     /**
+     * Subtitle Ocr
+     */
+    subtitle_ocr?: boolean | null;
+    /**
      * Started At
      */
     started_at: string | null;
@@ -2405,6 +2430,7 @@ export type JobDetailView = {
     fingerprints?: Array<DiscFingerprintView>;
     previous_rip?: PreviousRipView | null;
     raw_backup?: RawBackupView | null;
+    subtitle_ocr?: JobSubtitleOcrView | null;
 };
 
 /**
@@ -2529,12 +2555,66 @@ export type JobStatsResponse = {
 export type JobStatus = 'created' | 'awaiting_user_id' | 'identified' | 'ripping' | 'ripped' | 'ripped_partial' | 'awaiting_review' | 'ripped_awaiting_identify' | 'abandoned' | 'failed';
 
 /**
+ * JobSubtitleOcrChoice
+ *
+ * A job's text subtitles choice. `effective` is what its encodes get on
+ * completion: `override` when set, else `default` (the Settings default).
+ */
+export type JobSubtitleOcrChoice = {
+    /**
+     * Override
+     */
+    override?: boolean | null;
+    /**
+     * Default
+     */
+    default: boolean;
+    /**
+     * Effective
+     */
+    effective: boolean;
+};
+
+/**
+ * JobSubtitleOcrView
+ *
+ * The job page's text subtitles: the choice, and what Make text
+ * subtitles would read.
+ */
+export type JobSubtitleOcrView = {
+    /**
+     * Override
+     */
+    override?: boolean | null;
+    /**
+     * Default
+     */
+    default: boolean;
+    /**
+     * Effective
+     */
+    effective: boolean;
+    /**
+     * Eligible Encodes
+     */
+    eligible_encodes?: number;
+    /**
+     * With Text Subtitles
+     */
+    with_text_subtitles?: number;
+};
+
+/**
  * JobTrackSelectionRequest
  *
  * PUT /api/jobs/{id}/track-selection. Null clears the override.
  */
 export type JobTrackSelectionRequest = {
     track_selection?: TrackSelectionSettings | null;
+    /**
+     * Subtitle Ocr
+     */
+    subtitle_ocr?: boolean | null;
 };
 
 /**
@@ -2568,6 +2648,7 @@ export type JobTrackSelectionView = {
      * Locked Reason
      */
     locked_reason?: string | null;
+    subtitle_ocr?: JobSubtitleOcrChoice | null;
 };
 
 /**
@@ -4904,6 +4985,82 @@ export type StorageRoot = {
 };
 
 /**
+ * SubtitleOcrModelView
+ *
+ * The text-line model built into the transcode image.
+ */
+export type SubtitleOcrModelView = {
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Version
+     */
+    version: string;
+    /**
+     * Size
+     */
+    size: number;
+    /**
+     * Sha256
+     */
+    sha256: string;
+    /**
+     * Licence
+     */
+    licence: string;
+    /**
+     * Source
+     */
+    source: string;
+};
+
+/**
+ * SubtitleOcrRequest
+ *
+ * POST /api/jobs/{id}/subtitle-ocr.
+ */
+export type SubtitleOcrRequest = {
+    /**
+     * Overwrite
+     */
+    overwrite?: boolean;
+};
+
+/**
+ * SubtitleOcrResponse
+ */
+export type SubtitleOcrResponse = {
+    /**
+     * Tasks
+     */
+    tasks?: Array<TranscodeTaskView>;
+    /**
+     * Skipped
+     */
+    skipped?: Array<SubtitleOcrSkip>;
+};
+
+/**
+ * SubtitleOcrSkip
+ */
+export type SubtitleOcrSkip = {
+    /**
+     * Encode Task Id
+     */
+    encode_task_id: string;
+    /**
+     * Output Path
+     */
+    output_path: string | null;
+    /**
+     * Reason
+     */
+    reason: 'running' | 'exists';
+};
+
+/**
  * SubtitleOutput
  *
  * Where kept subtitle tracks go: muxed into the video, written as
@@ -5287,6 +5444,7 @@ export type TrackView = {
     source_ref: string;
     status: TrackStatus;
     transcode_status?: TranscodeTaskStatus | null;
+    subtitle_ocr_status?: TranscodeTaskStatus | null;
     /**
      * Output Path
      */
@@ -5845,6 +6003,7 @@ export type JobDetailViewWritable = {
     fingerprints?: Array<DiscFingerprintView>;
     previous_rip?: PreviousRipView | null;
     raw_backup?: RawBackupView | null;
+    subtitle_ocr?: JobSubtitleOcrView | null;
 };
 
 /**
@@ -7318,6 +7477,42 @@ export type PutTrackSelectionApiJobsJobIdTrackSelectionPutResponses = {
 };
 
 export type PutTrackSelectionApiJobsJobIdTrackSelectionPutResponse = PutTrackSelectionApiJobsJobIdTrackSelectionPutResponses[keyof PutTrackSelectionApiJobsJobIdTrackSelectionPutResponses];
+
+export type RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostData = {
+    body?: SubtitleOcrRequest;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/jobs/{job_id}/subtitle-ocr';
+};
+
+export type RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostError = RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostErrors[keyof RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostErrors];
+
+export type RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: SubtitleOcrResponse;
+};
+
+export type RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostResponse = RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostResponses[keyof RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostResponses];
 
 export type ApplySessionApiJobsJobIdTranscodePostData = {
     body: ApplySessionRequest;

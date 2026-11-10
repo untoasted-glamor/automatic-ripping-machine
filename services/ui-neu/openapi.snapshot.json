@@ -2347,7 +2347,7 @@
           "jobs"
         ],
         "summary": "Put Track Selection",
-        "description": "Set (or, with null, clear) the job's own track selection. Refused\nonce one of the job's transcode tasks has been claimed; Apply session\nsets it for a re-transcode instead.",
+        "description": "Set (or, with null, clear) the job's own track selection and its text\nsubtitles choice. A body naming only `subtitle_ocr` leaves the track\nselection as it is. Refused once one of the job's transcode tasks has\nbeen claimed; Apply session sets them for a re-transcode instead, and\nMake text subtitles reads finished encodes.",
         "operationId": "put_track_selection_api_jobs__job_id__track_selection_put",
         "parameters": [
           {
@@ -2394,6 +2394,75 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/JobTrackSelectionView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/subtitle-ocr": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Request Subtitle Ocr",
+        "description": "Make text subtitles (`.srt`) for the job's finished encodes that wrote\nimage subtitles, after the fact. An encode whose `.srt` files exist is\nskipped unless `overwrite`; one with a text subtitles task already\nqueued or running is skipped either way. 409 while text subtitles are\noff in Settings.",
+        "operationId": "request_subtitle_ocr_api_jobs__job_id__subtitle_ocr_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubtitleOcrRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubtitleOcrResponse"
                 }
               }
             }
@@ -9835,6 +9904,17 @@
                 "type": "null"
               }
             ]
+          },
+          "subtitle_ocr": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle Ocr"
           }
         },
         "type": "object",
@@ -11073,6 +11153,28 @@
               }
             ]
           },
+          "subtitle_ocr_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle Ocr Enabled"
+          },
+          "subtitle_ocr_default_on": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle Ocr Default On"
+          },
           "notifications_enabled": {
             "anyOf": [
               {
@@ -11249,6 +11351,17 @@
           "on_previously_ripped": {
             "$ref": "#/components/schemas/PreviouslyRippedAction"
           },
+          "subtitle_ocr_enabled": {
+            "type": "boolean",
+            "title": "Subtitle Ocr Enabled"
+          },
+          "subtitle_ocr_default_on": {
+            "type": "boolean",
+            "title": "Subtitle Ocr Default On"
+          },
+          "subtitle_ocr_model": {
+            "$ref": "#/components/schemas/SubtitleOcrModelView"
+          },
           "default_retention_policy": {
             "$ref": "#/components/schemas/RetentionPolicy"
           },
@@ -11365,6 +11478,9 @@
           "manual_wait_seconds",
           "review_requires_confirm",
           "on_previously_ripped",
+          "subtitle_ocr_enabled",
+          "subtitle_ocr_default_on",
+          "subtitle_ocr_model",
           "default_retention_policy",
           "notification_apprise_urls",
           "notifications_enabled",
@@ -14080,6 +14196,17 @@
             ],
             "title": "Track Selection"
           },
+          "subtitle_ocr": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle Ocr"
+          },
           "started_at": {
             "anyOf": [
               {
@@ -14268,6 +14395,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/RawBackupView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subtitle_ocr": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobSubtitleOcrView"
               },
               {
                 "type": "null"
@@ -14497,6 +14634,76 @@
         ],
         "title": "JobStatus"
       },
+      "JobSubtitleOcrChoice": {
+        "properties": {
+          "override": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override"
+          },
+          "default": {
+            "type": "boolean",
+            "title": "Default"
+          },
+          "effective": {
+            "type": "boolean",
+            "title": "Effective"
+          }
+        },
+        "type": "object",
+        "required": [
+          "default",
+          "effective"
+        ],
+        "title": "JobSubtitleOcrChoice",
+        "description": "A job's text subtitles choice. `effective` is what its encodes get on\ncompletion: `override` when set, else `default` (the Settings default)."
+      },
+      "JobSubtitleOcrView": {
+        "properties": {
+          "override": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override"
+          },
+          "default": {
+            "type": "boolean",
+            "title": "Default"
+          },
+          "effective": {
+            "type": "boolean",
+            "title": "Effective"
+          },
+          "eligible_encodes": {
+            "type": "integer",
+            "title": "Eligible Encodes",
+            "default": 0
+          },
+          "with_text_subtitles": {
+            "type": "integer",
+            "title": "With Text Subtitles",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "default",
+          "effective"
+        ],
+        "title": "JobSubtitleOcrView",
+        "description": "The job page's text subtitles: the choice, and what Make text\nsubtitles would read."
+      },
       "JobTrackSelectionRequest": {
         "properties": {
           "track_selection": {
@@ -14508,6 +14715,17 @@
                 "type": "null"
               }
             ]
+          },
+          "subtitle_ocr": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle Ocr"
           }
         },
         "type": "object",
@@ -14564,6 +14782,16 @@
               }
             ],
             "title": "Locked Reason"
+          },
+          "subtitle_ocr": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobSubtitleOcrChoice"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -18775,6 +19003,111 @@
         ],
         "title": "StorageRoot"
       },
+      "SubtitleOcrModelView": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "size": {
+            "type": "integer",
+            "title": "Size"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          },
+          "licence": {
+            "type": "string",
+            "title": "Licence"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "version",
+          "size",
+          "sha256",
+          "licence",
+          "source"
+        ],
+        "title": "SubtitleOcrModelView",
+        "description": "The text-line model built into the transcode image."
+      },
+      "SubtitleOcrRequest": {
+        "properties": {
+          "overwrite": {
+            "type": "boolean",
+            "title": "Overwrite",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "SubtitleOcrRequest",
+        "description": "POST /api/jobs/{id}/subtitle-ocr."
+      },
+      "SubtitleOcrResponse": {
+        "properties": {
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/TranscodeTaskView"
+            },
+            "type": "array",
+            "title": "Tasks"
+          },
+          "skipped": {
+            "items": {
+              "$ref": "#/components/schemas/SubtitleOcrSkip"
+            },
+            "type": "array",
+            "title": "Skipped"
+          }
+        },
+        "type": "object",
+        "title": "SubtitleOcrResponse"
+      },
+      "SubtitleOcrSkip": {
+        "properties": {
+          "encode_task_id": {
+            "type": "string",
+            "title": "Encode Task Id"
+          },
+          "output_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Path"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "running",
+              "exists"
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "encode_task_id",
+          "output_path",
+          "reason"
+        ],
+        "title": "SubtitleOcrSkip"
+      },
       "SubtitleOutput": {
         "type": "string",
         "enum": [
@@ -19525,6 +19858,16 @@
             "$ref": "#/components/schemas/TrackStatus"
           },
           "transcode_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscodeTaskStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subtitle_ocr_status": {
             "anyOf": [
               {
                 "$ref": "#/components/schemas/TranscodeTaskStatus"

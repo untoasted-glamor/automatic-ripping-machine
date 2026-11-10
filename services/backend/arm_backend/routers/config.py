@@ -37,6 +37,7 @@ from arm_backend.identity.sources.registry import (
 )
 from arm_backend.makemkv_status import makemkv_state_detail
 from arm_backend.seeders import CONFIG_SINGLETON_ID
+from arm_backend.subtitle_ocr_tasks import bundled_model_view
 from arm_common import (
     Config,
     Job,
@@ -103,6 +104,11 @@ def _to_view(cfg: Config) -> ConfigView:
         manual_wait_seconds=int(cfg.manual_wait_seconds) if cfg.manual_wait_seconds is not None else 60,
         review_requires_confirm=bool(cfg.review_requires_confirm),
         on_previously_ripped=cfg.on_previously_ripped or PreviouslyRippedAction.HOLD,
+        # `is True` / `is not False`: a bare in-memory Config carries None
+        # (server_default is DB-level only); None reads as each column's default.
+        subtitle_ocr_enabled=cfg.subtitle_ocr_enabled is True,
+        subtitle_ocr_default_on=cfg.subtitle_ocr_default_on is not False,
+        subtitle_ocr_model=bundled_model_view(),
         drive_scan_interval_seconds=int(cfg.drive_scan_interval_seconds or 30),
         drive_detected_prune_days=int(cfg.drive_detected_prune_days or 7),
         # NULL falls back to the env value, exactly as the dispatcher does.
@@ -233,6 +239,9 @@ async def update_config(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="review_requires_confirm must be true or false"
         )
+    for key in ("subtitle_ocr_enabled", "subtitle_ocr_default_on"):
+        if key in fields and fields[key] is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{key} must be true or false")
     if fields.get("transcode_enabled") is True and not effective_transcode_capable(settings):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

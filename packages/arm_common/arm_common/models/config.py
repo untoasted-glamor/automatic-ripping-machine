@@ -120,6 +120,15 @@ class Config(SQLModel, table=True):
         default=None, sa_column=Column(Boolean, nullable=True, server_default="true")
     )
     drive_detected_prune_days: int = Field(sa_column=Column(Integer, nullable=False, server_default="7"))
+    # Text subtitles (Settings > Transcoding): read an encode's image subtitle
+    # sidecars into `.srt` with the model built into the transcode image
+    # (arm_common.subtitle_ocr). Off: no subtitle OCR task is created, and the
+    # per-disc choice and the job page's action are hidden. The default is
+    # what a job with no choice of its own (`jobs.subtitle_ocr` NULL) gets.
+    subtitle_ocr_enabled: bool = Field(default=False, sa_column=Column(Boolean, nullable=False, server_default="false"))
+    subtitle_ocr_default_on: bool = Field(
+        default=True, sa_column=Column(Boolean, nullable=False, server_default="true")
+    )
     default_retention_policy: RetentionPolicy = Field(
         sa_column=enum_column(
             RetentionPolicy,

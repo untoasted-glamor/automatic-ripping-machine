@@ -167,6 +167,14 @@ from arm_common.schemas.sessions import (
     TranscodePresetView,
     TranscodeTaskView,
 )
+from arm_common.schemas.subtitle_ocr import (
+    JobSubtitleOcrChoice,
+    JobSubtitleOcrView,
+    SubtitleOcrModelView,
+    SubtitleOcrRequest,
+    SubtitleOcrResponse,
+    SubtitleOcrSkip,
+)
 from arm_common.schemas.transcoder import (
     GpuProbeAllScheduled,
     GpuProbeScheduled,
@@ -319,6 +327,8 @@ __all__ = [
     "JobView",
     "JobTrackSelectionRequest",
     "JobTrackSelectionView",
+    "JobSubtitleOcrChoice",
+    "JobSubtitleOcrView",
     "KeyCheckRequest",
     "KeyCheckResponse",
     "LoginRequest",
@@ -397,6 +407,10 @@ __all__ = [
     "SessionRouteView",
     "SessionUpdateRequest",
     "SessionView",
+    "SubtitleOcrModelView",
+    "SubtitleOcrRequest",
+    "SubtitleOcrResponse",
+    "SubtitleOcrSkip",
     "SettingsGroup",
     "DiscRouteSummary",
     "SetupStatusPublic",

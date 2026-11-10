@@ -86,6 +86,11 @@ class Job(SQLModel, table=True):
     # (arm_common.schemas.TrackSelectionSettings), set from the review step,
     # the job page or Apply session. NULL lets the transcode preset decide.
     track_selection: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    # The job's own text subtitles choice: make `.srt` from its encodes' image
+    # subtitles when each encode completes. NULL takes the Settings default
+    # (`config.subtitle_ocr_default_on`); either way only while
+    # `config.subtitle_ocr_enabled` is on.
+    subtitle_ocr: bool | None = Field(default=None, sa_column=Column(Boolean, nullable=True))
     started_at: datetime | None = Field(sa_column=Column(DateTime(timezone=True), nullable=True))
     ripped_at: datetime | None = Field(sa_column=Column(DateTime(timezone=True), nullable=True))
     created_at: datetime | None = Field(sa_column=created_at_column())

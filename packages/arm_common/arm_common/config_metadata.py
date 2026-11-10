@@ -308,6 +308,26 @@ CONFIG_FIELD_META: list[ConfigFieldMeta] = [
         type="bool",
         editable=True,
     ),
+    ConfigFieldMeta(
+        key="subtitle_ocr_enabled",
+        group="Transcoding",
+        tier="operator",
+        label="Make text subtitles",
+        help="Read the subtitle images an encode writes (.sup, from Blu-ray) into text subtitles (.srt) "
+        "beside them, with the model built into the transcode image. DVD subtitles are not read yet.",
+        type="bool",
+        editable=True,
+    ),
+    ConfigFieldMeta(
+        key="subtitle_ocr_default_on",
+        group="Transcoding",
+        tier="operator",
+        label="Text subtitles for new discs",
+        help="What a disc gets when you don't choose for it. Each disc's own choice is on its review "
+        "step, its job page and Apply session.",
+        type="bool",
+        editable=True,
+    ),
     # --- Notifications ---
     ConfigFieldMeta(
         key="notifications_enabled",

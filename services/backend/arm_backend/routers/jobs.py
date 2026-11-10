@@ -38,6 +38,12 @@ from arm_backend.routers.logs import per_job_log_path
 from arm_backend.routers.ripper import persist_review_tracks
 from arm_backend.seeders import CONFIG_SINGLETON_ID
 from arm_backend.sidecars import sidecar_files
+from arm_backend.subtitle_ocr_tasks import (
+    SubtitleOcrOff,
+    job_subtitle_ocr_view,
+    make_text_subtitles,
+    subtitle_ocr_choice,
+)
 from arm_backend.ws import WSHub
 from arm_common import (
     Config,
@@ -83,6 +89,9 @@ from arm_common.schemas import (
     RipProgressSummary,
     ScanResult,
     SessionApplicationView,
+    SubtitleOcrRequest,
+    SubtitleOcrResponse,
+    SubtitleOcrSkip,
     TrackView,
     TranscodeProgressSummary,
     TranscodeTaskView,
@@ -421,21 +430,17 @@ async def get_job_detail(
         .all()
     )
     sa_ids = [sa.id for sa in sas]
-    job_tasks: list[TranscodeTask] = []
+    all_tasks: list[TranscodeTask] = []
     if sa_ids:
-        # Encodes only: the rollup and each track's transcode status are about
-        # its video, not the subtitle OCR task that shares its track.
-        job_tasks = list(
-            (
-                await session.execute(
-                    select(TranscodeTask)
-                    .where(col(TranscodeTask.session_application_id).in_(sa_ids))
-                    .where(col(TranscodeTask.kind) == TranscodeTaskKind.ENCODE)
-                )
-            )
+        all_tasks = list(
+            (await session.execute(select(TranscodeTask).where(col(TranscodeTask.session_application_id).in_(sa_ids))))
             .scalars()
             .all()
         )
+    # Encodes only: the rollup and each track's transcode status are about its
+    # video. The subtitle OCR tasks that share its track have their own status.
+    job_tasks = [t for t in all_tasks if t.kind == TranscodeTaskKind.ENCODE]
+    ocr_tasks = [t for t in all_tasks if t.kind == TranscodeTaskKind.SUBTITLE_OCR]
     job_view = JobView.model_validate(job)
     job_view.transcode_progress = _summarize_transcode_progress(
         list(sas), job_tasks, parked_settled=_parked_apps_are_settled(job)
@@ -445,17 +450,23 @@ async def get_job_detail(
     # Most-recent transcode task status per source track (ULID ids are
     # monotonic, so the greatest id is the newest task). Built from the
     # already-loaded job_tasks — no extra query.
-    latest_task_status: dict[str, TranscodeTaskStatus] = {}
-    latest_task_id: dict[str, str] = {}
-    for task in job_tasks:
-        prev = latest_task_id.get(task.source_track_id)
-        if prev is None or task.id > prev:
-            latest_task_id[task.source_track_id] = task.id
-            latest_task_status[task.source_track_id] = task.status
+    def _latest_status(tasks: list[TranscodeTask]) -> dict[str, TranscodeTaskStatus]:
+        latest_status: dict[str, TranscodeTaskStatus] = {}
+        latest_id: dict[str, str] = {}
+        for task in tasks:
+            prev = latest_id.get(task.source_track_id)
+            if prev is None or task.id > prev:
+                latest_id[task.source_track_id] = task.id
+                latest_status[task.source_track_id] = task.status
+        return latest_status
+
+    latest_task_status = _latest_status(job_tasks)
+    latest_ocr_status = _latest_status(ocr_tasks)
 
     def _track_view(t: Track) -> TrackView:
         tv = TrackView.model_validate(t)
         tv.transcode_status = latest_task_status.get(t.id)
+        tv.subtitle_ocr_status = latest_ocr_status.get(t.id)
         return tv
 
     return JobDetailView(
@@ -464,6 +475,7 @@ async def get_job_detail(
         fingerprints=[DiscFingerprintView.model_validate(fp) for fp in fingerprints],
         previous_rip=await _previous_rip_view(session, job),
         raw_backup=describe_backup(job.id),
+        subtitle_ocr=await job_subtitle_ocr_view(session, job, Path(settings.MEDIA_ROOT)),
     )
 
 
@@ -826,26 +838,36 @@ async def _resolve_media_outputs(db: AsyncSession, job_id: str) -> list[Path]:
     which belongs to another job or the user.
 
     A task's subtitle sidecars (`sidecar_paths`) count as its outputs too,
-    and so do the `.srt` files a FAILED subtitle OCR task finished and kept.
-    An OCR task's `output_path` is its encode's video, listed once."""
+    and so do the `.srt` files a FAILED subtitle OCR task finished and kept,
+    and those it was handed to replace (`replaced_sidecar_paths`, from an
+    overwrite of the job page's Make text subtitles), which stay on disk
+    when it fails. An OCR task's `output_path` is its encode's video, listed
+    once."""
     media_root = Path(settings.MEDIA_ROOT)
     rows = (
-        await db.execute(
-            select(TranscodeTask.output_path, TranscodeTask.sidecar_paths, TranscodeTask.status, TranscodeTask.kind)
-            .join(Track, col(TranscodeTask.source_track_id) == col(Track.id))
-            .where(col(Track.job_id) == job_id)
-            .where(col(TranscodeTask.status).in_([TranscodeTaskStatus.DONE, TranscodeTaskStatus.FAILED]))
-            .where(col(TranscodeTask.output_path).is_not(None))
+        (
+            await db.execute(
+                select(TranscodeTask)
+                .join(Track, col(TranscodeTask.source_track_id) == col(Track.id))
+                .where(col(Track.job_id) == job_id)
+                .where(col(TranscodeTask.status).in_([TranscodeTaskStatus.DONE, TranscodeTaskStatus.FAILED]))
+                .where(col(TranscodeTask.output_path).is_not(None))
+            )
         )
-    ).all()
+        .scalars()
+        .all()
+    )
     outputs: list[Path] = []
-    for output_path, sidecar_paths, task_status, kind in rows:
-        if task_status == TranscodeTaskStatus.DONE:
-            if kind == TranscodeTaskKind.ENCODE:
-                outputs.append(media_root / output_path)
-        elif kind != TranscodeTaskKind.SUBTITLE_OCR:
+    for task in rows:
+        assert task.output_path is not None
+        if task.status == TranscodeTaskStatus.DONE:
+            if task.kind == TranscodeTaskKind.ENCODE:
+                outputs.append(media_root / task.output_path)
+        elif task.kind != TranscodeTaskKind.SUBTITLE_OCR:
             continue
-        outputs.extend(sidecar_files(media_root, sidecar_paths))
+        else:
+            outputs.extend(sidecar_files(media_root, task.replaced_sidecar_paths))
+        outputs.extend(sidecar_files(media_root, task.sidecar_paths))
     return list(dict.fromkeys(outputs))
 
 
@@ -1556,6 +1578,7 @@ async def _track_selection_view(db: AsyncSession, job: Job, session_id: str | No
         disc=await disc_languages(db, job),
         editable=locked is None,
         locked_reason=locked,
+        subtitle_ocr=await subtitle_ocr_choice(db, job),
     )
 
 
@@ -1583,20 +1606,61 @@ async def put_track_selection(
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
 ) -> JobTrackSelectionView:
-    """Set (or, with null, clear) the job's own track selection. Refused
-    once one of the job's transcode tasks has been claimed; Apply session
-    sets it for a re-transcode instead."""
+    """Set (or, with null, clear) the job's own track selection and its text
+    subtitles choice. A body naming only `subtitle_ocr` leaves the track
+    selection as it is. Refused once one of the job's transcode tasks has
+    been claimed; Apply session sets them for a re-transcode instead, and
+    Make text subtitles reads finished encodes."""
     job = (await db.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")
     locked = await edit_lock_reason(db, job)
     if locked is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=locked)
-    job.track_selection = req.track_selection.model_dump(mode="json") if req.track_selection else None
+    if "track_selection" in req.model_fields_set or "subtitle_ocr" not in req.model_fields_set:
+        job.track_selection = req.track_selection.model_dump(mode="json") if req.track_selection else None
+    if "subtitle_ocr" in req.model_fields_set:
+        job.subtitle_ocr = req.subtitle_ocr
     db.add(job)
     await db.commit()
     await db.refresh(job)
     return await _track_selection_view(db, job, None)
+
+
+@router.post("/{job_id}/subtitle-ocr", response_model=SubtitleOcrResponse)
+async def request_subtitle_ocr(
+    job_id: JobIdParam,
+    req: SubtitleOcrRequest = Body(default_factory=SubtitleOcrRequest),
+    _: User = Depends(require_writer),
+    db: AsyncSession = Depends(get_session),
+    hub: WSHub = Depends(_get_hub),
+) -> SubtitleOcrResponse:
+    """Make text subtitles (`.srt`) for the job's finished encodes that wrote
+    image subtitles, after the fact. An encode whose `.srt` files exist is
+    skipped unless `overwrite`; one with a text subtitles task already
+    queued or running is skipped either way. 409 while text subtitles are
+    off in Settings."""
+    job = (await db.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")
+    try:
+        outcome = await make_text_subtitles(
+            db, job, overwrite=req.overwrite, media_root=Path(settings.MEDIA_ROOT), hub=hub
+        )
+    except SubtitleOcrOff as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="text subtitles are off in Settings > Transcoding"
+        ) from exc
+    await db.commit()
+    for task in outcome.tasks:
+        await db.refresh(task)
+    return SubtitleOcrResponse(
+        tasks=[TranscodeTaskView.model_validate(t) for t in outcome.tasks],
+        skipped=[
+            SubtitleOcrSkip(encode_task_id=encode.id, output_path=encode.output_path, reason=reason)
+            for encode, reason in outcome.skipped
+        ],
+    )
 
 
 @router.post("/{job_id}/transcode", response_model=ApplySessionResponse)
@@ -1615,6 +1679,8 @@ async def apply_session(
         # Committed with the apply; a refused apply (collisions, wrong media
         # type) leaves the job's selection as it was.
         job.track_selection = req.track_selection.model_dump(mode="json") if req.track_selection else None
+    if "subtitle_ocr" in req.model_fields_set:
+        job.subtitle_ocr = req.subtitle_ocr
 
     try:
         outcome = await apply_session_internal(

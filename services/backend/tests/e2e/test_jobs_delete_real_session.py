@@ -10,8 +10,8 @@ already existed: another job's, or the user's) ends FAILED still naming
 that folder. Deleting the failed job with its files must not remove it.
 
 A subtitle OCR task's `output_path` is its encode's video: it adds only the
-`.srt` files it recorded (a FAILED one too, for those it finished), and the
-video is listed once.
+`.srt` files it recorded (a FAILED one too, for those it finished and those
+an overwrite handed it to replace), and the video is listed once.
 """
 
 from __future__ import annotations
@@ -77,6 +77,9 @@ async def test_deleting_a_failed_backup_job_keeps_the_folder_it_never_filed(
     ocr_srt.write_text("1")
     kept_srt = media_root / "Extras" / "extra.fra.srt"
     kept_srt.write_text("1")
+    # An overwrite handed the failed task an earlier `.srt` it never rewrote.
+    handed_srt = media_root / "Extras" / "extra.ita.srt"
+    handed_srt.write_text("1")
     monkeypatch.setattr(jobs_router.settings, "RAW_ROOT", str(raw_root))
     monkeypatch.setattr(jobs_router.settings, "MEDIA_ROOT", str(media_root))
 
@@ -143,6 +146,7 @@ async def test_deleting_a_failed_backup_job_keeps_the_folder_it_never_filed(
                         progress_pct=50,
                         output_path="Extras/extra.mkv",
                         sidecar_paths=["Extras/extra.fra.srt"],
+                        replaced_sidecar_paths=["Extras/extra.ita.srt"],
                     ),
                 ]
             )
@@ -151,7 +155,8 @@ async def test_deleting_a_failed_backup_job_keeps_the_folder_it_never_filed(
         async with factory() as db:
             outputs = await jobs_router._resolve_media_outputs(db, _JOB)
         assert sorted(outputs) == sorted(
-            media_root / "Extras" / name for name in ("extra.mkv", "extra.eng.sup", "extra.eng.2.srt", "extra.fra.srt")
+            media_root / "Extras" / name
+            for name in ("extra.mkv", "extra.eng.sup", "extra.eng.2.srt", "extra.fra.srt", "extra.ita.srt")
         )
 
         app = FastAPI()
@@ -174,6 +179,6 @@ async def test_deleting_a_failed_backup_job_keeps_the_folder_it_never_filed(
     assert (foreign / "BDMV" / "index.bdmv").read_bytes() == b"theirs"
     assert not done_file.exists()
     assert not sidecar.exists()
-    assert not ocr_srt.exists() and not kept_srt.exists()
+    assert not ocr_srt.exists() and not kept_srt.exists() and not handed_srt.exists()
     assert users_srt.exists()
     assert not (raw_root / _JOB).exists()

@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from arm_common.enums import PreviouslyRippedAction, RetentionPolicy, UserRole
 from arm_common.schemas.jobs import DiscFingerprintView, JobView, PreviousRipView, TrackView
+from arm_common.schemas.subtitle_ocr import JobSubtitleOcrView, SubtitleOcrModelView
 
 
 class LoginRequest(BaseModel):
@@ -51,6 +52,8 @@ class JobDetailView(BaseModel):
     previous_rip: PreviousRipView | None = None
     # None when the job has no raw backup on disk.
     raw_backup: RawBackupView | None = None
+    # None while text subtitles are off in Settings.
+    subtitle_ocr: JobSubtitleOcrView | None = None
 
 
 class ConfigView(BaseModel):
@@ -93,6 +96,12 @@ class ConfigView(BaseModel):
     # (no countdown); false = it auto-starts after manual_wait_seconds.
     review_requires_confirm: bool
     on_previously_ripped: PreviouslyRippedAction
+    # Text subtitles: make `.srt` from encodes' image subtitles, and the
+    # default for a disc with no choice of its own. The model is read-only
+    # (built into the transcode image).
+    subtitle_ocr_enabled: bool
+    subtitle_ocr_default_on: bool
+    subtitle_ocr_model: SubtitleOcrModelView
     default_retention_policy: RetentionPolicy
     notification_apprise_urls: list[str]
     notifications_enabled: bool
@@ -133,6 +142,8 @@ class ConfigUpdateRequest(BaseModel):
     manual_wait_seconds: int | None = None
     review_requires_confirm: bool | None = None
     on_previously_ripped: PreviouslyRippedAction | None = None
+    subtitle_ocr_enabled: bool | None = None
+    subtitle_ocr_default_on: bool | None = None
     notifications_enabled: bool | None = None
     metadata_provider: str | None = None
 

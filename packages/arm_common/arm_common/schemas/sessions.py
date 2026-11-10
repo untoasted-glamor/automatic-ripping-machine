@@ -281,6 +281,9 @@ class ApplySessionRequest(BaseModel):
     # fan-out. Sent: set it (null clears it, so the preset decides). Left out:
     # the job keeps what it has.
     track_selection: TrackSelectionSettings | None = None
+    # The job's text subtitles choice (jobs.subtitle_ocr), saved the same
+    # way: sent sets it (null takes the Settings default), left out keeps it.
+    subtitle_ocr: bool | None = None
 
 
 class CollisionInfo(BaseModel):
