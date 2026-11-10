@@ -219,6 +219,74 @@ def test_an_ocr_tasks_own_completion_queues_nothing() -> None:
     assert len(db.rows["transcode_tasks"]) == 2
 
 
+async def test_an_overwrite_re_encode_replaces_the_old_text_subtitles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end over an overwrite re-apply: the eviction hands the old OCR
+    task's `.srt` to the new encode, the new encode's /complete removes them
+    (it wrote no `.srt` of its own) and queues a new OCR task for its `.sup`."""
+    from arm_backend import config as bcfg
+    from arm_backend.auto_session import _evict_colliding_tasks
+
+    monkeypatch.setattr(bcfg.settings, "MEDIA_ROOT", str(tmp_path))
+    folder = tmp_path / "Iron Man (2008)"
+    folder.mkdir()
+    for name in ("Iron Man.eng.sup", "Iron Man.eng.srt"):
+        (folder / name).write_bytes(b"old")
+    db = _running_encode_db(config=_config())
+    old_encode = db.rows["transcode_tasks"][0]
+    old_encode.status, old_encode.output_path, old_encode.sidecar_paths = (
+        TranscodeTaskStatus.DONE,
+        _VIDEO,
+        ["Iron Man (2008)/Iron Man.eng.sup"],
+    )
+    db.rows["transcode_tasks"].append(
+        TranscodeTask(
+            id="txt_ocr",
+            session_application_id="sap_x",
+            source_track_id="trk_1",
+            kind=TranscodeTaskKind.SUBTITLE_OCR,
+            parent_task_id="txt_1",
+            status=TranscodeTaskStatus.DONE,
+            attempts=1,
+            progress_pct=100,
+            output_path=_VIDEO,
+            sidecar_paths=["Iron Man (2008)/Iron Man.eng.srt"],
+        )
+    )
+    replaced = await _evict_colliding_tasks(db, [_VIDEO], job_id=JOB)  # type: ignore[arg-type]
+    assert db.rows["transcode_tasks"] == []
+    db.rows["session_applications"] = [
+        SessionApplication(id="sap_x", session_id="ses_x", job_id=JOB, status=SessionApplicationStatus.RUNNING)
+    ]
+    db.rows["transcode_tasks"] = [
+        TranscodeTask(
+            id="txt_2",
+            session_application_id="sap_x",
+            source_track_id="trk_1",
+            status=TranscodeTaskStatus.IN_PROGRESS,
+            claimed_by=_HOSTNAME,
+            claim_heartbeat_at=datetime.now(UTC),
+            attempts=1,
+            progress_pct=50,
+            output_path=_VIDEO,
+            replaced_sidecar_paths=replaced[_VIDEO],
+        )
+    ]
+    (folder / "Iron Man.eng.sup").write_bytes(b"new")  # the new encode wrote it again
+    with TestClient(_transcoder_app(db)) as client:
+        r = client.patch(
+            "/api/transcoder/tasks/txt_2/complete",
+            json={"output_path": _VIDEO, "sidecar_paths": ["Iron Man (2008)/Iron Man.eng.sup"]},
+            headers=_SERVICE_AUTH,
+        )
+    assert r.status_code == 200, r.text
+    assert not (folder / "Iron Man.eng.srt").exists()
+    assert (folder / "Iron Man.eng.sup").read_bytes() == b"new"
+    (ocr,) = [t for t in db.rows["transcode_tasks"] if t.kind == TranscodeTaskKind.SUBTITLE_OCR]
+    assert (ocr.parent_task_id, ocr.status) == ("txt_2", TranscodeTaskStatus.QUEUED)
+
+
 async def test_queue_after_encode_guards_and_event() -> None:
     db = _running_encode_db(config=_config())
     encode = db.rows["transcode_tasks"][0]
