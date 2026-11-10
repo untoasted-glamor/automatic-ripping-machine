@@ -66,7 +66,8 @@ describe('JobTrackPicker', () => {
 					audio_selection: 'languages',
 					audio_languages: ['jpn'],
 					audio_format: 'aac_best'
-				})
+				}),
+				{}
 			)
 		);
 		await waitFor(() => expect(screen.getByTestId('jtp-saved')).toBeInTheDocument());
@@ -81,7 +82,7 @@ describe('JobTrackPicker', () => {
 		expect((screen.getByTestId('jtp-subtitle-selection') as HTMLSelectElement).value).toBe('none');
 		await fireEvent.click(screen.getByTestId('jtp-custom'));
 		await fireEvent.click(screen.getByTestId('jtp-save'));
-		await waitFor(() => expect(saveMock).toHaveBeenCalledWith('job_1', null));
+		await waitFor(() => expect(saveMock).toHaveBeenCalledWith('job_1', null, {}));
 	});
 
 	it('blocks saving a languages choice with no language, and shows a save error', async () => {
@@ -131,5 +132,46 @@ describe('JobTrackPicker', () => {
 		expect(screen.queryByTestId('jtp-save')).toBeNull();
 		await rerender({ jobId: 'job_1', variant: 'apply', sessionId: 'ses_b' });
 		await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('job_1', 'ses_b'));
+	});
+
+	const ocrChoice = { override: null, default: true, effective: true };
+
+	it('hides the text subtitles choice while it is off in Settings, or with embedded subtitles', async () => {
+		fetchMock.mockResolvedValue(trackView());
+		render();
+		await waitFor(() => expect(screen.getByTestId('jtp-default')).toBeInTheDocument());
+		expect(screen.queryByTestId('jtp-ocr')).toBeNull();
+		cleanup();
+		const embedded = { ...trackView().default, subtitle_output: 'embedded' as const };
+		fetchMock.mockResolvedValue(trackView({ subtitle_ocr: ocrChoice, default: embedded, effective: embedded }));
+		render();
+		await waitFor(() => expect(screen.getByTestId('jtp-default')).toBeInTheDocument());
+		expect(screen.queryByTestId('jtp-ocr')).toBeNull();
+	});
+
+	it('shows the default text subtitles choice and saves a change with the tracks', async () => {
+		fetchMock.mockResolvedValue(trackView({ subtitle_ocr: ocrChoice }));
+		saveMock.mockResolvedValue(trackView({ subtitle_ocr: { override: false, default: true, effective: false } }));
+		render();
+		await waitFor(() => expect(screen.getByTestId('jtp-ocr')).toBeInTheDocument());
+		expect((screen.getByTestId('jtp-ocr') as HTMLInputElement).checked).toBe(true);
+		expect(screen.getByTestId('jtp-ocr-help')).toHaveTextContent('Default: on.');
+		expect(screen.getByTestId('jtp-save')).toBeDisabled();
+		await fireEvent.click(screen.getByTestId('jtp-ocr'));
+		await fireEvent.click(screen.getByTestId('jtp-save'));
+		await waitFor(() => expect(saveMock).toHaveBeenCalledWith('job_1', null, { subtitle_ocr: false }));
+		await waitFor(() => expect(screen.getByTestId('jtp-saved')).toBeInTheDocument());
+		expect((screen.getByTestId('jtp-ocr') as HTMLInputElement).checked).toBe(false);
+	});
+
+	it('apply: hands over the text subtitles choice only once it is changed', async () => {
+		fetchMock.mockResolvedValue(trackView({ subtitle_ocr: { override: true, default: false, effective: true } }));
+		const { component } = render({ variant: 'apply', sessionId: 'ses_a' });
+		const picker = component as unknown as { ocrChoice: () => Record<string, unknown> };
+		await waitFor(() => expect(screen.getByTestId('jtp-ocr')).toBeInTheDocument());
+		expect(screen.getByTestId('jtp-ocr-help')).toHaveTextContent('Default: off.');
+		expect(picker.ocrChoice()).toEqual({});
+		await fireEvent.click(screen.getByTestId('jtp-ocr'));
+		expect(picker.ocrChoice()).toEqual({ subtitle_ocr: false });
 	});
 });

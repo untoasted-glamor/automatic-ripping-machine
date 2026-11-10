@@ -18,15 +18,18 @@ export interface SettingsSection {
 	advanced?: string[];
 	/** A named summary component rendered under the section blurb. An
 	 *  unrecognised name (or none) renders nothing. */
-	summary?: 'tv-episodes';
+	summary?: SectionSummary;
 }
+
+/** The summary components a section can name (SchemaConfigForm maps them). */
+export type SectionSummary = 'tv-episodes' | 'text-subtitles';
 
 /** The section shape `sectionFields()` hands the form: keys already split
  *  into their layout buckets, none repeated across buckets. */
 export interface SectionFieldGroups {
 	title: string;
 	blurb?: string;
-	summary?: 'tv-episodes';
+	summary?: SectionSummary;
 	columns: ConfigFieldMeta[][];
 	fields: ConfigFieldMeta[];
 	advanced: ConfigFieldMeta[];
@@ -70,7 +73,16 @@ const SECTIONS: Record<string, SettingsSection[]> = {
 			keys: ['community_keydb_enabled', 'makemkv_sdf_enabled']
 		}
 	],
-	Transcoding: [{ title: 'Scheduling', keys: ['transcode_enabled', 'auto_transcode_on_idle'] }]
+	Transcoding: [
+		{ title: 'Scheduling', keys: ['transcode_enabled', 'auto_transcode_on_idle'] },
+		{
+			title: 'Text subtitles',
+			blurb:
+				'Text subtitles (.srt) read from Blu-ray subtitle images after each encode, for players that cannot show the images.',
+			summary: 'text-subtitles',
+			keys: ['subtitle_ocr_enabled', 'subtitle_ocr_default_on']
+		}
+	]
 };
 
 /** Maps the four API-key field keys (from the "API keys" section above) to

@@ -15,8 +15,15 @@
 	import ConfigSchemaField from './ConfigSchemaField.svelte';
 	import Glyph from '$lib/components/Glyph.svelte';
 	import TvEpisodesSummary, { tvEpisodesEmptyNote } from './TvEpisodesSummary.svelte';
+	import TextSubtitlesModel from './TextSubtitlesModel.svelte';
+	import type { SubtitleOcrModelView } from '$lib/types/api.gen';
+	import type { SectionSummary } from '$lib/utils/settings-sections';
 
-	const SECTION_SUMMARIES = { 'tv-episodes': TvEpisodesSummary };
+	// Summaries built from the form's own values. The text subtitles one shows
+	// the read-only model from `config` instead (below).
+	const SECTION_SUMMARIES: Partial<Record<SectionSummary, typeof TvEpisodesSummary>> = {
+		'tv-episodes': TvEpisodesSummary
+	};
 
 	let {
 		group,
@@ -281,7 +288,9 @@
 					{:else}
 						<div class="schema-config-form-section-blurb"></div>
 					{/if}
-					{#if section.summary}
+					{#if section.summary === 'text-subtitles'}
+						<TextSubtitlesModel model={config.subtitle_ocr_model as SubtitleOcrModelView | undefined} />
+					{:else if section.summary}
 						{@const Summary = SECTION_SUMMARIES[section.summary]}
 						{#if Summary}
 							<Summary {values} fields={group.fields} />

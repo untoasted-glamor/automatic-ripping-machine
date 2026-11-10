@@ -98,7 +98,7 @@
 
 	const selectedSession = $derived(sessions.find((s) => s.id === selected) ?? null);
 	let trackPicker = $state<JobTrackPicker | null>(null);
-	let chosenTracks = $state<{ track_selection?: TrackSelectionSettings | null }>({});
+	let chosenTracks = $state<{ track_selection?: TrackSelectionSettings | null; subtitle_ocr?: boolean | null }>({});
 
 	const ripById = $derived(new Map(ripPresets.map((p) => [p.id, p])));
 	const tcById = $derived(new Map(transcodePresets.map((p) => [p.id, p])));
@@ -218,7 +218,7 @@
 					return;
 				}
 				// Kept for the Overwrite retry, after which the picker is gone.
-				chosenTracks = { track_selection: trackPicker.value() };
+				chosenTracks = { track_selection: trackPicker.value(), ...trackPicker.ocrChoice() };
 			}
 			const resp = await applySession(job.id, {
 				session_id: selected,

@@ -6,7 +6,13 @@
 	import { ApiError } from '$lib/api/client';
 	import { posterSrc, posterFallback, jobPoster } from '$lib/utils/poster';
 	import PosterImage from '$lib/components/PosterImage.svelte';
-	import type { JobDetailView, ResolveResponse, ApplySessionResponse, NamingPreviewItem } from '$lib/types/api.gen';
+	import type {
+		JobDetailView,
+		ResolveResponse,
+		ApplySessionResponse,
+		NamingPreviewItem,
+		SubtitleOcrResponse
+	} from '$lib/types/api.gen';
 	import JobActions from '$lib/components/JobActions.svelte';
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import TitleSearch from '$lib/components/TitleSearch.svelte';
@@ -20,6 +26,8 @@
 	import ReviewGatePanel from '$lib/components/ReviewGatePanel.svelte';
 	import JobTrackPicker from '$lib/components/JobTrackPicker.svelte';
 	import RawBackupRow from '$lib/components/RawBackupRow.svelte';
+	import MakeTextSubtitlesButton from '$lib/components/MakeTextSubtitlesButton.svelte';
+	import TaskKindChip from '$lib/components/TaskKindChip.svelte';
 	import { effectiveJobStatus, isPartialComplete } from '$lib/utils/job-status';
 	import { isAwaitingIdentity, isLive, isPostRipStatus, isPreRipStatus } from '$lib/utils/job-status-groups';
 	import { isRetryArmed, keepLockedReason, keepSummary, trackRipStatus } from '$lib/utils/track-keep';
@@ -122,6 +130,17 @@
 		const n = resp.tasks?.length ?? 0;
 		flashNote(`${n} transcode task${n === 1 ? '' : 's'} queued`);
 	}
+
+	function handleTextSubtitles(resp: SubtitleOcrResponse) {
+		loadJob();
+		const n = resp.tasks?.length ?? 0;
+		const running = (resp.skipped ?? []).filter((s) => s.reason === 'running').length;
+		if (n > 0) flashNote(`Text subtitles queued for ${n} encode${n === 1 ? '' : 's'}`);
+		else if (running > 0) flashNote('Text subtitles are already being made');
+		else flashNote('Every encode already has text subtitles');
+	}
+
+	let canMakeTextSubtitles = $derived((detail?.subtitle_ocr?.eligible_encodes ?? 0) > 0);
 
 	let isVideoDisc = $derived(detail?.job.disc_type === 'dvd' || detail?.job.disc_type === 'bluray');
 
@@ -404,6 +423,9 @@
 							>
 								Apply session
 							</button>
+						{/if}
+						{#if canMakeTextSubtitles && d.subtitle_ocr && $isAdmin}
+							<MakeTextSubtitlesButton jobId={job.id} view={d.subtitle_ocr} ondone={handleTextSubtitles} />
 						{/if}
 						{#if $isAdmin}
 							<JobActions {job} onaction={loadJob} ondelete={() => goto('/')} />
@@ -712,6 +734,12 @@
 											{:else}
 												<span class="job-detail-track-faint">-</span>
 											{/if}
+											{#if track.subtitle_ocr_status}
+												<span class="job-detail-track-ocr" data-testid="track-ocr-status">
+													<TaskKindChip kind="subtitle_ocr" />
+													<StatusBadge status={track.subtitle_ocr_status} />
+												</span>
+											{/if}
 										</td>
 									</tr>
 									{#if track.status === 'failed' && track.last_error}
@@ -931,6 +959,13 @@
 	}
 	/* the original header buttons were px-3 py-1.5 text-sm (0.75rem/0.375rem,
 	   0.875rem) - between .btn's default and .btn-sm */
+	.job-detail-track-ocr {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.25rem;
+		margin-top: 0.25rem;
+	}
 	.job-detail-header-btn {
 		min-height: auto;
 		padding: 0.375rem 0.75rem;

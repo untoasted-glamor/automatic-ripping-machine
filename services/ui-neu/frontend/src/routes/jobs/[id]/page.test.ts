@@ -54,7 +54,8 @@ vi.mock('$lib/api/jobs', () => ({
 	fetchMusicDetail: vi.fn(() => Promise.resolve({})),
 	setJobMediaType: vi.fn(() => Promise.resolve(createJob({ id: 'job_42' }))),
 	startWaitingJob: vi.fn(() => Promise.resolve(createJob({ id: 'job_42', status: 'ripping' }))),
-	pauseWaitingJob: vi.fn(() => Promise.resolve(createJob({ id: 'job_42' })))
+	pauseWaitingJob: vi.fn(() => Promise.resolve(createJob({ id: 'job_42' }))),
+	requestSubtitleOcr: vi.fn(() => Promise.resolve({ tasks: [], skipped: [] }))
 }));
 
 // The Match Episodes panel reads the job's identity on mount.
@@ -119,7 +120,8 @@ import {
 	setJobMediaType,
 	startWaitingJob,
 	keepTracks,
-	retryFailedTitles
+	retryFailedTitles,
+	requestSubtitleOcr
 } from '$lib/api/jobs';
 import { dashboard } from '$lib/stores/dashboard';
 import * as authStore from '$lib/stores/auth';
@@ -262,6 +264,45 @@ describe('Job detail page (v3)', () => {
 		expect(await screen.findByTestId('retry-note')).toHaveTextContent(
 			'Put the disc back in the drive: ARM rips 2 titles as soon as it goes in.'
 		);
+	});
+
+	it("text subtitles: the Make text subtitles action and each track's OCR status", async () => {
+		mockFetchJob.mockResolvedValue({
+			job: createJob({ id: 'job_42', status: 'ripped', disc_type: 'bluray' }),
+			tracks: [
+				createTrack({
+					id: 'trk_1',
+					status: 'done',
+					transcode_status: 'done',
+					subtitle_ocr_status: 'in_progress'
+				})
+			],
+			fingerprints: [],
+			subtitle_ocr: { override: null, default: true, effective: true, eligible_encodes: 1, with_text_subtitles: 0 }
+		});
+		vi.mocked(requestSubtitleOcr).mockResolvedValueOnce({
+			tasks: [{ id: 'txt_9' } as never],
+			skipped: []
+		});
+		renderComponent(Page);
+		const status = await screen.findByTestId('track-ocr-status');
+		expect(status).toHaveTextContent('Text subtitles');
+		await fireEvent.click(screen.getByTestId('mts-open'));
+		await waitFor(() => expect(vi.mocked(requestSubtitleOcr)).toHaveBeenCalledWith('job_42', false));
+		expect(await screen.findByText('Text subtitles queued for 1 encode')).toBeInTheDocument();
+	});
+
+	it('text subtitles: no action while they are off or no encode wrote subtitle images', async () => {
+		mockFetchJob.mockResolvedValue({
+			job: createJob({ id: 'job_42', status: 'ripped', disc_type: 'bluray' }),
+			tracks: [createTrack({ id: 'trk_1', status: 'done' })],
+			fingerprints: [],
+			subtitle_ocr: { override: null, default: true, effective: true, eligible_encodes: 0, with_text_subtitles: 0 }
+		});
+		renderComponent(Page);
+		await screen.findByTestId('apply-open');
+		expect(screen.queryByTestId('mts-open')).toBeNull();
+		expect(screen.queryByTestId('track-ocr-status')).toBeNull();
 	});
 
 	it('a ripped job rips the titles kept after the rip from its backup', async () => {

@@ -20,6 +20,7 @@ import type {
 	RetryFailedResponse,
 	RipAgainResponse,
 	JobTrackSelectionView,
+	SubtitleOcrResponse,
 	TrackSelectionSettings
 } from '$lib/types/api.gen';
 import { apiFetch, get, post, put } from './client';
@@ -195,13 +196,20 @@ export function triggerManual(body: ManualTriggerRequest): Promise<ManualTrigger
 // Applies a transcode session to the job; `overwrite` defaults to false.
 export function applySession(
 	jobId: string,
-	body: { session_id: string; overwrite?: boolean; track_selection?: TrackSelectionSettings | null }
+	body: {
+		session_id: string;
+		overwrite?: boolean;
+		track_selection?: TrackSelectionSettings | null;
+		subtitle_ocr?: boolean | null;
+	}
 ): Promise<ApplySessionResponse> {
-	// `track_selection` left out keeps the job's own selection; null clears it.
+	// `track_selection` and `subtitle_ocr` left out keep the job's own; null
+	// clears them (the preset, or the Settings default, decides).
 	return post<ApplySessionResponse>(`/api/jobs/${jobId}/transcode`, {
 		session_id: body.session_id,
 		overwrite: body.overwrite ?? false,
-		...(body.track_selection !== undefined ? { track_selection: body.track_selection } : {})
+		...(body.track_selection !== undefined ? { track_selection: body.track_selection } : {}),
+		...(body.subtitle_ocr !== undefined ? { subtitle_ocr: body.subtitle_ocr } : {})
 	});
 }
 
@@ -214,9 +222,19 @@ export function fetchTrackSelection(jobId: string, sessionId?: string | null): P
 /** Set the job's own track selection; null clears it so the preset decides. */
 export function saveTrackSelection(
 	jobId: string,
-	trackSelection: TrackSelectionSettings | null
+	trackSelection: TrackSelectionSettings | null,
+	choice: { subtitle_ocr?: boolean | null } = {}
 ): Promise<JobTrackSelectionView> {
-	return put<JobTrackSelectionView>(`/api/jobs/${jobId}/track-selection`, { track_selection: trackSelection });
+	// `subtitle_ocr` left out keeps the job's text subtitles choice.
+	return put<JobTrackSelectionView>(`/api/jobs/${jobId}/track-selection`, {
+		track_selection: trackSelection,
+		...choice
+	});
+}
+
+/** Make text subtitles (.srt) for the job's finished encodes (job page). */
+export function requestSubtitleOcr(jobId: string, overwrite = false): Promise<SubtitleOcrResponse> {
+	return post<SubtitleOcrResponse>(`/api/jobs/${jobId}/subtitle-ocr`, { overwrite });
 }
 
 // ---------------------------------------------------------------------------

@@ -635,3 +635,55 @@ describe('SchemaConfigForm Ripping: pausing lives in the header only', () => {
 		expect(saveArmConfig.mock.calls[0][0]).toEqual({ hold_for_review: false });
 	});
 });
+
+describe('SchemaConfigForm text subtitles', () => {
+	const field = (key: string, label: string): ConfigFieldMeta => ({
+		key,
+		group: 'Transcoding',
+		tier: 'operator',
+		label,
+		help: '',
+		type: 'bool',
+		editable: true,
+		enum_values: null
+	});
+	const TRANSCODING: SettingsGroup = {
+		name: 'Transcoding',
+		fields: [
+			field('subtitle_ocr_enabled', 'Make text subtitles'),
+			field('subtitle_ocr_default_on', 'Text subtitles for new discs')
+		]
+	};
+	const MODEL = {
+		name: 'PP-OCRv6_rec_small',
+		version: 'RapidOCR 3.9.2',
+		size: 21_234_383,
+		sha256: '6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884',
+		licence: 'Apache-2.0',
+		source: 'https://example.invalid/model.onnx'
+	};
+
+	it('lists the built-in model in its own section and saves the switch', async () => {
+		renderComponent(SchemaConfigForm, {
+			props: {
+				group: TRANSCODING,
+				config: { subtitle_ocr_enabled: false, subtitle_ocr_default_on: true, subtitle_ocr_model: MODEL }
+			}
+		});
+		const section = screen.getAllByTestId('settings-section').find((s) => s.textContent?.includes('Text subtitles'));
+		expect(section).toBeDefined();
+		const model = within(section!).getByTestId('text-subtitles-model');
+		expect(model).toHaveTextContent('PP-OCRv6_rec_small (RapidOCR 3.9.2)');
+		expect(model).toHaveTextContent(MODEL.sha256);
+		expect(model).toHaveTextContent('Apache-2.0');
+		await fireEvent.click(screen.getByLabelText('Make text subtitles'));
+		await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+		await waitFor(() => expect(saveArmConfig).toHaveBeenCalled());
+		expect(saveArmConfig.mock.calls[0][0]).toEqual({ subtitle_ocr_enabled: true });
+	});
+
+	it('shows no model listing when the config has none', () => {
+		renderComponent(SchemaConfigForm, { props: { group: TRANSCODING, config: { subtitle_ocr_enabled: true } } });
+		expect(screen.queryByTestId('text-subtitles-model')).toBeNull();
+	});
+});

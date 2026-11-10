@@ -4,6 +4,9 @@
 	// `sessionId`, else the job's session, else the built-in default) and the
 	// languages on the disc's kept titles; "Choose tracks for this disc"
 	// switches from that default to the job's own choice, seeded from it.
+	// While text subtitles are on in Settings it also holds the job's text
+	// subtitles choice (jobs.subtitle_ocr), offered when the subtitles go to
+	// separate files (that is where the image subtitles it reads come from).
 	//
 	// variant:
 	//  - `page`: its own Save button (job page). Read only once a transcode
@@ -35,16 +38,26 @@
 	let saving = $state(false);
 	let saveError = $state<string | null>(null);
 	let saved = $state(false);
+	// The job's text subtitles choice: its own value, else the Settings default.
+	let ocrOverride = $state<boolean | null>(null);
+	let ocrDirty = $state(false);
 
 	const locked = $derived(view !== null && !view.editable && variant !== 'apply');
 	const editable = $derived($isAdmin && !locked);
 	const defaultTracks = $derived(fullTracks(view?.default));
+	const shownTracks = $derived(custom ? draft : defaultTracks);
+	const ocrOffered = $derived(
+		view?.subtitle_ocr != null && (shownTracks.subtitle_output === 'separate' || shownTracks.subtitle_output === 'both')
+	);
+	const ocrOn = $derived(ocrOverride ?? view?.subtitle_ocr?.default ?? false);
 
 	function adopt(v: JobTrackSelectionView): void {
 		view = v;
 		custom = v.override != null;
 		draft = fullTracks(v.override ?? v.default);
 		dirty = false;
+		ocrOverride = v.subtitle_ocr?.override ?? null;
+		ocrDirty = false;
 	}
 
 	async function load(): Promise<void> {
@@ -83,9 +96,20 @@
 		saved = false;
 	}
 
+	function setOcr(on: boolean): void {
+		ocrOverride = on;
+		ocrDirty = true;
+		saved = false;
+	}
+
 	/** What the job should carry: its own choice, or null for the default. */
 	export function value(): TrackSettings | null {
 		return custom ? { ...draft } : null;
+	}
+
+	/** The text subtitles choice to send: only when it is offered and was changed. */
+	export function ocrChoice(): { subtitle_ocr?: boolean | null } {
+		return ocrOffered && ocrDirty ? { subtitle_ocr: ocrOverride } : {};
 	}
 
 	/** True once the job's track choice has loaded. */
@@ -100,12 +124,12 @@
 
 	/** Save a changed choice (review Start). Throws when it cannot be saved. */
 	export async function save(): Promise<void> {
-		if (!view || locked || !dirty) return;
+		if (!view || locked || !(dirty || ocrDirty)) return;
 		if (!valid()) throw new Error('Add at least one language, or choose all tracks.');
 		saving = true;
 		saveError = null;
 		try {
-			adopt(await saveTrackSelection(jobId, value()));
+			adopt(await saveTrackSelection(jobId, value(), ocrChoice()));
 			saved = true;
 		} catch (e) {
 			saveError = e instanceof Error ? e.message : 'Saving the track choice failed';
@@ -156,19 +180,34 @@
 		{:else if view.disc.known}
 			<TrackSelectionEditor value={defaultTracks} onchange={() => {}} prefix="jtp-default" disabled disc={view.disc} />
 		{/if}
+		{#if ocrOffered}
+			<label class="field-row">
+				<input
+					type="checkbox"
+					data-testid="jtp-ocr"
+					checked={ocrOn}
+					disabled={!editable}
+					onchange={(e) => setOcr(e.currentTarget.checked)}
+				/>
+				<span class="field-label">Make text subtitles (.srt)</span>
+			</label>
+			<p class="field-help" data-testid="jtp-ocr-help">
+				Read from the Blu-ray subtitle images after each encode. Default: {view.subtitle_ocr?.default ? 'on' : 'off'}.
+			</p>
+		{/if}
 		{#if saveError}
 			<p class="field-error" data-testid="jtp-save-error">{saveError}</p>
 		{/if}
 		{#if variant === 'page' && editable}
 			<div class="job-track-picker-actions">
-				{#if saved && !dirty}
+				{#if saved && !dirty && !ocrDirty}
 					<span class="field-help" data-testid="jtp-saved">Saved.</span>
 				{/if}
 				<button
 					type="button"
 					class="btn btn-primary btn-sm"
 					data-testid="jtp-save"
-					disabled={!dirty || saving || !valid()}
+					disabled={!(dirty || ocrDirty) || saving || !valid()}
 					onclick={saveClicked}
 				>
 					{saving ? 'Saving...' : 'Save tracks'}
