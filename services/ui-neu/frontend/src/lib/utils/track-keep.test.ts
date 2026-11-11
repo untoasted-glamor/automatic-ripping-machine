@@ -1,6 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { createTrack } from '$lib/components/__fixtures__/job';
-import { isRetryArmed, keepLockedReason, keepSummary, trackRipStatus } from './track-keep';
+import type { TrackView } from '$lib/types/api.gen';
+import {
+	isDiscMenu,
+	isRetryArmed,
+	keepAllIds,
+	keepLockedReason,
+	keepSummary,
+	menuSkippedReason,
+	titleTracks,
+	trackRipStatus
+} from './track-keep';
 
 const GB = 1024 ** 3;
 
@@ -23,6 +33,33 @@ describe('keepSummary', () => {
 	it('leaves out what nothing says and takes a noun for CDs', () => {
 		const tracks = [createTrack({ size_bytes: null, expected_size_bytes: null, duration_seconds: null })];
 		expect(keepSummary(tracks, 'tracks')).toBe('Keeping 1 of 1 tracks');
+	});
+});
+
+describe('the disc menu row', () => {
+	const menu = (over: Partial<TrackView> = {}) =>
+		createTrack({ id: 'menu', kind: 'disc_menu', index: -1, source_ref: 'menu', ...over });
+
+	it('is not a title', () => {
+		const title = createTrack({ id: 't' });
+		expect(isDiscMenu(menu())).toBe(true);
+		expect(titleTracks([menu(), title])).toEqual([title]);
+	});
+
+	it('is named in the keep summary but not counted as a title', () => {
+		const title = createTrack({ id: 't', size_bytes: null, expected_size_bytes: null, duration_seconds: null });
+		expect(keepSummary([menu({ excluded: false }), title])).toBe('Keeping 1 of 1 titles and the disc menu');
+		expect(keepSummary([menu({ excluded: true }), title])).toBe('Keeping 1 of 1 titles');
+	});
+
+	it('gives its skip reason, and Keep all leaves a skipped one alone', () => {
+		const skipped = menu({ status: 'skipped', last_error: 'This disc has no menu', excluded: true });
+		const left = createTrack({ id: 't', excluded: true });
+		expect(menuSkippedReason(skipped)).toBe('This disc has no menu');
+		expect(menuSkippedReason(menu({ status: 'skipped', last_error: null }))).toBe('Skipped');
+		expect(menuSkippedReason(menu())).toBeNull();
+		expect(menuSkippedReason(createTrack({ status: 'skipped' }))).toBeNull();
+		expect(keepAllIds([skipped, left, menu({ id: 'm2', excluded: true })])).toEqual(['t', 'm2']);
 	});
 });
 

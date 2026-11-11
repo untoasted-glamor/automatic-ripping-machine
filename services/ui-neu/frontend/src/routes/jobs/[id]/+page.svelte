@@ -30,7 +30,16 @@
 	import TaskKindChip from '$lib/components/TaskKindChip.svelte';
 	import { effectiveJobStatus, isPartialComplete } from '$lib/utils/job-status';
 	import { isAwaitingIdentity, isLive, isPostRipStatus, isPreRipStatus } from '$lib/utils/job-status-groups';
-	import { isRetryArmed, keepLockedReason, keepSummary, trackRipStatus } from '$lib/utils/track-keep';
+	import {
+		isDiscMenu,
+		isRetryArmed,
+		keepAllIds,
+		keepLockedReason,
+		keepSummary,
+		menuSkippedReason,
+		titleTracks,
+		trackRipStatus
+	} from '$lib/utils/track-keep';
 	import TrackKeepToggle from '$lib/components/TrackKeepToggle.svelte';
 	import PlayAllBadge from '$lib/components/PlayAllBadge.svelte';
 	import { fetchSessions } from '$lib/api/sessions';
@@ -344,13 +353,14 @@
 	{#snippet ready(d)}
 		{@const job = d.job}
 		{@const tracks = d.tracks}
-		{@const keptCount = tracks.filter((t) => !t.excluded).length}
+		{@const keptCount = titleTracks(tracks).filter((t) => !t.excluded).length}
 		{@const preRip = isPreRipStatus(job.status)}
 		{@const ripStarted = job.status === 'ripping' || isPostRipStatus(job.status)}
 		{@const keepNoun = job.disc_type === 'cd' ? 'tracks' : 'titles'}
 		{@const remaining = tracks.filter(
 			(t) => !t.excluded && (t.status === 'failed' || (t.status === 'queued' && !t.output_path))
 		)}
+		{@const remainingTitles = titleTracks(remaining)}
 		{@const onlyFailed = remaining.every((t) => t.status === 'failed')}
 		{@const retryArmed = isRetryArmed(job.metadata_json)}
 		<div class="stack-lg stack">
@@ -614,18 +624,27 @@
 									{@const preview = previewByTrack.get(track.id)}
 									{@const length = trackDuration(track.duration_seconds, track.expected_duration_seconds)}
 									<tr class="table-row" data-disabled={track.excluded}>
-										<td class="table-cell" data-label="#">{track.index}</td>
+										<td class="table-cell" data-label="#">{isDiscMenu(track) ? '-' : track.index}</td>
 										<td class="table-cell job-detail-track-kind" data-label="Kind">{trackKindLabel(track.kind)}</td>
 										<td
-											class="table-cell {$isAdmin ? 'job-detail-track-title-cell' : ''}"
+											class="table-cell {$isAdmin && !isDiscMenu(track) ? 'job-detail-track-title-cell' : ''}"
 											data-label="Title"
-											onclick={$isAdmin
+											onclick={$isAdmin && !isDiscMenu(track)
 												? () => {
 														editingTrackId = editingTrackId === track.id ? null : track.id;
 													}
 												: undefined}
 										>
-											{#if track.title}
+											{#if isDiscMenu(track)}
+												<span class="job-detail-track-title job-detail-track-title-strong" data-testid="menu-row"
+													>Disc menu</span
+												>
+												{#if menuSkippedReason(track)}
+													<span class="job-detail-track-faint" data-testid="menu-skip-reason"
+														>({menuSkippedReason(track)})</span
+													>
+												{/if}
+											{:else if track.title}
 												<div class="flex items-center gap-1.5">
 													{#if track.poster_url}
 														<img
@@ -771,16 +790,12 @@
 					</div>
 					<div class="job-detail-keep-footer">
 						<span data-testid="keep-summary">{keepSummary(tracks, keepNoun)}</span>
-						{#if $isAdmin && preRip && keptCount < tracks.length}
-							<button
-								type="button"
-								class="btn job-detail-keep-all"
-								onclick={() => keepAll(tracks.filter((t) => t.excluded).map((t) => t.id))}
-							>
+						{#if $isAdmin && preRip && keepAllIds(tracks).length > 0}
+							<button type="button" class="btn job-detail-keep-all" onclick={() => keepAll(keepAllIds(tracks))}>
 								Keep all
 							</button>
 						{/if}
-						{#if $isAdmin && (job.status === 'ripped' || job.status === 'ripped_partial' || job.status === 'failed') && remaining.length > 0 && !retryArmed}
+						{#if $isAdmin && (job.status === 'ripped' || job.status === 'ripped_partial' || job.status === 'failed') && remainingTitles.length > 0 && !retryArmed}
 							<button
 								type="button"
 								class="btn job-detail-keep-all"
@@ -790,7 +805,7 @@
 							>
 								{retrying
 									? 'Working...'
-									: `${onlyFailed ? 'Retry failed titles' : 'Rip remaining titles'} (${remaining.length})`}
+									: `${onlyFailed ? 'Retry failed titles' : 'Rip remaining titles'} (${remainingTitles.length})`}
 							</button>
 						{/if}
 					</div>

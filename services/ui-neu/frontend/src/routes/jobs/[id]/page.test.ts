@@ -211,6 +211,48 @@ describe('Job detail page (v3)', () => {
 		expect(vi.mocked(keepTracks)).toHaveBeenCalledWith('job_42', ['trk_2']);
 	});
 
+	it('shows the disc menu as its own row: ticked, or skipped with the reason and locked', async () => {
+		mockFetchJob.mockResolvedValue({
+			job: createJob({ id: 'job_42', status: 'awaiting_review', disc_type: 'bluray' }),
+			tracks: [
+				createTrack({ id: 'trk_menu', kind: 'disc_menu', index: -1, source_ref: 'menu', status: 'queued' }),
+				createTrack({ id: 'trk_1', index: 0, status: 'queued', expected_duration_seconds: 1500 })
+			],
+			fingerprints: []
+		});
+		renderComponent(Page);
+		const menu = await screen.findByRole('checkbox', { name: 'Keep the disc menu' });
+		expect(menu).not.toBeDisabled();
+		expect(screen.getByTestId('menu-row')).toHaveTextContent('Disc menu');
+		// The menu isn't the last kept title, and isn't counted as one.
+		expect(screen.getByRole('checkbox', { name: 'Keep track 0' })).toBeDisabled();
+		expect(screen.getByTestId('keep-summary')).toHaveTextContent('Keeping 1 of 1 titles and the disc menu');
+		cleanup();
+
+		mockFetchJob.mockResolvedValue({
+			job: createJob({ id: 'job_42', status: 'awaiting_review', disc_type: 'bluray' }),
+			tracks: [
+				createTrack({
+					id: 'trk_menu',
+					kind: 'disc_menu',
+					index: -1,
+					source_ref: 'menu',
+					status: 'skipped',
+					excluded: true,
+					last_error: "Java menus can't be played"
+				}),
+				createTrack({ id: 'trk_1', index: 0, status: 'queued' })
+			],
+			fingerprints: []
+		});
+		renderComponent(Page);
+		const skipped = await screen.findByRole('checkbox', { name: 'Keep the disc menu' });
+		expect(skipped).toBeDisabled();
+		expect(skipped.getAttribute('title')).toBe("Java menus can't be played");
+		expect(screen.getByTestId('menu-skip-reason')).toHaveTextContent("(Java menus can't be played)");
+		expect(screen.queryByRole('button', { name: 'Keep all' })).toBeNull();
+	});
+
 	it('the gate Start waits while every title is left out', async () => {
 		mockFetchJob.mockResolvedValue({
 			job: createJob({ id: 'job_42', status: 'awaiting_review', disc_type: 'bluray' }),

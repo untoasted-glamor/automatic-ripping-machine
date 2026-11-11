@@ -1,4 +1,5 @@
 import type { TrackView, ScanTitle } from '$lib/types/api.gen';
+import { isDiscMenu, menuSkippedReason } from './track-keep';
 
 // One row shape covering both review-card lifecycle stages. A row is editable iff
 // it has a real materialized-track id; scanned-title rows (trackId === null) are
@@ -12,6 +13,10 @@ export type ReviewRow = {
 	year: number | null;
 	episodeNumber: number | null;
 	excluded: boolean;
+	/** The "Disc menu" row: no number, identity, episode or length of its own. */
+	isMenu: boolean;
+	/** Why a disc menu is skipped, shown in its row. */
+	note: string | null;
 };
 
 export function trackToRow(t: TrackView): ReviewRow {
@@ -23,7 +28,9 @@ export function trackToRow(t: TrackView): ReviewRow {
 		title: t.title ?? null,
 		year: t.year ?? null,
 		episodeNumber: t.episode_number ?? null,
-		excluded: t.excluded ?? false
+		excluded: t.excluded ?? false,
+		isMenu: isDiscMenu(t),
+		note: menuSkippedReason(t)
 	};
 }
 
@@ -36,6 +43,8 @@ export function scanTitleToRow(s: ScanTitle): ReviewRow {
 		title: null,
 		year: null,
 		episodeNumber: null,
-		excluded: false
+		excluded: false,
+		isMenu: false,
+		note: null
 	};
 }

@@ -22,7 +22,9 @@ describe('review-rows mappers', () => {
 			title: 'Main',
 			year: 2001,
 			episodeNumber: 4,
-			excluded: false
+			excluded: false,
+			isMenu: false,
+			note: null
 		});
 	});
 
@@ -51,8 +53,18 @@ describe('review-rows mappers', () => {
 			title: null,
 			year: null,
 			episodeNumber: null,
-			excluded: false
+			excluded: false,
+			isMenu: false,
+			note: null
 		});
+	});
+
+	it('trackToRow marks the disc menu row and its skip reason', () => {
+		const base = { id: 'trk_menu', index: -1, kind: 'disc_menu', source_ref: 'menu', excluded: true };
+		const skipped = trackToRow({ ...base, status: 'skipped', last_error: "Java menus can't be played" } as any);
+		expect([skipped.isMenu, skipped.note]).toEqual([true, "Java menus can't be played"]);
+		const queued = trackToRow({ ...base, status: 'queued', last_error: null } as any);
+		expect([queued.isMenu, queued.note]).toEqual([true, null]);
 	});
 
 	it('scanTitleToRow tolerates a missing source_file', () => {

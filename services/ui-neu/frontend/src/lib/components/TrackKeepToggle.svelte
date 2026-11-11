@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { updateTrack } from '$lib/api/jobs';
 	import type { TrackView } from '$lib/types/api.gen';
+	import { isDiscMenu, menuSkippedReason } from '$lib/utils/track-keep';
 
 	// The Keep checkbox for one track, shared by the job page and the dashboard
 	// review card. Unticking before the rip means the title is never ripped;
@@ -22,8 +23,13 @@
 
 	const KEEP_HELP =
 		'Keep this title. One left out before the rip starts is not ripped (keep it afterwards and use Rip remaining titles to rip it then); one left out after it is left out of transcodes.';
-	let lastOne = $derived(lastKept && !track.excluded);
-	let title = $derived(lockedReason ?? (lastOne ? 'At least one title has to be kept' : KEEP_HELP));
+	const MENU_HELP =
+		"Copy this disc's menus with its titles, so the library can show them. Ticked after the rip, Rip remaining titles copies them then.";
+	let menu = $derived(isDiscMenu(track));
+	// A skipped disc menu can't be ripped at all (Java menus, no menu): its reason locks the box.
+	let locked = $derived(menuSkippedReason(track) ?? lockedReason);
+	let lastOne = $derived(lastKept && !track.excluded && !menu);
+	let title = $derived(locked ?? (lastOne ? 'At least one title has to be kept' : menu ? MENU_HELP : KEEP_HELP));
 
 	async function toggle(input: HTMLInputElement) {
 		const excluded = !input.checked;
@@ -46,9 +52,9 @@
 	type="checkbox"
 	class="track-keep-toggle"
 	checked={!track.excluded}
-	disabled={lockedReason != null || lastOne}
+	disabled={locked != null || lastOne}
 	{title}
-	aria-label={`Keep track ${track.index}`}
+	aria-label={menu ? 'Keep the disc menu' : `Keep track ${track.index}`}
 	onchange={(e) => toggle(e.currentTarget as HTMLInputElement)}
 />
 

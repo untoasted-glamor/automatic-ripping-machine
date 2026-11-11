@@ -81,6 +81,39 @@ describe('DiscReviewWidget', () => {
 		});
 	});
 
+	describe('the disc menu row', () => {
+		it('shows the menu first, without a number, length or title search, with its skip reason', async () => {
+			const { fetchJob } = await import('$lib/api/jobs');
+			vi.mocked(fetchJob).mockResolvedValueOnce({
+				...createJobDetail({
+					tracks: [
+						createTrack({
+							id: 'trk_menu',
+							kind: 'disc_menu',
+							index: -1,
+							source_ref: 'menu',
+							status: 'skipped',
+							excluded: true,
+							last_error: 'This disc has no menu'
+						}),
+						createTrack({ id: 'trk_1', index: 0, source_ref: 't00.mkv', title: 'Main' })
+					]
+				}),
+				job: createJob({ title: 'Test Movie', disc_type: 'bluray', status: 'awaiting_review' })
+			});
+			renderWidget({ status: 'awaiting_review' });
+			await waitFor(() => expect(screen.getByRole('button', { name: 'Info' })).toBeInTheDocument());
+			await fireEvent.click(screen.getByRole('button', { name: 'Info' }));
+			const row = (await screen.findByTestId('review-menu-row')).closest('tr')!;
+			expect(row).toHaveTextContent('Disc menu (This disc has no menu)');
+			expect(row.querySelector('input[type="text"]')).toBeNull();
+			expect(row.querySelector('button')).toBeNull();
+			expect(screen.getByRole('checkbox', { name: 'Keep the disc menu' })).toBeDisabled();
+			expect(screen.getByTestId('review-keep-summary')).toHaveTextContent('Keeping 1 of 1 titles');
+			expect(screen.queryByRole('button', { name: 'Keep all' })).toBeNull();
+		});
+	});
+
 	describe('action buttons', () => {
 		it('renders Cancel before the (enabled) Start rip control for awaiting_review', async () => {
 			renderWidget({ status: 'awaiting_review' });

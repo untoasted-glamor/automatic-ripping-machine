@@ -4,7 +4,7 @@
 	import { isAdmin } from '$lib/stores/auth';
 	import { isPreRipStatus } from '$lib/utils/job-status-groups';
 	import { trackToRow, scanTitleToRow } from '$lib/utils/review-rows';
-	import { keepLockedReason, keepSummary } from '$lib/utils/track-keep';
+	import { keepAllIds, keepLockedReason, keepSummary, titleTracks } from '$lib/utils/track-keep';
 	import PlayAllBadge from './PlayAllBadge.svelte';
 	import TrackKeepToggle from './TrackKeepToggle.svelte';
 	import TrackTitleSearch from './TrackTitleSearch.svelte';
@@ -27,16 +27,15 @@
 
 	// The Keep column needs track rows; scanned titles are read-only.
 	let trackById = $derived(new Map(tracks.map((t) => [t.id, t])));
-	let keptCount = $derived(tracks.filter((t) => !t.excluded).length);
+	// Titles only: the disc menu is never the "last kept" one.
+	let keptCount = $derived(titleTracks(tracks).filter((t) => !t.excluded).length);
+	let keepable = $derived(keepAllIds(tracks).length);
 	let preRip = $derived(isPreRipStatus(job.status));
 
 	async function keepAll() {
 		errorMessage = null;
 		try {
-			await keepTracks(
-				job.id,
-				tracks.filter((t) => t.excluded).map((t) => t.id)
-			);
+			await keepTracks(job.id, keepAllIds(tracks));
 		} catch (e) {
 			errorMessage = `Failed to update tracks: ${e instanceof Error ? e.message : 'Unknown error'}`;
 		} finally {
@@ -135,14 +134,19 @@
 										{/if}
 									</td>
 								{/if}
-								<td class="table-cell mono">{row.index}</td>
+								<td class="table-cell mono">{row.isMenu ? '-' : row.index}</td>
 								<td
-									class="table-cell {isVideo && row.trackId ? 'review-tracks-table-clickable' : ''}"
+									class="table-cell {isVideo && row.trackId && !row.isMenu ? 'review-tracks-table-clickable' : ''}"
 									onclick={() => {
-										if (isVideo && row.trackId) toggleTrackSearch(row.trackId!);
+										if (isVideo && row.trackId && !row.isMenu) toggleTrackSearch(row.trackId!);
 									}}
 								>
-									{#if row.title}
+									{#if row.isMenu}
+										<span class="review-tracks-table-title" data-testid="review-menu-row">Disc menu</span>
+										{#if row.note}
+											<span class="review-tracks-table-faint">({row.note})</span>
+										{/if}
+									{:else if row.title}
 										<div class="flex items-center gap-1.5">
 											<span class="review-tracks-table-title">{row.title}</span>
 											{#if row.year}
@@ -160,7 +164,7 @@
 								</td>
 								{#if isVideo}
 									<td class="table-cell review-tracks-table-center">
-										{#if row.trackId}
+										{#if row.trackId && !row.isMenu}
 											<input
 												type="text"
 												value={row.episodeNumber ?? ''}
@@ -175,10 +179,10 @@
 									</td>
 								{/if}
 								<td class="table-cell review-tracks-table-secondary">{formatLength(row.durationSeconds)}</td>
-								<td class="table-cell mono review-tracks-table-muted">{row.sourceLabel}</td>
+								<td class="table-cell mono review-tracks-table-muted">{row.isMenu ? '-' : row.sourceLabel}</td>
 								{#if isVideo}
 									<td class="table-cell">
-										{#if row.trackId}
+										{#if row.trackId && !row.isMenu}
 											<button
 												onclick={() => toggleTrackSearch(row.trackId!)}
 												class="btn btn-icon review-tracks-table-search-btn"
@@ -214,7 +218,7 @@
 			{#if tracks.length}
 				<div class="review-tracks-table-keep">
 					<span data-testid="review-keep-summary">{keepSummary(tracks, isMusic ? 'tracks' : 'titles')}</span>
-					{#if $isAdmin && preRip && keptCount < tracks.length}
+					{#if $isAdmin && preRip && keepable > 0}
 						<button type="button" class="btn review-tracks-table-keep-all" onclick={keepAll}>Keep all</button>
 					{/if}
 				</div>

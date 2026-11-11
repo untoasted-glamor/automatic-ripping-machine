@@ -11,6 +11,7 @@
 	import ReviewWaitStatus from './ReviewWaitStatus.svelte';
 	import { discTypeLabel } from '$lib/utils/job-type';
 	import { listedScanTitles } from '$lib/utils/scan-titles';
+	import { titleTracks } from '$lib/utils/track-keep';
 	import PosterImage from './PosterImage.svelte';
 	import TitleSearch from './TitleSearch.svelte';
 	import MusicSearch from './MusicSearch.svelte';
@@ -74,8 +75,9 @@
 	let errorMessage = $state<string | null>(null);
 
 	let tracks = $derived<TrackView[]>(data?.tracks ?? []);
-	// Every track left out: nothing to rip, so Start waits for one to be kept.
-	let nothingKept = $derived(tracks.length > 0 && tracks.every((t) => t.excluded));
+	// Every title left out: nothing to rip, so Start waits for one to be kept
+	// (the disc menu alone isn't a rip).
+	let nothingKept = $derived(titleTracks(tracks).length > 0 && titleTracks(tracks).every((t) => t.excluded));
 	// Same cut as the backend's Track rows: titles under the scan's minimum are hidden.
 	let scanTitles = $derived(listedScanTitles(data?.job?.metadata_json?.scan_result));
 
