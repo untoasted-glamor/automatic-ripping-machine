@@ -46,6 +46,7 @@ from arm_backend.seeders import CONFIG_SINGLETON_ID
 from arm_backend.ws import WSHub
 from arm_common import Config, Job, User
 from arm_common.models import Track
+from arm_common.tracks import titles
 from arm_common.schemas.identity import SourceClaims
 from arm_common.schemas.identity_api import (
     EpisodeListView,
@@ -79,7 +80,8 @@ async def _get_job(db: AsyncSession, job_id: str, *, for_update: bool = False) -
 
 
 async def _get_tracks(db: AsyncSession, job_id: str) -> list[Track]:
-    return list((await db.execute(select(Track).where(col(Track.job_id) == job_id))).scalars().all())
+    """The job's titles (identity is per title; the disc menu has none)."""
+    return titles((await db.execute(select(Track).where(col(Track.job_id) == job_id))).scalars().all())
 
 
 async def _get_config(db: AsyncSession) -> Config:

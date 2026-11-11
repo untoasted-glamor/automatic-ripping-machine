@@ -25,7 +25,8 @@ from arm_backend.config import settings
 from arm_backend.transcode_dispatcher import count_queued_encode_tasks, max_parallel_transcodes, release_gpu_for_task
 from arm_backend.db import get_session
 from arm_backend.routers.logs import LOG_DIR
-from arm_common import Gpu, GpuStatus, SessionApplication, TranscodeTaskKind, TranscodeTaskStatus, User
+from arm_backend.task_kinds import rules_for
+from arm_common import Gpu, GpuStatus, SessionApplication, TranscodeTaskStatus, User
 from arm_common.encoders import gpu_is_usable
 from arm_common.models import TranscodeTask
 from arm_common.schemas import TranscodeStatsView, TranscodeTaskView, TranscodeWorkerView
@@ -95,9 +96,10 @@ async def transcode_stats(
     encodes = 0
     for t in tasks:
         key = t.status.value if hasattr(t.status, "value") else str(t.status)
-        counts = ocr_by_status if t.kind == TranscodeTaskKind.SUBTITLE_OCR else by_status
+        encode = rules_for(t.kind).encodes
+        counts = by_status if encode else ocr_by_status
         counts[key] = counts.get(key, 0) + 1
-        encodes += t.kind != TranscodeTaskKind.SUBTITLE_OCR
+        encodes += encode
     gpus = list((await db.execute(select(Gpu))).scalars().all())
     # Idle and usable by the dispatcher (enabled, probed, an encoder verified).
     gpus_available = len([g for g in gpus if g.status == GpuStatus.AVAILABLE and gpu_is_usable(g)])

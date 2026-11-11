@@ -396,9 +396,17 @@ class TrackView(BaseModel):
     identity_provenance: dict[str, str] | None = None
 
 
+class MenuExtract(BaseModel):
+    """The disc menu the ripper copies out of the disc (fork only): its track."""
+
+    track_id: str
+
+
 class RipStartResponse(BaseModel):
     job_id: str
     rip_preset_id: str
+    # The titles to rip. The disc menu row is never in this list (its
+    # `source_ref` isn't a title number); it comes as `extract_menu`.
     tracks: list[TrackView]
     # Per-rip `--minlength` override resolved from the Session's
     # `overrides_json["min_length_seconds"]`. None means "use the
@@ -416,6 +424,9 @@ class RipStartResponse(BaseModel):
     # /api/jobs/{id}/retry-failed): its DONE tracks are kept as they are, and
     # the ripper rips the rest into a folder of its own.
     retry: bool = False
+    # The disc menu to copy (fork only), when the job's menu row is ticked and
+    # still queued; None otherwise. Older rippers ignore it.
+    extract_menu: MenuExtract | None = None
 
 
 # The one definition of apply/fan-out skip reasons — the backend engine

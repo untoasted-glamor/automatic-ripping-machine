@@ -53,10 +53,6 @@ logger = logging.getLogger("arm_backend.subtitle_ocr_tasks")
 _LIVE = (TranscodeTaskStatus.QUEUED, TranscodeTaskStatus.IN_PROGRESS)
 
 
-def is_subtitle_ocr(task: TranscodeTask) -> bool:
-    return task.kind == TranscodeTaskKind.SUBTITLE_OCR
-
-
 async def subtitle_ocr_inputs(db: AsyncSession, task: TranscodeTask) -> tuple[list[str], str | None]:
     """The image subtitle sidecars a `subtitle_ocr` task reads, relative to
     the media root, or why it can never run: `([], reason)`."""

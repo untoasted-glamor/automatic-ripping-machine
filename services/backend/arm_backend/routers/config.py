@@ -106,6 +106,7 @@ def _to_view(cfg: Config) -> ConfigView:
         on_previously_ripped=cfg.on_previously_ripped or PreviouslyRippedAction.HOLD,
         # `is True` / `is not False`: a bare in-memory Config carries None
         # (server_default is DB-level only); None reads as each column's default.
+        rip_disc_menus=cfg.rip_disc_menus is not False,
         subtitle_ocr_enabled=cfg.subtitle_ocr_enabled is True,
         subtitle_ocr_default_on=cfg.subtitle_ocr_default_on is not False,
         subtitle_ocr_model=bundled_model_view(),
@@ -239,7 +240,7 @@ async def update_config(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="review_requires_confirm must be true or false"
         )
-    for key in ("subtitle_ocr_enabled", "subtitle_ocr_default_on"):
+    for key in ("rip_disc_menus", "subtitle_ocr_enabled", "subtitle_ocr_default_on"):
         if key in fields and fields[key] is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{key} must be true or false")
     if fields.get("transcode_enabled") is True and not effective_transcode_capable(settings):

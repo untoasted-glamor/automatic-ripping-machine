@@ -17,9 +17,11 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
+from arm_common.enums import MenuKind
 from arm_common.schemas import BdDiscMeta
 
 from arm_ripper.drive_poll import DriveState, read_drive_status
+from arm_ripper.menus.probe import probe_menu_kind
 from arm_ripper.scan.bd_meta import probe_bd_meta
 from arm_ripper.scan.matrix256_fp import probe_matrix256
 from arm_ripper.scan.thediscdb_hash import probe_thediscdb_hash
@@ -39,6 +41,8 @@ class DiscProbe:
     thediscdb: str | None = None
     matrix256: str | None = None
     bd_meta: BdDiscMeta | None = None
+    # Set only when asked for (`menus=True`): what the disc's menu is.
+    menu_kind: MenuKind | None = None
 
 
 async def await_device_ready(device_path: str) -> bool:
@@ -77,7 +81,7 @@ async def await_device_ready(device_path: str) -> bool:
     return False
 
 
-async def probe_disc(device_path: str, *, bluray: bool = False) -> DiscProbe:
+async def probe_disc(device_path: str, *, bluray: bool = False, menus: bool = False) -> DiscProbe:
     """Compute the disc's pydvdid CRC64, TheDiscDB ContentHash, and (Blu-ray
     only) BDMT disc title, read off the device via PyCdlib.
 
@@ -92,15 +96,21 @@ async def probe_disc(device_path: str, *, bluray: bool = False) -> DiscProbe:
     it only once the disc type is known, so DVD/CD scans skip this extra
     pycdlib open entirely.
 
+    `menus=True` (a DVD or Blu-ray) also reads what the disc's menu is
+    (`arm_ripper.menus.probe`: `index.bdmv` and the clip info, or the IFOs),
+    from a folder source too; an unready device gives `unknown`.
+
     Probes only when the device reports ready (see await_device_ready); an
     unready device degrades to crc64=None and thediscdb=None without racing
     either probe. Never raises.
     """
     if is_folder_source(device_path):
-        # pydvdid and PyCdlib read a device or an image, not a folder.
-        return DiscProbe(crc64=None, thediscdb=None)
+        # pydvdid and PyCdlib read a device or an image, not a folder; the
+        # menu probe reads a folder as it is.
+        menu_kind = await asyncio.to_thread(probe_menu_kind, device_path) if menus else None
+        return DiscProbe(crc64=None, thediscdb=None, menu_kind=menu_kind)
     if not await await_device_ready(device_path):
-        return DiscProbe(crc64=None, thediscdb=None, matrix256=None)
+        return DiscProbe(crc64=None, thediscdb=None, matrix256=None, menu_kind=MenuKind.UNKNOWN if menus else None)
     crc64 = await asyncio.to_thread(_compute_crc, device_path)
     if crc64:
         logger.info("dvd crc64 device=%s value=%s", device_path, crc64)
@@ -117,7 +127,11 @@ async def probe_disc(device_path: str, *, bluray: bool = False) -> DiscProbe:
             logger.info(
                 "bdmt device=%s name=%r set=%s/%s", device_path, bd_meta.name, bd_meta.set_number, bd_meta.num_sets
             )
-    return DiscProbe(crc64=crc64, thediscdb=thediscdb, matrix256=matrix256, bd_meta=bd_meta)
+    menu_kind = None
+    if menus:
+        menu_kind = await asyncio.to_thread(probe_menu_kind, device_path)
+        logger.info("menu kind device=%s value=%s", device_path, menu_kind.value)
+    return DiscProbe(crc64=crc64, thediscdb=thediscdb, matrix256=matrix256, bd_meta=bd_meta, menu_kind=menu_kind)
 
 
 def _compute_crc(device_path: str) -> str | None:

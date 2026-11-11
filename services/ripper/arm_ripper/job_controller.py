@@ -59,6 +59,8 @@ DEVICE_RETURN_WAIT_SECONDS = 180.0
 DEVICE_WATCH_INTERVAL_SECONDS = 1.0
 MAX_DEVICE_RESUMES = 3
 RESOLUTION_WS_FIRST_WAIT_SECONDS = 5.0
+# The disc menu row's reason while menu extraction isn't built (design v5 A2).
+MENU_EXTRACT_UNAVAILABLE = "This ripper can't copy disc menus yet"
 
 
 @dataclass(frozen=True)
@@ -988,6 +990,8 @@ class JobController:
         output_dir = RAW_ROOT / job_id
         output_dir.mkdir(parents=True, exist_ok=True)
         tracks = list(rip_start.tracks)
+        if rip_start.extract_menu is not None:
+            await self._skip_menu(rip_start.extract_menu.track_id)
         # A DVD/BD rip whose drive drops off the bus mid-rip stops makemkvcon
         # and resumes on the drive's new node instead of failing every
         # remaining title (D-133). ISO and folder sources have no bus to drop.
@@ -1336,6 +1340,18 @@ class JobController:
                 logger.warning("rip-complete %s failed (%s); retrying in %.1fs", job_id, e, delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, PATCH_RETRY_MAX_SECONDS)
+
+    async def _skip_menu(self, track_id: str) -> None:
+        """The disc menu row (fork only): this ripper doesn't copy menus out of
+        the disc yet (design v5 A2), so the row is skipped with that reason
+        rather than left queued. A refusal is logged and never stops the rip."""
+        with with_log_context(track_id=track_id):
+            try:
+                await self._patch_track_with_retry(
+                    track_id, status=TrackStatus.SKIPPED, last_error=MENU_EXTRACT_UNAVAILABLE
+                )
+            except httpx.HTTPError as e:
+                logger.warning("disc menu %s not marked skipped: %s", track_id, e)
 
     async def _patch_track_with_retry(self, track_id: str, **fields: object) -> None:
         delay = PATCH_RETRY_INITIAL_SECONDS

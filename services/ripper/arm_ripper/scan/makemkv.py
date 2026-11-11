@@ -529,7 +529,9 @@ async def scan_disc(device_path: str) -> ScanResult:
         disc_type = mkv_disc_type
     else:
         disc_type = _classify_from_titles(titles)
-    probe = await probe_disc(device_path, bluray=disc_type == DiscType.BLURAY)
+    probe = await probe_disc(
+        device_path, bluray=disc_type == DiscType.BLURAY, menus=disc_type in (DiscType.DVD, DiscType.BLURAY)
+    )
 
     fingerprints: list[DiscFingerprintInput] = []
     if probe.crc64:
@@ -545,6 +547,7 @@ async def scan_disc(device_path: str) -> ScanResult:
         titles=titles,
         fingerprints=fingerprints,
         bd_meta=probe.bd_meta,
+        menu_kind=probe.menu_kind,
     )
 
 

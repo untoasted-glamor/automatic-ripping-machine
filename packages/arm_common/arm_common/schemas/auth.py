@@ -96,6 +96,8 @@ class ConfigView(BaseModel):
     # (no countdown); false = it auto-starts after manual_wait_seconds.
     review_requires_confirm: bool
     on_previously_ripped: PreviouslyRippedAction
+    # Whether a DVD or Blu-ray job's "Disc menu" row starts ticked (fork only).
+    rip_disc_menus: bool
     # Text subtitles: make `.srt` from encodes' image subtitles, and the
     # default for a disc with no choice of its own. The model is read-only
     # (built into the transcode image).
@@ -142,6 +144,7 @@ class ConfigUpdateRequest(BaseModel):
     manual_wait_seconds: int | None = None
     review_requires_confirm: bool | None = None
     on_previously_ripped: PreviouslyRippedAction | None = None
+    rip_disc_menus: bool | None = None
     subtitle_ocr_enabled: bool | None = None
     subtitle_ocr_default_on: bool | None = None
     notifications_enabled: bool | None = None

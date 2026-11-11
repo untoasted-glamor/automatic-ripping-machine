@@ -261,6 +261,16 @@ CONFIG_FIELD_META: list[ConfigFieldMeta] = [
         part_of="auto_rip_on_insert",
     ),
     ConfigFieldMeta(
+        key="rip_disc_menus",
+        group="Ripping",
+        tier="operator",
+        label="Rip disc menus",
+        help="Copy a DVD's or Blu-ray's menus with its titles, so the library can show them. Each disc's "
+        "menu row can be ticked or left out in review. Java (BD-J) menus can't be played and are skipped.",
+        type="bool",
+        editable=True,
+    ),
+    ConfigFieldMeta(
         key="max_parallel_iso_rips",
         group="Ripping",
         tier="operator",

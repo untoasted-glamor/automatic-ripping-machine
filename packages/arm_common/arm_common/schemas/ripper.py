@@ -3,7 +3,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from arm_common.enums import DiscType, DriveMediaStatus, KeydbState, MakemkvKeyState, MakemkvSdfState, TrackStatus
+from arm_common.enums import (
+    DiscType,
+    DriveMediaStatus,
+    KeydbState,
+    MakemkvKeyState,
+    MakemkvSdfState,
+    MenuKind,
+    TrackStatus,
+)
 
 
 class MakemkvKeyStatusReport(BaseModel):
@@ -178,6 +186,12 @@ class ScanResult(BaseModel):
     # None on scans stored before the scan listed everything (MakeMKV had
     # already dropped titles under its 120 s default) and on CD/data scans.
     min_length_seconds: int | None = None
+    # DVD/BD: what the disc's menu is, read off the device at scan time
+    # (arm_ripper.menus.probe, fork only). Decides the job's "Disc menu" row:
+    # hdmv, dvd and unknown get one to rip, bdj and none one already skipped.
+    # None on CD/data scans and on scans from rippers that don't probe it: no
+    # menu row.
+    menu_kind: MenuKind | None = None
 
 
 class IdentifyRequest(BaseModel):

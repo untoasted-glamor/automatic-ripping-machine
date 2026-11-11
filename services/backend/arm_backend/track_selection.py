@@ -1,6 +1,8 @@
 from arm_common import TrackStatus, DiscType, OutputMode, RipPreset, Track, TrackKind, TrackSelection
-from arm_common.enums import TrackRole
+from arm_common.disc_menus import PLAYABLE_MENU_KINDS
+from arm_common.enums import MenuKind, TrackRole
 from arm_common.schemas import ScanResult, ScanTitle, TrackFilters
+from arm_common.tracks import MENU_INDEX, MENU_SOURCE_REF
 
 MAIN_FEATURE_MIN_SECONDS = 45 * 60
 ALL_TRACKS_MIN_SECONDS = 60
@@ -16,6 +18,8 @@ def _video_track(job_id: str, title: ScanTitle) -> Track:
         kind=TrackKind.VIDEO_TITLE,
         index=title.index,
         source_ref=str(title.index),
+        status=TrackStatus.QUEUED,
+        attempts=0,
         expected_duration_seconds=title.duration_seconds,
         expected_size_bytes=title.size_bytes,
     )
@@ -27,9 +31,54 @@ def _audio_track(job_id: str, title: ScanTitle) -> Track:
         kind=TrackKind.AUDIO_TRACK,
         index=title.index,
         source_ref=str(title.index),
+        status=TrackStatus.QUEUED,
+        attempts=0,
         expected_duration_seconds=title.duration_seconds,
         expected_size_bytes=title.size_bytes,
     )
+
+
+# Why a menu row is made already skipped (shown on the row in review and on the job page).
+MENU_SKIP_REASONS: dict[MenuKind, str] = {
+    MenuKind.BDJ: "Java menus can't be played",
+    MenuKind.NONE: "This disc has no menu",
+}
+
+
+def menu_track(job_id: str, scan: ScanResult, *, rip_menus: bool) -> Track | None:
+    """The job's "Disc menu" row (fork only, design v5), or None.
+
+    A DVD or Blu-ray whose scan says what its menu is gets one. `hdmv`, `dvd`
+    and `unknown` (tried, and skipped at rip time if the backup holds no menu)
+    start ticked while "Rip disc menus" is on, left out while it's off. `bdj`
+    and `none` start `skipped` with the reason, and left out. A scan with no
+    `menu_kind` (CD, data, or a ripper that doesn't probe it) gets none.
+    """
+    kind = scan.menu_kind
+    if kind is None or scan.disc_type not in (DiscType.DVD, DiscType.BLURAY):
+        return None
+    track = Track(
+        job_id=job_id,
+        kind=TrackKind.DISC_MENU,
+        index=MENU_INDEX,
+        source_ref=MENU_SOURCE_REF,
+        status=TrackStatus.QUEUED,
+        attempts=0,
+    )
+    if kind in PLAYABLE_MENU_KINDS:
+        track.excluded = not rip_menus
+    else:
+        track.excluded = True
+        track.status = TrackStatus.SKIPPED
+        track.last_error = MENU_SKIP_REASONS[kind]
+    return track
+
+
+def _with_menu(job_id: str, scan: ScanResult, titles: list[Track], *, rip_menus: bool) -> list[Track]:
+    """`titles` with the menu row first. A disc with no title rows gets no menu
+    row either, so it is still refused as a disc with nothing to rip."""
+    menu = menu_track(job_id, scan, rip_menus=rip_menus) if titles else None
+    return [menu, *titles] if menu is not None else titles
 
 
 def _parse_filters(rip_preset: RipPreset) -> TrackFilters:
@@ -161,13 +210,17 @@ def _whole_disc_tracks(job_id: str, scan: ScanResult, rip_preset: RipPreset) -> 
     return None
 
 
-def select_tracks(job_id: str, scan: ScanResult, rip_preset: RipPreset) -> list[Track]:
-    """Apply rip-preset track-selection rules to a scan."""
+def select_tracks(job_id: str, scan: ScanResult, rip_preset: RipPreset, *, rip_menus: bool = True) -> list[Track]:
+    """Apply rip-preset track-selection rules to a scan.
+
+    A DVD or Blu-ray also gets its "Disc menu" row (`menu_track`, ticked per
+    `rip_menus`, the "Rip disc menus" setting). A whole-disc preset gets none:
+    its ISO or backup holds the menu already."""
     whole = _whole_disc_tracks(job_id, scan, rip_preset)
     if whole is not None:
         return whole
     if scan.disc_type in (DiscType.DVD, DiscType.BLURAY):
-        return _select_video(scan, rip_preset, job_id)
+        return _with_menu(job_id, scan, _select_video(scan, rip_preset, job_id), rip_menus=rip_menus)
     if scan.disc_type == DiscType.CD:
         return _select_audio(scan, rip_preset, job_id)
     raise TrackSelectionError(f"cannot select tracks for disc_type={scan.disc_type}")
@@ -242,7 +295,9 @@ def play_all_indexes(disc_type: DiscType, titles: list[ScanTitle]) -> set[int]:
     return {t.index for t in titles if plays_others(t, [o for o in titles if o.index != t.index])}
 
 
-def select_tracks_for_review(job_id: str, scan: ScanResult, rip_preset: RipPreset) -> list[Track]:
+def select_tracks_for_review(
+    job_id: str, scan: ScanResult, rip_preset: RipPreset, *, rip_menus: bool = True
+) -> list[Track]:
     """Persist EVERY scanned title as a Track for the timed review gate, marking
     preset-rejected titles `excluded=True` (the default keep/drop set) so the
     review UI shows the full title list and the operator can re-enable any.
@@ -257,12 +312,14 @@ def select_tracks_for_review(job_id: str, scan: ScanResult, rip_preset: RipPrese
     A likely play-all (`play_all_indexes`) starts left out whatever the
     preset says, with `role=play_all` so the review UI can say why. Only
     here: with the review gate off nobody would see the call (plan S12, Q1).
+
+    The "Disc menu" row comes first, as in `select_tracks`.
     """
     whole = _whole_disc_tracks(job_id, scan, rip_preset)
     if whole is not None:
         return whole
 
-    kept_refs = {t.source_ref for t in select_tracks(job_id, scan, rip_preset)}
+    kept_refs = {t.source_ref for t in select_tracks(job_id, scan, rip_preset, rip_menus=False)}
     is_cd = scan.disc_type == DiscType.CD
     titles = scan.titles if is_cd else _listed_video_titles(scan)
     play_alls = set() if is_cd else play_all_indexes(scan.disc_type, titles)
@@ -275,4 +332,4 @@ def select_tracks_for_review(job_id: str, scan: ScanResult, rip_preset: RipPrese
             track.role = TrackRole.PLAY_ALL
             track.identity_provenance = {"role": PLAY_ALL_DETECTOR}
         rows.append(track)
-    return rows
+    return _with_menu(job_id, scan, rows, rip_menus=rip_menus)

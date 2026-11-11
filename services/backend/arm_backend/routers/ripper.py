@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -61,6 +62,7 @@ from arm_common.enums import (
     PreviouslyRippedAction,
 )
 from arm_common.models import Track
+from arm_common.tracks import is_title
 from arm_common.models._columns import enum_value_str
 from arm_common.schemas import (
     DriveDevicePathUpdateRequest,
@@ -77,6 +79,7 @@ from arm_common.schemas import (
     RegisterRequest,
     RipperConfigView,
     RipperHeartbeatRequest,
+    MenuExtract,
     RipStartResponse,
     ScanResult,
     ScanTitle,
@@ -271,6 +274,25 @@ async def _resolve_min_length_override(db: AsyncSession, job: Job) -> int | None
     return _min_length_override_from_session(sess)
 
 
+def _ripper_tracks(tracks: Sequence[Track]) -> tuple[list[TrackView], MenuExtract | None]:
+    """The titles the ripper is sent, and the menu to extract: the menu row is
+    never in the ripper's track list (its rip paths read every track as a
+    title), and is extracted only when it is ticked and still queued."""
+    menu = next((t for t in tracks if not is_title(t)), None)
+    extract = (
+        MenuExtract(track_id=menu.id)
+        if menu is not None and not menu.excluded and menu.status == TrackStatus.QUEUED
+        else None
+    )
+    return [TrackView.model_validate(t) for t in tracks if is_title(t)], extract
+
+
+async def rip_disc_menus(db: AsyncSession) -> bool:
+    """The "Rip disc menus" setting (on when the config row is missing or predates it)."""
+    cfg = (await db.execute(select(Config).where(col(Config.id) == CONFIG_SINGLETON_ID))).scalar_one_or_none()
+    return cfg is None or cfg.rip_disc_menus is not False
+
+
 async def persist_review_tracks(db: AsyncSession, job: Job, scan: ScanResult) -> None:
     """Persist the scan's titles as Track rows for the timed review gate (§4.3).
 
@@ -289,7 +311,7 @@ async def persist_review_tracks(db: AsyncSession, job: Job, scan: ScanResult) ->
     }
     added: list[Track] = []
     try:
-        review_tracks = select_tracks_for_review(job.id, scan, preset)
+        review_tracks = select_tracks_for_review(job.id, scan, preset, rip_menus=await rip_disc_menus(db))
     except DiscBackupNeedsBluray as exc:
         logger.warning("skipping review tracks for job_id=%s: %s", job.id, exc)
         return
@@ -973,13 +995,15 @@ async def rip_start(
                 job.started_at = datetime.now(timezone.utc)
             await session.commit()
             await session.refresh(job)
+        ripper_tracks, extract_menu = _ripper_tracks(existing)
         return RipStartResponse(
             job_id=job.id,
             rip_preset_id=preset_id,
-            tracks=[TrackView.model_validate(t) for t in existing],
+            tracks=ripper_tracks,
             min_length_seconds=min_length_seconds,
             scan_titles=_stored_scan_titles(job),
             retry=retry,
+            extract_menu=extract_menu,
         )
 
     # IDENTIFIED is the normal pre-rip state; AWAITING_REVIEW reaches here only
@@ -1010,7 +1034,7 @@ async def rip_start(
     # whatever the scan found, so it never lands in the no-titles handling
     # below; a FOLDER preset on anything but a Blu-ray is refused here.
     try:
-        new_tracks = select_tracks(job.id, scan, preset)
+        new_tracks = select_tracks(job.id, scan, preset, rip_menus=await rip_disc_menus(session))
     except DiscBackupNeedsBluray as exc:
         # Fail the job with the reason on its event: the ripper gives up on a
         # 4xx, and the job would otherwise sit IDENTIFIED with nothing to say why.
@@ -1071,12 +1095,14 @@ async def rip_start(
     if stage_runner is not None and is_tv_candidate(job, new_tracks):
         stage_runner.schedule(job.id)
 
+    ripper_tracks, extract_menu = _ripper_tracks(refreshed)
     return RipStartResponse(
         job_id=job.id,
         rip_preset_id=preset_id,
-        tracks=[TrackView.model_validate(t) for t in refreshed],
+        tracks=ripper_tracks,
         min_length_seconds=min_length_seconds,
         scan_titles=scan.titles,
+        extract_menu=extract_menu,
     )
 
 
@@ -1129,12 +1155,14 @@ async def resume(
     )
     await session.commit()
 
+    ripper_tracks, extract_menu = _ripper_tracks(refreshed)
     return RipStartResponse(
         job_id=job.id,
         rip_preset_id=preset_id,
-        tracks=[TrackView.model_validate(t) for t in refreshed],
+        tracks=ripper_tracks,
         min_length_seconds=min_length_seconds,
         scan_titles=_stored_scan_titles(job),
+        extract_menu=extract_menu,
     )
 
 
@@ -1332,6 +1360,16 @@ async def update_track(
             )
         if req.last_error is not None:
             track.last_error = req.last_error
+    elif new_status == TrackStatus.SKIPPED:
+        # The disc menu only (it can't be ripped: no menu files in the
+        # backup, or the menu alone couldn't get one), from queued or running.
+        if is_title(track) or current not in (TrackStatus.QUEUED, TrackStatus.IN_PROGRESS):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"cannot move {enum_value_str(track.kind)} track {current.value} -> skipped",
+            )
+        if req.last_error is not None:
+            track.last_error = req.last_error
     else:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1358,10 +1396,10 @@ async def update_track(
             session=session,
         )
         await session.commit()
-    elif new_status == TrackStatus.FAILED:
+    elif new_status in (TrackStatus.FAILED, TrackStatus.SKIPPED):
         await hub.emit(
             topic="ripper.events",
-            event_type="track.failed",
+            event_type="track.failed" if new_status == TrackStatus.FAILED else "track.skipped",
             payload={
                 "track_id": track.id,
                 "job_id": track.job_id,
@@ -1389,10 +1427,16 @@ async def rip_complete(
             detail=f"job not in ripping state: status={job.status.value}",
         )
 
-    tracks = (await session.execute(select(Track).where(col(Track.job_id) == job.id))).scalars().all()
+    all_tracks = (await session.execute(select(Track).where(col(Track.job_id) == job.id))).scalars().all()
+    # The job's outcome and its counts come from its titles. The disc menu
+    # makes the job partial only when it failed (so Rip remaining titles can
+    # try it again); a skipped menu (BD-J, no menu) is finished, and a menu
+    # can never make a rip with no titles done count as ripped.
+    tracks = [t for t in all_tracks if is_title(t)]
+    menu_failed = any(not is_title(t) and t.status == TrackStatus.FAILED for t in all_tracks)
 
     done = sum(1 for t in tracks if t.status == TrackStatus.DONE)
-    failed = sum(1 for t in tracks if t.status == TrackStatus.FAILED)
+    failed = sum(1 for t in tracks if t.status == TrackStatus.FAILED) + int(menu_failed)
     total = len(tracks)
     # What the operator is told counts kept tracks only: an excluded track is
     # skipped, not missing, so "9/10 tracks" for a clean rip would read like a

@@ -30,6 +30,7 @@ from arm_backend.iso_library import library_configured
 from arm_backend.job_abandon import abandon_job_transition
 from arm_backend.ripper_manager import RipperManager, RipperManagerError
 from arm_backend.seeders import CONFIG_SINGLETON_ID
+from arm_common.tracks import titles
 from arm_common import (
     Config,
     Drive,
@@ -138,8 +139,8 @@ async def _fail_job(db: AsyncSession, hub: WSHub, job: Job) -> None:
     """Mark an unfinished job failed and emit the usual `rip.failed`, with the
     payload `rip_complete` sends plus the reason. Job has no reason column;
     the reason lives in the persisted event's payload."""
-    tracks = (await db.execute(select(Track).where(col(Track.job_id) == job.id))).scalars().all()
-    # Counted as rip_complete counts them: kept tracks, plus the excluded ones
+    tracks = titles((await db.execute(select(Track).where(col(Track.job_id) == job.id))).scalars().all())
+    # Counted as rip_complete counts them: kept titles, plus the excluded ones
     # as skipped.
     kept = [t for t in tracks if not t.excluded]
     job.status = JobStatus.FAILED

@@ -720,6 +720,10 @@ export type ConfigUpdateRequest = {
     review_requires_confirm?: boolean | null;
     on_previously_ripped?: PreviouslyRippedAction | null;
     /**
+     * Rip Disc Menus
+     */
+    rip_disc_menus?: boolean | null;
+    /**
      * Subtitle Ocr Enabled
      */
     subtitle_ocr_enabled?: boolean | null;
@@ -848,6 +852,10 @@ export type ConfigView = {
      */
     review_requires_confirm: boolean;
     on_previously_ripped: PreviouslyRippedAction;
+    /**
+     * Rip Disc Menus
+     */
+    rip_disc_menus: boolean;
     /**
      * Subtitle Ocr Enabled
      */
@@ -3095,6 +3103,26 @@ export type MemoryInfo = {
 };
 
 /**
+ * MenuExtract
+ *
+ * The disc menu the ripper copies out of the disc (fork only): its track.
+ */
+export type MenuExtract = {
+    /**
+     * Track Id
+     */
+    track_id: string;
+};
+
+/**
+ * MenuKind
+ *
+ * What a disc's menu is, found at scan time (`arm_ripper.menus.probe`,
+ * fork only): `ScanResult.menu_kind`.
+ */
+export type MenuKind = 'hdmv' | 'bdj' | 'dvd' | 'none' | 'unknown';
+
+/**
  * MetadataCandidate
  */
 export type MetadataCandidate = {
@@ -4257,6 +4285,7 @@ export type RipStartResponse = {
      * Retry
      */
     retry?: boolean;
+    extract_menu?: MenuExtract | null;
 };
 
 /**
@@ -4377,6 +4406,7 @@ export type ScanResult = {
      * Min Length Seconds
      */
     min_length_seconds?: number | null;
+    menu_kind?: MenuKind | null;
 };
 
 /**
@@ -5342,7 +5372,7 @@ export type TrackIdentityView = {
 /**
  * TrackKind
  */
-export type TrackKind = 'video_title' | 'audio_track' | 'data_dump' | 'disc_backup';
+export type TrackKind = 'video_title' | 'audio_track' | 'data_dump' | 'disc_backup' | 'disc_menu';
 
 /**
  * TrackRole
@@ -5387,7 +5417,7 @@ export type TrackSelectionSettings = {
 /**
  * TrackStatus
  */
-export type TrackStatus = 'queued' | 'in_progress' | 'done' | 'failed';
+export type TrackStatus = 'queued' | 'in_progress' | 'done' | 'failed' | 'skipped';
 
 /**
  * TrackUpdateRequest

@@ -125,6 +125,10 @@ class Config(SQLModel, table=True):
     # (arm_common.subtitle_ocr). Off: no subtitle OCR task is created, and the
     # per-disc choice and the job page's action are hidden. The default is
     # what a job with no choice of its own (`jobs.subtitle_ocr` NULL) gets.
+    # Rip disc menus (Settings > Ripping, fork only): whether a DVD or Blu-ray
+    # job's "Disc menu" row starts ticked. A menu that can't be ripped (BD-J,
+    # no menu) gets its row already skipped either way.
+    rip_disc_menus: bool = Field(default=True, sa_column=Column(Boolean, nullable=False, server_default="true"))
     subtitle_ocr_enabled: bool = Field(default=False, sa_column=Column(Boolean, nullable=False, server_default="false"))
     subtitle_ocr_default_on: bool = Field(
         default=True, sa_column=Column(Boolean, nullable=False, server_default="true")

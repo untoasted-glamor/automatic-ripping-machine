@@ -179,6 +179,11 @@ class TrackStatus(StrEnum):
     IN_PROGRESS = "in_progress"
     DONE = "done"
     FAILED = "failed"
+    # The disc menu only: it can't be ripped (Java menus, no menu, no menu
+    # files in the backup), with the reason in `last_error`. Counts as
+    # finished: rip-complete's job status ignores it and retry-failed never
+    # picks it up.
+    SKIPPED = "skipped"
 
 
 class TrackKind(StrEnum):
@@ -186,6 +191,21 @@ class TrackKind(StrEnum):
     AUDIO_TRACK = "audio_track"
     DATA_DUMP = "data_dump"
     DISC_BACKUP = "disc_backup"
+    # The disc's menus, copied into `<job raw>/menu/` (fork only). At most one
+    # per DVD or Blu-ray job, `source_ref` "menu", index -1 so it sorts first.
+    # Not a title: `arm_common.tracks.is_title` says so for every caller.
+    DISC_MENU = "disc_menu"
+
+
+class MenuKind(StrEnum):
+    """What a disc's menu is, found at scan time (`arm_ripper.menus.probe`,
+    fork only): `ScanResult.menu_kind`."""
+
+    HDMV = "hdmv"  # a Blu-ray with HDMV (IG) menus: a pack can be built
+    BDJ = "bdj"  # a Blu-ray whose first play or top menu is BD-J: no pack
+    DVD = "dvd"  # a DVD with menu program chains
+    NONE = "none"  # a disc with no menu
+    UNKNOWN = "unknown"  # nothing could be read
 
 
 class TrackRole(StrEnum):

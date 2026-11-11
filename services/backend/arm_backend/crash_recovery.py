@@ -35,7 +35,8 @@ async def reset_job_for_recovery(db: AsyncSession, job: Job) -> int:
     - Set `job.resumed_from_crash = True` (no-op if already true).
     - For every track on the job whose status is not QUEUED, set status
       to QUEUED and increment `attempts`. Tracks already QUEUED are left
-      alone (idempotent re-runs do not inflate counters).
+      alone (idempotent re-runs do not inflate counters), and so is a
+      SKIPPED disc menu: it can't be ripped, whatever the rip does.
 
     Returns the number of tracks touched.
     """
@@ -43,7 +44,7 @@ async def reset_job_for_recovery(db: AsyncSession, job: Job) -> int:
     all_tracks = (await db.execute(select(Track).where(col(Track.job_id) == job.id))).scalars().all()
     touched = 0
     for track in all_tracks:
-        if track.status == TrackStatus.QUEUED:
+        if track.status in (TrackStatus.QUEUED, TrackStatus.SKIPPED):
             continue
         track.status = TrackStatus.QUEUED
         track.attempts = (track.attempts or 0) + 1

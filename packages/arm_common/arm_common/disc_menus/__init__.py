@@ -15,21 +15,13 @@ it can't read; none of them touches a drive or mounts anything.
 
 from __future__ import annotations
 
-from enum import StrEnum
+from arm_common.enums import MenuKind
+
+__all__ = ["PLAYABLE_MENU_KINDS", "MenuKind", "MenuParseError"]
 
 
 class MenuParseError(ValueError):
     """A menu structure is short, truncated or not the format it claims to be."""
-
-
-class MenuKind(StrEnum):
-    """What a disc's menu is, found at scan time (`arm_ripper.menus.probe`)."""
-
-    HDMV = "hdmv"  # a Blu-ray with HDMV (IG) menus: a pack can be built
-    BDJ = "bdj"  # a Blu-ray whose first play or top menu is BD-J: no pack
-    DVD = "dvd"  # a DVD with menu program chains
-    NONE = "none"  # a disc with no menu
-    UNKNOWN = "unknown"  # nothing could be read
 
 
 PLAYABLE_MENU_KINDS = frozenset({MenuKind.HDMV, MenuKind.DVD, MenuKind.UNKNOWN})

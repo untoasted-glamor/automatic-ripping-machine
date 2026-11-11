@@ -33,8 +33,9 @@ from arm_backend.auth import require_service_token
 from arm_backend.db import get_session
 from arm_backend.job_track_selection import effective_preset_view
 from arm_backend.log_context import job_log_context
-from arm_backend.sidecars import TEXT_SUBTITLE_SUFFIX, accepted_sidecars, drop_replaced_sidecars
-from arm_backend.subtitle_ocr_tasks import is_subtitle_ocr, queue_after_encode, subtitle_ocr_inputs
+from arm_backend.sidecars import accepted_sidecars, drop_replaced_sidecars
+from arm_backend.subtitle_ocr_tasks import queue_after_encode, subtitle_ocr_inputs
+from arm_backend.task_kinds import rules_for
 from arm_backend.transcode_apply import aggregate_session_application
 from arm_backend.transcode_dispatcher import release_gpu_for_task
 from arm_backend.ws import WSHub
@@ -45,6 +46,7 @@ from arm_common import (
     SessionApplicationStatus,
     TranscodePreset,
     TranscodeTask,
+    TranscodeTaskKind,
     TranscodeTaskStatus,
     bind_log_context,
 )
@@ -96,8 +98,9 @@ def _accepted_sidecars(task: TranscodeTask, output_path: str, reported: list[str
     subtitle OCR task only the `.srt` files (never the `.sup` it read, which
     is its encode task's)."""
     kept = accepted_sidecars(output_path, reported)
-    if is_subtitle_ocr(task):
-        kept = [p for p in kept if p.lower().endswith(TEXT_SUBTITLE_SUFFIX)]
+    suffix = rules_for(task.kind).sidecar_suffix
+    if suffix is not None:
+        kept = [p for p in kept if p.lower().endswith(suffix)]
     return kept or None
 
 
@@ -143,7 +146,7 @@ async def register(
         ).scalar_one_or_none()
     track = (await db.execute(select(Track).where(col(Track.id) == task.source_track_id))).scalar_one()
 
-    if is_subtitle_ocr(task):
+    if task.kind == TranscodeTaskKind.SUBTITLE_OCR:
         # Reads its encode's subtitle sidecars under the media root; the raw
         # rip and the preset don't matter to it.
         inputs, reason = await subtitle_ocr_inputs(db, task)
@@ -157,6 +160,12 @@ async def register(
             raw_input_path=None,
             media_root=request_media_root(),
             input_sidecar_paths=inputs,
+        )
+
+    if not rules_for(task.kind).encodes:  # pragma: no cover - every other kind is handled above
+        # A kind with no inputs here yet must never be handed an encode's.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=f"no transcoder inputs for task kind {task.kind.value}"
         )
 
     if not track.output_path:

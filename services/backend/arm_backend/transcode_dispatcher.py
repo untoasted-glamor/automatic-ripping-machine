@@ -39,7 +39,8 @@ from sqlmodel import col, select
 from arm_backend.config import Settings, settings
 from arm_backend.docker_probe import TtlProbe, probe_backend_url, probe_docker
 from arm_backend.sidecars import is_sidecar_of
-from arm_backend.subtitle_ocr_tasks import is_subtitle_ocr, subtitle_ocr_inputs
+from arm_backend.subtitle_ocr_tasks import subtitle_ocr_inputs
+from arm_backend.task_kinds import rules_for
 from arm_backend.transcode_images import (
     VARIANT_SUFFIX,
     image_for,
@@ -558,7 +559,7 @@ class TranscodeDispatcher:
                 .scalars()
                 .all()
             )
-            statuses = [t.status for t in tasks if t.kind == TranscodeTaskKind.ENCODE]
+            statuses = [t.status for t in tasks if rules_for(t.kind).encodes]
             if tasks and not statuses:
                 continue
             has_live = any(s in (TranscodeTaskStatus.QUEUED, TranscodeTaskStatus.IN_PROGRESS) for s in statuses)
@@ -696,7 +697,8 @@ class TranscodeDispatcher:
             .scalars()
             .all()
         )
-        ocr_running = sum(1 for t in in_progress if is_subtitle_ocr(t))
+        # Tasks that don't encode (subtitle OCR) run in slots of their own.
+        ocr_running = sum(1 for t in in_progress if not rules_for(t.kind).encodes)
         encode_slots = await max_parallel_transcodes(db, default=self._settings.MAX_PARALLEL_TRANSCODES) - (
             len(in_progress) - ocr_running
         )
@@ -749,7 +751,7 @@ class TranscodeDispatcher:
             ).scalar_one_or_none()
             job_id = application.job_id if application is not None else None
             with with_log_context(job_id=job_id, session_application_id=task.session_application_id):
-                ocr = is_subtitle_ocr(task)
+                ocr = not rules_for(task.kind).encodes
                 preset = None if ocr else await self._resolve_preset_for_task(db, task)
                 if not ocr and is_passthrough_preset(preset):
                     # Never counted against encode_slots/encode_examined and
@@ -780,7 +782,7 @@ class TranscodeDispatcher:
                     # Its container is starting up and claims the task once it
                     # registers.
                     continue
-                if ocr:
+                if task.kind == TranscodeTaskKind.SUBTITLE_OCR:
                     _, unrunnable = await subtitle_ocr_inputs(db, task)
                     if unrunnable is not None:
                         # Never spawned: its register would only refuse it.
@@ -1432,8 +1434,8 @@ class TranscodeDispatcher:
             self._settings.ARM_HOST_LOGS_PATH: {"bind": "/logs", "mode": "rw"},
             str(certs_root / "arm-ca.crt"): {"bind": "/etc/ssl/arm/arm-ca.crt", "mode": "ro"},
         }
-        if is_subtitle_ocr(task):
-            # It reads and writes subtitle files next to the video only.
+        if not rules_for(task.kind).mounts_raw:
+            # Subtitle OCR reads and writes subtitle files next to the video only.
             del volumes[self._settings.ARM_HOST_RAW_PATH]
         extra_run_kwargs: dict[str, Any] = {}
         if assignment is not None and assignment.encoder is not None:

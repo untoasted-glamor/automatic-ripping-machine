@@ -45,6 +45,7 @@ from arm_backend.subtitle_ocr_tasks import (
     subtitle_ocr_choice,
 )
 from arm_backend.ws import WSHub
+from arm_backend.task_kinds import rules_for
 from arm_common import (
     Config,
     DiscFingerprint,
@@ -65,6 +66,7 @@ from arm_common import (
 from arm_common.fileops import is_within
 from arm_common.models import Track, TranscodeTask
 from arm_common.models._columns import enum_value_str
+from arm_common.tracks import is_title, titles
 from arm_common.schemas import (
     AbandonJobRequest,
     ApplySessionRequest,
@@ -92,6 +94,7 @@ from arm_common.schemas import (
     SubtitleOcrRequest,
     SubtitleOcrResponse,
     SubtitleOcrSkip,
+    TrackEditRequest,
     TrackView,
     TranscodeProgressSummary,
     TranscodeTaskView,
@@ -178,7 +181,7 @@ def _summarize_rip_progress(tracks: list[Track]) -> RipProgressSummary:
     than one ever appeared (e.g. mid-rewrite of the dispatcher) we'd pick
     the lowest-index one as a sane default.
     """
-    sorted_tracks = sorted((t for t in tracks if not t.excluded), key=lambda t: t.index)
+    sorted_tracks = sorted((t for t in tracks if not t.excluded and is_title(t)), key=lambda t: t.index)
     done = sum(1 for t in sorted_tracks if t.status == TrackStatus.DONE)
     failed = sum(1 for t in sorted_tracks if t.status == TrackStatus.FAILED)
     current_track_id: str | None = None
@@ -591,8 +594,9 @@ async def rip_start_review(
 
 async def _start_held_job(db: AsyncSession, hub: WSHub, job: Job) -> None:
     """AWAITING_REVIEW -> RIPPING, plus the `rip.start` command that unblocks
-    the parked ripper. Commits. 422 when every track is excluded."""
-    tracks = list((await db.execute(select(Track).where(col(Track.job_id) == job.id))).scalars().all())
+    the parked ripper. Commits. 422 when every title is excluded (the disc
+    menu alone isn't a rip)."""
+    tracks = titles((await db.execute(select(Track).where(col(Track.job_id) == job.id))).scalars().all())
     if tracks and all(t.excluded for t in tracks):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -688,7 +692,10 @@ async def retry_failed(
         for t in tracks
         if not t.excluded and (t.status == TrackStatus.FAILED or (t.status == TrackStatus.QUEUED and not t.output_path))
     ]
-    if not remaining:
+    # A skipped disc menu is finished and never comes back. A failed or
+    # newly ticked menu goes along with the titles, but isn't a reason to arm
+    # the disc on its own yet (the ripper copies menus only beside titles).
+    if not titles(remaining):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="every kept title is ripped")
 
     for track in remaining:
@@ -712,10 +719,10 @@ async def retry_failed(
     logger.info(
         "retry-failed job_id=%s titles=%d %s",
         job.id,
-        len(remaining),
+        len(titles(remaining)),
         "remuxing from the kept disc backup" if from_backup else "armed until the disc goes back in",
     )
-    return RetryFailedResponse(job=JobView.model_validate(job), retried=len(remaining), from_backup=from_backup)
+    return RetryFailedResponse(job=JobView.model_validate(job), retried=len(titles(remaining)), from_backup=from_backup)
 
 
 @router.post("/{job_id}/rip-again", response_model=RipAgainResponse)
@@ -860,10 +867,11 @@ async def _resolve_media_outputs(db: AsyncSession, job_id: str) -> list[Path]:
     outputs: list[Path] = []
     for task in rows:
         assert task.output_path is not None
+        rules = rules_for(task.kind)
         if task.status == TranscodeTaskStatus.DONE:
-            if task.kind == TranscodeTaskKind.ENCODE:
+            if rules.encodes:
                 outputs.append(media_root / task.output_path)
-        elif task.kind != TranscodeTaskKind.SUBTITLE_OCR:
+        elif not rules.failed_owns_files:
             continue
         else:
             outputs.extend(sidecar_files(media_root, task.replaced_sidecar_paths))
@@ -1222,6 +1230,26 @@ async def manual_trigger(
     return ManualTriggerResponse(drive_id=req.drive_id, session_id=req.session_id)
 
 
+def _track_name(track: Track) -> str:
+    return f"track {track.index}" if is_title(track) else "the disc menu"
+
+
+def _check_menu_edit(edit: TrackEditRequest, track: Track) -> None:
+    """The disc menu row takes only keep/drop (it has no identity, role or
+    file name), and a skipped one can't be ticked."""
+    other = edit.model_dump(exclude_unset=True, exclude={"track_id", "excluded"})
+    if other:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"the disc menu takes only excluded, not {', '.join(sorted(other))}",
+        )
+    if edit.excluded is False and track.status == TrackStatus.SKIPPED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"the disc menu can't be ripped: {track.last_error or 'skipped'}",
+        )
+
+
 @router.patch("/{job_id}", response_model=JobView)
 async def update_job(
     job_id: JobIdParam,
@@ -1261,10 +1289,12 @@ async def update_job(
             # until POST /retry-failed rips it, from the kept disc backup or
             # when the disc goes back in. Excluding is allowed in every status
             # ("skip at transcode").
+            if not is_title(track):
+                _check_menu_edit(edit, track)
             if edit.excluded is False and track.excluded and job.status == JobStatus.RIPPING and not track.output_path:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail=f"track {track.index} has no ripped file; keep it once the rip ends to rip it then",
+                    detail=f"{_track_name(track)} has no ripped file; keep it once the rip ends to rip it then",
                 )
 
     job_fields = req.model_dump(exclude_unset=True, exclude={"tracks"})

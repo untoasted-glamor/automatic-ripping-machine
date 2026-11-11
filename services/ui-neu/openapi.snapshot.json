@@ -11153,6 +11153,17 @@
               }
             ]
           },
+          "rip_disc_menus": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rip Disc Menus"
+          },
           "subtitle_ocr_enabled": {
             "anyOf": [
               {
@@ -11351,6 +11362,10 @@
           "on_previously_ripped": {
             "$ref": "#/components/schemas/PreviouslyRippedAction"
           },
+          "rip_disc_menus": {
+            "type": "boolean",
+            "title": "Rip Disc Menus"
+          },
           "subtitle_ocr_enabled": {
             "type": "boolean",
             "title": "Subtitle Ocr Enabled"
@@ -11478,6 +11493,7 @@
           "manual_wait_seconds",
           "review_requires_confirm",
           "on_previously_ripped",
+          "rip_disc_menus",
           "subtitle_ocr_enabled",
           "subtitle_ocr_default_on",
           "subtitle_ocr_model",
@@ -15632,6 +15648,32 @@
         ],
         "title": "MemoryInfo"
       },
+      "MenuExtract": {
+        "properties": {
+          "track_id": {
+            "type": "string",
+            "title": "Track Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "track_id"
+        ],
+        "title": "MenuExtract",
+        "description": "The disc menu the ripper copies out of the disc (fork only): its track."
+      },
+      "MenuKind": {
+        "type": "string",
+        "enum": [
+          "hdmv",
+          "bdj",
+          "dvd",
+          "none",
+          "unknown"
+        ],
+        "title": "MenuKind",
+        "description": "What a disc's menu is, found at scan time (`arm_ripper.menus.probe`,\nfork only): `ScanResult.menu_kind`."
+      },
       "MetadataCandidate": {
         "properties": {
           "title": {
@@ -17731,6 +17773,16 @@
             "type": "boolean",
             "title": "Retry",
             "default": false
+          },
+          "extract_menu": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MenuExtract"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -17912,6 +17964,16 @@
               }
             ],
             "title": "Min Length Seconds"
+          },
+          "menu_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MenuKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -19691,7 +19753,8 @@
           "video_title",
           "audio_track",
           "data_dump",
-          "disc_backup"
+          "disc_backup",
+          "disc_menu"
         ],
         "title": "TrackKind"
       },
@@ -19761,7 +19824,8 @@
           "queued",
           "in_progress",
           "done",
-          "failed"
+          "failed",
+          "skipped"
         ],
         "title": "TrackStatus"
       },
