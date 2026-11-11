@@ -41,7 +41,7 @@ DVD_MAX_BYTES = 8_547_991_552
 _GB = 1_000_000_000
 
 
-def _clips(title: ScanTitle) -> frozenset[int] | None:
+def title_clips(title: ScanTitle) -> frozenset[int] | None:
     """A Blu-ray title's clips from its segment map (`14,15,16`), or None."""
     if not title.segment_map:
         return None
@@ -62,7 +62,7 @@ def estimate_backup_bytes(titles: list[ScanTitle], disc_type: DiscType) -> int:
     counted: set[int] = set()
     total = 0
     for title in sized:
-        clips = _clips(title)
+        clips = title_clips(title)
         if clips is not None and clips <= counted:
             continue  # e.g. an episode the play-all already holds
         total += title.size_bytes or 0

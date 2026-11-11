@@ -101,6 +101,9 @@ _DIAGNOSTIC_MSG_CODES = frozenset({1002, 3032, 5003, 5037})
 # failure reason; we don't need a success code because file existence
 # in the output dir is the source of truth for "title saved ok".
 _TITLE_FAIL_CODE = 5003
+# `backup` mode: "Backup done but %1 files failed hash check" (5079, and 5082
+# with a full stop), the count of files MakeMKV couldn't copy whole.
+_HASH_FAIL_CODES = frozenset({5079, 5082})
 
 
 @dataclass
@@ -146,6 +149,11 @@ class _ParserState:
     # this is seen so a 6-hour RIP_TIMEOUT_SECONDS doesn't run out.
     # See docs/user/MakeMKV-Ripper.md § Failure modes.
     binary_expired: bool = False
+    # `backup` mode: the disc files a MSG:5003 named (`/BDMV/STREAM/00031.m2ts`),
+    # which MakeMKV gave up on and left out of the copy, and the hash-check
+    # failure count MSG:5079 reports at the end (ledger T44).
+    lost_files: list[str] = field(default_factory=list)
+    hash_failures: int = 0
 
 
 def parse_progress_line(line: str) -> float | None:
@@ -427,10 +435,20 @@ async def _stream_output(
                     if fail_idx is not None:
                         ts = state.titles.setdefault(fail_idx, _TitleState())
                         ts.fail_reason = reason
+                    elif args and args[0].startswith("/"):
+                        # `backup` names the disc file it failed to copy.
+                        if args[0] not in state.lost_files:
+                            state.lost_files.append(args[0])
+                        logger.warning("makemkvcon could not copy %s from the disc", args[0])
                     else:
                         # Unattributable fail — append to overall diagnostics
                         # so the disc-level error captures it.
                         logger.warning("MSG:5003 without parseable title index: %s", line)
+                elif code in _HASH_FAIL_CODES and args:
+                    try:
+                        state.hash_failures = max(state.hash_failures, int(args[0]))
+                    except ValueError:
+                        state.hash_failures = max(state.hash_failures, 1)
             # MSG lines are MakeMKV's own account of the rip (a few dozen per
             # disc, unlike the ~30k PRGV lines) and the only record of why a
             # title was skipped or failed, so they reach the job log at INFO.

@@ -14,10 +14,12 @@ from arm_ripper.rip.abcde_rip import rip_cd
 from arm_ripper.rip.data_rip import rip_data
 from arm_ripper.rip.makemkv_backup import (
     BACKUP_DIRNAME,
+    BackupResult,
     BackupSourceError,
     backup_source,
     rip_backup,
     selection_backup,
+    titles_lost_to_damage,
 )
 from arm_ripper.rip.makemkv_rip import (
     _OUTPUT_FILE_RE,
@@ -172,8 +174,13 @@ async def rip_all(
         except BackupSourceError as exc:
             await on_track_done(backup, RipResult(ok=False, error=str(exc)))
             return
-        result = await rip_backup(source, output_dir / BACKUP_DIRNAME, decrypt=True, on_progress=_on_backup_progress)
-        await on_track_done(backup, result)
+        copied = await rip_backup(source, output_dir / BACKUP_DIRNAME, decrypt=True, on_progress=_on_backup_progress)
+        if copied.ok and copied.damaged:
+            # The backup is the finished output, so one that lacks files is
+            # not one; the copy stays on disk for a look.
+            await on_track_done(backup, RipResult(ok=False, error=f"disc backup damaged: {copied.damage_text()}"))
+        else:
+            await on_track_done(backup, copied)
         return
 
     if tracks and all(t.kind == TrackKind.DATA_DUMP for t in tracks):
@@ -744,6 +751,11 @@ async def _rip_kept_titles(
        after checking `/raw` has room for it and the kept titles
        (`check_backup_space`; short, every kept track fails with the numbers).
        `on_backup_done` then runs: the drive is no longer needed.
+       A backup MakeMKV couldn't copy whole (`BackupResult.damaged`) is never
+       marked complete: the kept titles that play a lost clip fail saying so,
+       the rest are remuxed, and the backup is deleted at the end so a retry
+       reads the disc again. Damage that can't be pinned to clips fails every
+       kept title, as a failed backup does.
        A backup an earlier pass of this job finished is reused, so a resume
        reads the drive no more. An ISO or folder source is read directly.
     2. The source's titles are listed and each kept disc-scan title is found
@@ -796,6 +808,10 @@ async def _rip_kept_titles(
         if on_track_progress is not None:
             await on_track_progress(progress_track, min(1.0, max(0.0, fraction)), stats)
 
+    # A backup MakeMKV couldn't copy whole (ledger T44) is used for the titles
+    # it still holds, never marked complete, and deleted at the end, so a
+    # retry reads the disc again (the read error may not come back).
+    damaged = False
     if file_source:
         source_url, source_name, remux_from = makemkv_source_url(device_path), "the source", 0.0
     else:
@@ -850,7 +866,7 @@ async def _rip_kept_titles(
                 # copy may be cut short, so it doesn't count.
                 logger.warning("drive dropped off the bus during the disc backup")
                 stop.set()
-                backup = RipResult(ok=False, error=STOPPED_ERROR)
+                backup = BackupResult(ok=False, error=STOPPED_ERROR)
             if not backup.ok:
                 # A partial copy is no use to anyone.
                 shutil.rmtree(backup_dir, ignore_errors=True)
@@ -858,12 +874,36 @@ async def _rip_kept_titles(
                 for idx in to_rip:
                     await fail(idx, f"disc backup failed: {backup.error}")
                 return
+            lost = titles_lost_to_damage(backup, [scan_by_index[idx] for idx in to_rip])
+            if lost is None:
+                shutil.rmtree(backup_dir, ignore_errors=True)
+                error = f"disc backup damaged: {backup.damage_text()}"
+                logger.warning("%s; no title can be trusted from it", error)
+                for idx in to_rip:
+                    await fail(idx, error)
+                return
             source_url = choice.read_back_url()
-            (backup_dir / BACKUP_COMPLETE_MARKER).write_text(source_url + "\n")
-            logger.info("disc backup done: %s", source_url)
+            damaged = backup.damaged
+            if damaged:
+                logger.warning(
+                    "disc backup damaged (%s): remuxing the %d title(s) it still holds, failing %s",
+                    backup.damage_text(),
+                    len(to_rip) - len(lost),
+                    sorted(lost) or "none",
+                )
+            else:
+                (backup_dir / BACKUP_COMPLETE_MARKER).write_text(source_url + "\n")
+                logger.info("disc backup done: %s", source_url)
             if on_backup_done is not None:
                 # Nothing after this reads the drive.
                 await on_backup_done()
+            for idx in sorted(lost):
+                await fail(idx, lost[idx])
+            to_rip = [idx for idx in to_rip if idx not in lost]
+            if not to_rip:
+                shutil.rmtree(backup_dir, ignore_errors=True)
+                return
+            progress_track = pending[to_rip[0]]
 
     try:
         source_titles = await list_source_titles(source_url, minlength_seconds=REMUX_MIN_LENGTH_SECONDS)
@@ -932,7 +972,10 @@ async def _rip_kept_titles(
 
     if file_source:
         return
-    if failed or left_out:
+    if damaged:
+        shutil.rmtree(backup_dir, ignore_errors=True)
+        logger.info("removed the damaged disc backup %s; a retry reads the disc again", backup_dir)
+    elif failed or left_out:
         logger.info(
             "keeping the disc backup %s: titles %s can be ripped from it later",
             backup_dir,

@@ -11,13 +11,16 @@ import pytest
 
 import arm_ripper.rip.makemkv_rip as makemkv_rip
 from arm_common import DiscType
+from arm_common.schemas import ScanTitle
 from arm_ripper.rip.makemkv_backup import (
     BACKUP_DIRNAME,
+    BackupResult,
     BackupSourceError,
     backup_source,
     parse_drive_index,
     rip_backup,
     selection_backup,
+    titles_lost_to_damage,
 )
 from arm_ripper.scan.makemkv import list_source_titles, parse_makemkvcon_info
 from tests._makemkvcon_fake import ACCA_DVD, FIXTURES, HANAKO_BD, install
@@ -109,6 +112,88 @@ async def test_rip_backup_reports_disc_progress_without_a_save_phase_marker(monk
 
     await rip_backup("disc:0", tmp_path / BACKUP_DIRNAME, decrypt=True, on_progress=on_progress)
     assert ticks == [0.25, 1.0]
+
+
+# ACCA_CS_D2 on 1.18.4 (ledger T44): an uncorrectable read error in one clip,
+# which MakeMKV leaves out of the backup and still exits 0.
+_T44_LINES = [
+    "MSG:2003,0,3,\"Error 'Scsi error - MEDIUM ERROR:L-EC UNCORRECTABLE ERROR' occurred while reading"
+    " '/BDMV/STREAM/00031.m2ts' at offset '649199616'\",\"Error '%1' occurred while reading '%2' at offset '%3'\","
+    '"Scsi error - MEDIUM ERROR:L-EC UNCORRECTABLE ERROR","/BDMV/STREAM/00031.m2ts","649199616"',
+    'MSG:5003,0,2,"Failed to save title /BDMV/STREAM/00031.m2ts to file /raw/job/.backup/disc/BDMV/STREAM/00031.m2ts",'
+    '"Failed to save title %1 to file %2","/BDMV/STREAM/00031.m2ts","/raw/job/.backup/disc/BDMV/STREAM/00031.m2ts"',
+    'MSG:2023,0,1,"Encountered 6 errors of type \'Read Error\'","Encountered %1 errors of type \'%2\'","6","Read Error"',
+    'MSG:5079,128,1,"Backup done but 1 files failed hash check","Backup done but %1 files failed hash check","1"',
+    'MSG:5082,1028,1,"Backup done but 1 files failed hash check.","Backup done but %1 files failed hash check.","1"',
+]
+
+
+async def test_a_backup_that_lost_a_clip_is_ok_but_damaged(monkeypatch, tmp_path, caplog):
+    _stub(monkeypatch, _FakeProc(_T44_LINES), [], writes_to=tmp_path)
+    with caplog.at_level("WARNING", logger="arm_ripper"):
+        result = await rip_backup("disc:0", tmp_path / BACKUP_DIRNAME, decrypt=True)
+    assert result.ok is True
+    assert result.damaged
+    assert result.lost_files == ("/BDMV/STREAM/00031.m2ts",)
+    assert result.hash_failures == 1
+    assert result.damage_text() == "MakeMKV could not read /BDMV/STREAM/00031.m2ts"
+    assert "could not copy /BDMV/STREAM/00031.m2ts from the disc" in caplog.text
+    assert "is damaged: MakeMKV could not read /BDMV/STREAM/00031.m2ts" in caplog.text
+
+
+async def test_a_file_named_twice_is_lost_once_and_an_unreadable_count_still_counts(monkeypatch, tmp_path):
+    lines = [_T44_LINES[1], _T44_LINES[1], 'MSG:5079,128,1,"Backup done but some files failed","%1","some"']
+    _stub(monkeypatch, _FakeProc(lines), [], writes_to=tmp_path)
+    result = await rip_backup("disc:0", tmp_path / BACKUP_DIRNAME, decrypt=True)
+    assert result.lost_files == ("/BDMV/STREAM/00031.m2ts",)
+    assert result.hash_failures == 1
+
+
+async def test_a_clean_backup_is_not_damaged(monkeypatch, tmp_path):
+    _stub(monkeypatch, _FakeProc(['MSG:5070,128,0,"Backup done","Backup done"']), [], writes_to=tmp_path)
+    result = await rip_backup("disc:0", tmp_path / BACKUP_DIRNAME, decrypt=True)
+    assert result.ok and not result.damaged
+    assert titles_lost_to_damage(result, [_title(0, "14")]) == {}
+
+
+def _title(index: int, segment_map: str | None) -> ScanTitle:
+    return ScanTitle(index=index, duration_seconds=600, segment_map=segment_map)
+
+
+def test_only_the_titles_that_play_a_lost_clip_are_lost():
+    damaged = BackupResult(ok=True, lost_files=("/BDMV/STREAM/00031.m2ts",), hash_failures=1)
+    lost = titles_lost_to_damage(
+        damaged, [_title(5, "28,29,30,31,32,33"), _title(18, "31"), _title(19, "32"), _title(2, "1-7")]
+    )
+    assert lost is not None
+    assert sorted(lost) == [2, 5, 18]
+    assert lost[18] == "disc backup damaged: MakeMKV could not read 00031.m2ts, which title 18 plays"
+    assert "title 2's clips are unknown" in lost[2]
+
+
+def test_a_title_with_no_segment_map_is_lost():
+    damaged = BackupResult(ok=True, lost_files=("/bdmv/stream/00031.M2TS",))
+    assert titles_lost_to_damage(damaged, [_title(4, None)]) == {
+        4: "disc backup damaged (MakeMKV could not read /bdmv/stream/00031.M2TS), and title 4's clips are unknown"
+    }
+
+
+@pytest.mark.parametrize(
+    "damaged",
+    [
+        BackupResult(ok=True, lost_files=("/BDMV/PLAYLIST/00001.mpls",)),
+        BackupResult(ok=True, lost_files=("/VIDEO_TS/VTS_01_1.VOB",)),
+        BackupResult(ok=True, lost_files=("/BDMV/STREAM/00031.m2ts",), hash_failures=2),
+        BackupResult(ok=True, hash_failures=1),
+    ],
+    ids=["playlist", "dvd-vob", "more-hash-failures-than-files", "hash-failure-only"],
+)
+def test_damage_that_cannot_be_pinned_to_clips_loses_every_title(damaged):
+    assert titles_lost_to_damage(damaged, [_title(0, "14")]) is None
+
+
+def test_the_damage_text_counts_unnamed_hash_failures():
+    assert BackupResult(ok=True, hash_failures=2).damage_text() == "2 files failed its hash check"
 
 
 async def test_rip_backup_exit_zero_without_index_bdmv_fails(monkeypatch, tmp_path):

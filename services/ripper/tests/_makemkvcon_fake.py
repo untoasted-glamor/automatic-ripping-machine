@@ -384,6 +384,7 @@ class FakeMakemkvcon:
     invocations: list[Invocation] = field(default_factory=list)
     _failures: list[_Failure] = field(default_factory=list)
     _backups: dict[Path, _Backup] = field(default_factory=dict)
+    _lost: list[str] = field(default_factory=list)
 
     # --- test-facing API ---------------------------------------------------
 
@@ -415,8 +416,17 @@ class FakeMakemkvcon:
         self._failures.append(_Failure(command, title, returncode, message, silent))
 
     def clear_failures(self) -> None:
-        """Undo every `fail`: later invocations succeed again (a retry)."""
+        """Undo every `fail` and `lose_in_backup`: later invocations succeed again (a retry)."""
         self._failures.clear()
+        self._lost.clear()
+
+    def lose_in_backup(self, *disc_paths: str) -> None:
+        """Every later Blu-ray `backup` hits an uncorrectable read error in each
+        of `disc_paths` (`/BDMV/STREAM/00015.m2ts`), as ACCA_CS_D2's did on
+        1.18.4 (ledger T44): `MSG:2003` and `MSG:5003` "Failed to save title
+        <file>" for each, the file left out of the copy, then `MSG:5079` and
+        `MSG:5082` with the count, and still exit 0."""
+        self._lost.extend(disc_paths)
 
     # --- the fake process --------------------------------------------------
 
@@ -563,9 +573,38 @@ class FakeMakemkvcon:
             name = "makemkvcon_bd_hanako_backup_encrypted_prgv_thinned.txt"
         lines: list[_Step] = []
         for line in self._with_drives(_fixture_lines(name), inv.noscan):
+            lost = table.blu_ray and bool(self._lost)
+            n = len(self._lost)
             if line.startswith("MSG:5070,"):
                 lines.append(functools.partial(self._write_backup, recording, table, out_path, inv.decrypt))
+                if lost:
+                    # T44: the read errors, then 5079 where a clean backup says 5070 "Backup done".
+                    lines.extend(self._lost_lines(out_path))
+                    line = (
+                        f'MSG:5079,128,1,"Backup done but {n} files failed hash check",'
+                        f'"Backup done but %1 files failed hash check","{n}"'
+                    )
+            elif line.startswith("MSG:5081,") and lost:
+                line = (
+                    f'MSG:5082,1028,1,"Backup done but {n} files failed hash check.",'
+                    f'"Backup done but %1 files failed hash check.","{n}"'
+                )
             lines.append(_RECORDED_URL_RE.sub(f"file://{out_path}", line))
+        return lines
+
+    def _lost_lines(self, out_path: Path) -> list[_Step]:
+        """T44's messages for each lost file (recorded on ACCA_CS_D2)."""
+        lines: list[_Step] = []
+        for path in self._lost:
+            err = "Scsi error - MEDIUM ERROR:L-EC UNCORRECTABLE ERROR"
+            lines.append(
+                f"MSG:2003,0,3,\"Error '{err}' occurred while reading '{path}' at offset '649199616'\","
+                f'"Error \'%1\' occurred while reading \'%2\' at offset \'%3\'","{err}","{path}","649199616"'
+            )
+            lines.append(
+                f'MSG:5003,0,2,"Failed to save title {path} to file {out_path}{path}",'
+                f'"Failed to save title %1 to file %2","{path}","{out_path}{path}"'
+            )
         return lines
 
     def _write_backup(self, recording: Recording, table: _Table, out_path: Path, decrypted: bool) -> None:
@@ -574,7 +613,10 @@ class FakeMakemkvcon:
             layout = _fixture_lines("makemkvcon_bd_hanako_backup_encrypted_layout.txt")
             paths = [p.removeprefix("./") for p in layout if p not in (".", "")]
             dirs = {str(Path(p).parent) for p in paths}
+            lost = {p.lstrip("/") for p in self._lost}
             for rel in paths:
+                if rel in lost:
+                    continue
                 target = out_path / rel
                 if rel in dirs:
                     target.mkdir(parents=True, exist_ok=True)

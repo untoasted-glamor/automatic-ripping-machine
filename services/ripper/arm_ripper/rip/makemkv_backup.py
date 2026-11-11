@@ -23,20 +23,26 @@ import asyncio
 import csv
 import logging
 import os
+import re
 import shutil
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from arm_common import DiscType
 from arm_common.fileops import tree_size
+from arm_common.schemas import ScanTitle
 
 from arm_ripper.rip.makemkv_rip import OnDiscProgress, RipResult, _compose_error, _ParserState, _run_makemkvcon
+from arm_ripper.rip.preflight import title_clips
 from arm_ripper.source import is_file_source, makemkv_source_url
 
 logger = logging.getLogger("arm_ripper.rip.makemkv_backup")
 
 BACKUP_DIRNAME = "backup"
 DRIVE_LOOKUP_TIMEOUT_SECONDS = 120.0
+# A Blu-ray clip as `backup` names it in MSG:5003 (`/BDMV/STREAM/00031.m2ts`).
+_STREAM_CLIP_RE = re.compile(r"/BDMV/STREAM/(\d{5})\.m2ts", re.IGNORECASE)
 
 
 class BackupSourceError(Exception):
@@ -139,6 +145,65 @@ async def selection_backup(disc_type: DiscType, device_path: str, backup_dir: Pa
     return SelectionBackup(source=await backup_source(device_path), decrypt=True, target=backup_dir / name)
 
 
+@dataclass
+class BackupResult(RipResult):
+    """A `rip_backup` outcome. MakeMKV finishes a backup and exits 0 even
+    when it couldn't read some files (ledger T44: an uncorrectable read error
+    in one clip, `MSG:5003` "Failed to save title <file>", then `MSG:5079`
+    "Backup done but 1 files failed hash check"); such a backup is `ok` but
+    `damaged`, and the copy lacks `lost_files`."""
+
+    # The disc paths MakeMKV left out (`/BDMV/STREAM/00031.m2ts`).
+    lost_files: tuple[str, ...] = ()
+    # MSG:5079's count of files that failed MakeMKV's hash check.
+    hash_failures: int = 0
+
+    @property
+    def damaged(self) -> bool:
+        return bool(self.lost_files) or self.hash_failures > 0
+
+    def damage_text(self) -> str:
+        """What MakeMKV couldn't copy, for an error message."""
+        parts = []
+        if self.lost_files:
+            parts.append(f"MakeMKV could not read {', '.join(self.lost_files)}")
+        if self.hash_failures > len(self.lost_files):
+            parts.append(f"{self.hash_failures} files failed its hash check")
+        return "; ".join(parts)
+
+
+def titles_lost_to_damage(result: BackupResult, titles: Iterable[ScanTitle]) -> dict[int, str] | None:
+    """Which of `titles` a damaged backup can't give back, each with why.
+
+    A Blu-ray title is lost when its segment map (TINFO 26) plays a lost
+    clip, or when it has no segment map to tell. Empty for a backup with no
+    damage. None when the damage can't be pinned to clips: a lost file that
+    isn't a `BDMV/STREAM` clip (a DVD's VOBs, a playlist, clip info), or more
+    hash failures than named files; then no title from it can be trusted.
+    """
+    if not result.damaged:
+        return {}
+    if result.hash_failures > len(result.lost_files):
+        return None
+    lost: set[int] = set()
+    for path in result.lost_files:
+        m = _STREAM_CLIP_RE.fullmatch(path)
+        if m is None:
+            return None
+        lost.add(int(m.group(1)))
+    out: dict[int, str] = {}
+    for title in titles:
+        clips = title_clips(title)
+        if clips is None:
+            out[title.index] = (
+                f"disc backup damaged ({result.damage_text()}), and title {title.index}'s clips are unknown"
+            )
+        elif clips & lost:
+            names = ", ".join(f"{c:05d}.m2ts" for c in sorted(clips & lost))
+            out[title.index] = f"disc backup damaged: MakeMKV could not read {names}, which title {title.index} plays"
+    return out
+
+
 def _clear(target: Path) -> None:
     if target.is_dir() and not target.is_symlink():
         shutil.rmtree(target, ignore_errors=True)
@@ -164,10 +229,13 @@ async def rip_backup(
     decrypt: bool,
     on_progress: OnDiscProgress | None = None,
     stop: asyncio.Event | None = None,
-) -> RipResult:
+) -> BackupResult:
     """Back up the disc `source` (a MakeMKV URL, `disc:<N>` for a drive) to `target`.
 
     Success needs a clean exit and a backup at `target` (`_backup_written`).
+    A successful backup can still be `damaged`: the files MakeMKV couldn't
+    read are left out of it (see `BackupResult`), and the caller decides what
+    that costs.
     The result's `size_bytes` is the backup's file total; there is no sha256
     (MakeMKV checks the content as it decrypts, and re-reading up to 100 GB
     to hash it would double the time). `stop` kills makemkvcon when set (the
@@ -185,11 +253,20 @@ async def rip_backup(
     state = _ParserState()
     error = await _run_makemkvcon(cmd, state, on_disc_progress=on_progress, gate_disc_progress=False, stop=stop)
     if error is not None:
-        return RipResult(ok=False, error=error)
+        return BackupResult(ok=False, error=error)
     if not _backup_written(target):
-        return RipResult(
+        return BackupResult(
             ok=False,
             error=_compose_error("makemkvcon backup produced no BDMV, VIDEO_TS or disc image", state.diagnostics),
         )
     size = await asyncio.to_thread(tree_size, target) if target.is_dir() else target.stat().st_size
-    return RipResult(ok=True, output_path=target, size_bytes=size)
+    result = BackupResult(
+        ok=True,
+        output_path=target,
+        size_bytes=size,
+        lost_files=tuple(state.lost_files),
+        hash_failures=state.hash_failures,
+    )
+    if result.damaged:
+        logger.warning("disc backup %s is damaged: %s", target, result.damage_text())
+    return result

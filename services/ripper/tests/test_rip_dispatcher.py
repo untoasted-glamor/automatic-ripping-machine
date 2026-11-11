@@ -42,6 +42,7 @@ from arm_common.schemas import ScanResult, ScanTitle, TrackView
 
 from arm_ripper.drive_status import probe_drive_media
 from arm_ripper.rip.dispatcher import rip_all
+from arm_ripper.rip.makemkv_backup import BackupResult
 from arm_ripper.rip.makemkv_rip import RipDiscResult, RipResult
 from arm_ripper.scan.disc_probe import DiscProbe
 from tests._makemkvcon_fake import ACCA_DVD, HANAKO_BD, SINTEL_ISO, Recording, file_size, install
@@ -950,7 +951,7 @@ async def test_rip_all_disc_backup_track_uses_rip_backup(monkeypatch, tmp_path):
         backup_calls.append((source, target, decrypt))
         if on_progress is not None:
             await on_progress(0.5)
-        return RipResult(ok=True, output_path=target, size_bytes=7)
+        return BackupResult(ok=True, output_path=target, size_bytes=7)
 
     async def must_not_run(**_kwargs):
         raise AssertionError("a disc backup must not reach rip_disc or rip_data")
@@ -1760,6 +1761,23 @@ async def test_rip_all_disc_backup_writes_the_decrypted_folder(monkeypatch, tmp_
     assert not (out / ".backup").exists()
 
 
+async def test_a_folder_preset_backup_that_lost_a_clip_fails(monkeypatch, tmp_path):
+    """The FOLDER preset's backup is the finished output, so one missing a
+    clip (ledger T44) is FAILED, and the copy stays on disk."""
+    fake = install(monkeypatch, disc=HANAKO_BD)
+    fake.lose_in_backup("/BDMV/STREAM/00015.m2ts")
+    out = tmp_path / "job"
+    backup = _track(0, source_ref="full").model_copy(update={"kind": TrackKind.DISC_BACKUP})
+
+    reports, _ = await _rip_tracks([backup], out)
+
+    (result,) = reports[backup.id]
+    assert result.ok is False
+    assert result.error == "disc backup damaged: MakeMKV could not read /BDMV/STREAM/00015.m2ts"
+    assert (out / "backup" / "BDMV" / "index.bdmv").is_file()
+    assert not (out / "backup" / "BDMV" / "STREAM" / "00015.m2ts").exists()
+
+
 # --- rip only the kept titles: backup-then-remux (S7) -------------------------
 #
 # A drive whose kept titles are fewer than `mkv all` would rip is read once by
@@ -2022,6 +2040,66 @@ async def test_a_title_missing_from_the_backup_fails_only_that_track(monkeypatch
     assert final["trk_2"].error == "could not map title 2 to the backup"
     _assert_own_titles(reports, [t for t in tracks if t.index not in (2, 7)], scan, out)
     assert (out / ".backup" / ".complete").is_file()
+
+
+async def test_a_backup_that_lost_a_clip_fails_only_the_titles_that_play_it(monkeypatch, tmp_path):
+    """MakeMKV leaves a clip it can't read out of the backup and exits 0
+    (ledger T44). The kept title on that clip fails saying so, the others are
+    remuxed, and the backup is never marked complete and goes at the end
+    (normally a failed title keeps it), so a retry reads the disc again."""
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    fake.lose_in_backup("/BDMV/STREAM/00015.m2ts")  # disc title 1
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    out = tmp_path / "job"
+    released: list[bool] = []
+
+    async def on_backup_done() -> None:
+        released.append(True)
+
+    reports, started = await _rip_tracks(tracks, out, scan_titles=scan.titles, on_backup_done=on_backup_done)
+
+    final = _results(reports)
+    assert final["trk_1"].ok is False
+    assert final["trk_1"].error == "disc backup damaged: MakeMKV could not read 00015.m2ts, which title 1 plays"
+    assert "trk_1" in started
+    _assert_own_titles(reports, [t for t in tracks if t.index not in (1, 7)], scan, out)
+    assert released == [True]
+    assert not (out / ".backup").exists()
+    assert [inv.command for inv in _work(fake)].count("backup") == 1
+
+
+async def test_a_backup_that_lost_every_kept_title_remuxes_nothing(monkeypatch, tmp_path):
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    fake.lose_in_backup("/BDMV/STREAM/00014.m2ts", "/BDMV/STREAM/00015.m2ts")
+    tracks = [t for t in _rip_start_tracks(scan) if t.index in (0, 1)]
+    out = tmp_path / "job"
+
+    reports, _ = await _rip_tracks(tracks, out, scan_titles=scan.titles)
+
+    final = _results(reports)
+    assert sorted(final) == ["trk_0", "trk_1"]
+    assert all(not r.ok and (r.error or "").startswith("disc backup damaged:") for r in final.values())
+    assert [inv.command for inv in _work(fake)] == ["backup"]
+    assert not (out / ".backup").exists()
+
+
+async def test_backup_damage_off_the_clips_fails_every_kept_title(monkeypatch, tmp_path):
+    """A lost file that isn't a stream clip can't be pinned to titles: every
+    kept title fails, as for a failed backup, and nothing is remuxed."""
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    fake.lose_in_backup("/BDMV/PLAYLIST/00009.mpls")
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+    out = tmp_path / "job"
+
+    reports, _ = await _rip_tracks(tracks, out, scan_titles=scan.titles)
+
+    final = _results(reports)
+    assert sorted(final) == [f"trk_{i}" for i in range(7)]
+    assert {r.error for r in final.values()} == {
+        "disc backup damaged: MakeMKV could not read /BDMV/PLAYLIST/00009.mpls"
+    }
+    assert [inv.command for inv in _work(fake)] == ["backup"]
+    assert not (out / ".backup").exists()
 
 
 async def test_a_full_selection_from_a_drive_keeps_mkv_all(monkeypatch, tmp_path):
