@@ -57,6 +57,16 @@ Prereqs: dev stack up (`docker compose up -d arm-db arm-backend arm-ui`) and at 
 
 Defaults to caching the ISO under `~/arm-corpus/` (override with `ISO_CACHE_DIR`). MakeMKV key resolution: `MAKEMKV_KEY` env first (any value MakeMKV accepts — purchased perma-key or a beta you grabbed manually), then a single forum-scrape attempt. See [../docs/developers/contributing/real-disc-smoke.md § Run the test (ISO fixture)](../docs/developers/contributing/real-disc-smoke.md#run-the-test-iso-fixture--no-physical-disc-needed) for the full runbook and known gotchas.
 
+## disc-menu-check.sh
+
+End-to-end check of the disc menu code on the Sintel DVD ISO. It needs no drive and no stack.
+
+```bash
+bash devtools/disc-menu-check.sh [--keep] [--no-ffmpeg]
+```
+
+It probes the ISO's menu kind and copies its menus with the checkout's ripper code. Then it builds the `dvd-1` menu pack from that copy with the checkout's transcode code, in `arm-transcode:latest` (ffmpeg, no network). Last, it checks the pack against what Sintel holds: five button menus with motion backgrounds and eight cells in title 2. The ISO is the one `iso-smoke.sh` caches (`ISO_CACHE_DIR`, default `~/arm-corpus/`); it is fetched from archive.org when missing. `--no-ffmpeg` builds on the host without backgrounds.
+
 ## crash-drill.sh
 
 Phase 9 + 15 backend crash-recovery drill. Injects a synthetic in-flight job into the DB, force-kills the backend, brings it back, and asserts the lifespan-startup sweep recovered the job. Destructive — confirms before touching anything; `--yes` skips the prompt.
