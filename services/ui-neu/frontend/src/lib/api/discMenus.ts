@@ -38,6 +38,11 @@ export function createMenuProposal(jobId: string, body: MenuProposalCreate): Pro
 	return post<MenuProposalView>(`${base(jobId)}/proposals`, body);
 }
 
+/** Rip the title a proposal's button plays (one the job has no track for) from the kept disc backup. */
+export function ripMenuTitle(jobId: string, proposalId: string): Promise<MenuProposalView> {
+	return post<MenuProposalView>(`${base(jobId)}/proposals/${proposalId}/rip`);
+}
+
 export function acceptAllMenuProposals(jobId: string): Promise<MenuProposalAcceptAllResponse> {
 	return post<MenuProposalAcceptAllResponse>(`${base(jobId)}/proposals/accept-all`);
 }

@@ -1,6 +1,12 @@
 // The job page's Disc menu panel (fork only): labels and rules for the menu's
 // name proposals, and where a menu button's box sits over its page image.
-import type { MenuPreviewButtonView, MenuPreviewView, MenuProposalView, TrackRole } from '$lib/types/api.gen';
+import type {
+	MenuPreviewButtonView,
+	MenuPreviewView,
+	MenuProposalView,
+	TrackRole,
+	TrackStatus
+} from '$lib/types/api.gen';
 
 /** The roles a menu can name a title with: each moves the encode into its own library folder. */
 export const MENU_ROLES: { value: TrackRole; label: string; folder: string }[] = [
@@ -44,6 +50,26 @@ export const PROPOSAL_STATUS: Record<MenuProposalView['status'], { text: string;
 	rejected: { text: 'Rejected', tone: '' },
 	info: { text: 'Note', tone: '' }
 };
+
+/** The status chip's text: an accepted name waits for the rip first when its title isn't ripped yet. */
+export function statusText(p: MenuProposalView, trackStatus: TrackStatus | null | undefined): string {
+	if (p.status === 'accepted' && (trackStatus === 'queued' || trackStatus === 'in_progress'))
+		return 'Waiting for the rip';
+	if (p.status === 'accepted' && trackStatus === 'failed') return 'The rip failed';
+	return PROPOSAL_STATUS[p.status].text;
+}
+
+/** A title the menu plays that the job has no track for, with a role and name to rip it under. */
+export function canRip(p: MenuProposalView): boolean {
+	return (
+		p.track_id === null &&
+		p.scan_title !== null &&
+		p.scan_title !== undefined &&
+		MENU_ROLES.some((r) => r.value === p.role) &&
+		!!p.name?.trim() &&
+		(p.role !== 'special' || !!p.episode_number)
+	);
+}
 
 /** A button's box as percentages of its page (the image is scaled to fit). */
 export function boxPercent(box: number[], size: number[]): { x: string; y: string; w: string; h: string } | null {

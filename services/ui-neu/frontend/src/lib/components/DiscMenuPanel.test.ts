@@ -10,7 +10,8 @@ vi.mock('$lib/api/discMenus', () => ({
 	requestDiscMenuPreview: vi.fn(),
 	updateMenuProposal: vi.fn(),
 	createMenuProposal: vi.fn(),
-	acceptAllMenuProposals: vi.fn()
+	acceptAllMenuProposals: vi.fn(),
+	ripMenuTitle: vi.fn()
 }));
 
 import {
@@ -19,6 +20,7 @@ import {
 	fetchDiscMenu,
 	fetchDiscMenuImage,
 	requestDiscMenuPreview,
+	ripMenuTitle,
 	updateMenuProposal
 } from '$lib/api/discMenus';
 import { ApiError } from '$lib/api/client';
@@ -176,6 +178,42 @@ describe('DiscMenuPanel', () => {
 		expect(row).toHaveTextContent('Title 8');
 		expect(row).toHaveTextContent('Proposed');
 		expect(screen.getByTestId('dm-notes')).toHaveTextContent('Textless OP 00024.mpls: not ripped');
+	});
+
+	it('rips a title the menu plays that the job has no track for', async () => {
+		const op = { id: 'mnp_op', track_id: null, label: 'Textless OP', plays: '00024.mpls', role: 'other' as const };
+		const short = { ...op, scan_title: 19, name: 'Textless OP', note: 'not ripped: 92 s', status: 'info' as const };
+		fetchMock.mockResolvedValue(menu({ proposals: [proposal(), proposal(short)] }));
+		vi.mocked(ripMenuTitle).mockResolvedValue(proposal({ ...short, track_id: 'trk_19', status: 'accepted' }));
+		const onrenamed = render({
+			tracks: [...tracks, createTrack({ id: 'trk_19', kind: 'video_title', index: 19, status: 'queued' })]
+		});
+		const rip = await screen.findByTestId('dm-rip');
+		expect(rip).toHaveAttribute('title', 'Rip it from the disc backup as Textless OP');
+		await fireEvent.click(rip);
+		await waitFor(() => expect(ripMenuTitle).toHaveBeenCalledWith('job_1', 'mnp_op'));
+		expect(onrenamed).toHaveBeenCalled();
+		expect(screen.queryByTestId('dm-notes')).toBeNull();
+		await waitFor(() => expect(screen.getAllByTestId('dm-proposal')).toHaveLength(2));
+		expect(screen.getByText('Waiting for the rip')).toBeInTheDocument();
+	});
+
+	it('says why it cannot rip, and shows a rip refusal', async () => {
+		const short = proposal({ id: 'mnp_op', track_id: null, scan_title: 19, role: 'other', status: 'info' });
+		fetchMock.mockResolvedValueOnce(menu({ proposals: [short], rip_refusal: "the job's disc backup isn't kept" }));
+		render();
+		const rip = await screen.findByTestId('dm-rip');
+		expect(rip).toBeDisabled();
+		expect(rip).toHaveAttribute('title', "the job's disc backup isn't kept");
+		cleanup();
+
+		fetchMock.mockResolvedValueOnce(menu({ proposals: [short] }));
+		vi.mocked(ripMenuTitle).mockRejectedValue(new ApiError(409, 'Show/other/Promo Videos.mkv already exists', null));
+		const onrenamed = render();
+		await fireEvent.click(await screen.findByTestId('dm-rip'));
+		expect(await screen.findByTestId('dm-rip-error')).toHaveTextContent('already exists');
+		expect(onrenamed).not.toHaveBeenCalled();
+		expect(screen.getByTestId('dm-rip')).not.toBeDisabled();
 	});
 
 	it('accepts an edited name and tells the page', async () => {

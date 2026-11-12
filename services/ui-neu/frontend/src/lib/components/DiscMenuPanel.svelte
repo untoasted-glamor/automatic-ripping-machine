@@ -13,6 +13,7 @@
 		fetchDiscMenu,
 		fetchDiscMenuImage,
 		requestDiscMenuPreview,
+		ripMenuTitle,
 		updateMenuProposal
 	} from '$lib/api/discMenus';
 	import { ApiError } from '$lib/api/client';
@@ -29,10 +30,12 @@
 		acceptBlocker,
 		boxPercent,
 		buttonHint,
+		canRip,
 		draftOf,
 		isOpen,
 		isPreviewLive,
 		previewState,
+		statusText,
 		type ProposalDraft
 	} from '$lib/utils/disc-menu';
 	import { usePoll } from '$lib/utils/poll';
@@ -73,6 +76,10 @@
 	function trackName(id: string | null | undefined): string {
 		const t = tracks.find((x) => x.id === id);
 		return t ? `Title ${t.index}` : 'Not ripped';
+	}
+
+	function trackStatus(id: string | null | undefined) {
+		return tracks.find((x) => x.id === id)?.status;
 	}
 
 	function pageName(id: string): string {
@@ -175,6 +182,20 @@
 			if (resp.proposals.some((p) => p.status === 'applied')) onrenamed?.();
 		} catch (e) {
 			error = message(e, 'Could not accept the names');
+		} finally {
+			busy = null;
+		}
+	}
+
+	async function ripTitle(p: MenuProposalView): Promise<void> {
+		busy = p.id;
+		const { [p.id]: _, ...others } = rowErrors;
+		rowErrors = others;
+		try {
+			replace(await ripMenuTitle(jobId, p.id));
+			onrenamed?.();
+		} catch (e) {
+			rowErrors = { ...rowErrors, [p.id]: message(e, 'Could not rip that title') };
 		} finally {
 			busy = null;
 		}
@@ -406,7 +427,7 @@
 									<span
 										class="chip chip-sm {PROPOSAL_STATUS[p.status].tone
 											? `chip-${PROPOSAL_STATUS[p.status].tone}`
-											: ''}">{PROPOSAL_STATUS[p.status].text}</span
+											: ''}">{statusText(p, trackStatus(p.track_id))}</span
 									>
 								</td>
 								<td class="table-cell" data-label="">
@@ -451,9 +472,24 @@
 			<h3 class="disc-menu-subtitle">Also on the menu</h3>
 			<ul class="disc-menu-notes" data-testid="dm-notes">
 				{#each notes as n (n.id)}
-					<li>
-						<span class="disc-menu-label">{n.label || 'No label'}</span>
-						<span class="disc-menu-faint">{n.plays}{n.note ? `: ${n.note}` : ''}</span>
+					<li class="disc-menu-note" data-testid="dm-note">
+						<div>
+							<span class="disc-menu-label">{n.label || 'No label'}</span>
+							<span class="disc-menu-faint">{n.plays}{n.note ? `: ${n.note}` : ''}</span>
+							{#if rowErrors[n.id]}
+								<span class="field-error" data-testid="dm-rip-error">{rowErrors[n.id]}</span>
+							{/if}
+						</div>
+						{#if canEdit && canRip(n)}
+							<button
+								type="button"
+								class="btn btn-sm"
+								data-testid="dm-rip"
+								disabled={busy !== null || !!view?.rip_refusal}
+								title={view?.rip_refusal ?? `Rip it from the disc backup as ${n.name}`}
+								onclick={() => ripTitle(n)}>Rip it</button
+							>
+						{/if}
 					</li>
 				{/each}
 			</ul>
@@ -593,6 +629,13 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.375rem;
+	}
+	.disc-menu-note {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
 	}
 	.disc-menu-by-hand {
 		display: flex;

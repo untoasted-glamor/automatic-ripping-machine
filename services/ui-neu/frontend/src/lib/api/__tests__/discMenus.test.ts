@@ -5,6 +5,7 @@ import {
 	fetchDiscMenu,
 	fetchDiscMenuImage,
 	requestDiscMenuPreview,
+	ripMenuTitle,
 	updateMenuProposal
 } from '../discMenus';
 
@@ -41,6 +42,9 @@ describe('disc menu API', () => {
 		expect(JSON.parse(mockFetch.mock.calls[1][1].body)).toEqual({ track_id: 'trk_7', role: 'extra', name: 'Panel' });
 		await acceptAllMenuProposals('job_1');
 		expect(mockFetch.mock.calls[2][0]).toBe('/api/jobs/job_1/disc-menu/proposals/accept-all');
+		await ripMenuTitle('job_1', 'mnp_op');
+		expect(mockFetch.mock.calls[3][0]).toBe('/api/jobs/job_1/disc-menu/proposals/mnp_op/rip');
+		expect(mockFetch.mock.calls[3][1].method).toBe('POST');
 	});
 
 	it('fetches a preview image with the token, as an object URL', async () => {

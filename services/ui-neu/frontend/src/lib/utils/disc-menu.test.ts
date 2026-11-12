@@ -4,11 +4,13 @@ import {
 	acceptBlocker,
 	boxPercent,
 	buttonHint,
+	canRip,
 	draftOf,
 	isOpen,
 	isPreviewLive,
 	previewState,
-	roleLabel
+	roleLabel,
+	statusText
 } from './disc-menu';
 
 const proposal = (over: Partial<MenuProposalView> = {}): MenuProposalView => ({
@@ -63,6 +65,29 @@ describe('disc menu helpers', () => {
 		expect(isOpen(proposal({ status: 'rejected' }))).toBe(true);
 		expect(isOpen(proposal({ status: 'applied' }))).toBe(false);
 		expect(isOpen(proposal({ status: 'info' }))).toBe(false);
+	});
+
+	it('waits for the rip before the encode', () => {
+		const accepted = proposal({ status: 'accepted' });
+		expect(statusText(accepted, 'queued')).toBe('Waiting for the rip');
+		expect(statusText(accepted, 'in_progress')).toBe('Waiting for the rip');
+		expect(statusText(accepted, 'failed')).toBe('The rip failed');
+		expect(statusText(accepted, 'done')).toBe('Waiting for the encode');
+		expect(statusText(accepted, undefined)).toBe('Waiting for the encode');
+		expect(statusText(proposal(), 'queued')).toBe('Proposed');
+	});
+
+	it('knows which menu titles it can rip', () => {
+		const op = proposal({ track_id: null, scan_title: 19, role: 'other', name: 'Textless OP', status: 'info' });
+		expect(canRip(op)).toBe(true);
+		expect(canRip({ ...op, track_id: 'trk_19' })).toBe(false);
+		expect(canRip({ ...op, scan_title: null })).toBe(false);
+		expect(canRip({ ...op, scan_title: undefined })).toBe(false);
+		expect(canRip({ ...op, role: null })).toBe(false);
+		expect(canRip({ ...op, role: 'episode' })).toBe(false);
+		expect(canRip({ ...op, name: ' ' })).toBe(false);
+		expect(canRip({ ...op, role: 'special' })).toBe(false);
+		expect(canRip({ ...op, role: 'special', episode_number: 4 })).toBe(true);
 	});
 
 	it('places a box as percentages of its page', () => {
