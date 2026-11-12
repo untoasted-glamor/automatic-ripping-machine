@@ -41,6 +41,10 @@ class Track(SQLModel, table=True):
     # (the disc still rips whole — makemkvcon `mkv all` invariant). `custom_filename`
     # overrides the pattern-rendered name for this track.
     excluded: bool = Field(default=False, sa_column=Column(Boolean, nullable=False, server_default="false"))
+    # Rip this title whatever its length (fork only): a title the disc menu
+    # plays that the rip's minimum length left out, added from the job page's
+    # Disc menu panel and remuxed from the kept disc backup.
+    any_length: bool = Field(default=False, sa_column=Column(Boolean, nullable=False, server_default="false"))
     custom_filename: str | None = Field(default=None)
     expected_duration_seconds: int | None = Field(sa_column=Column(Integer, nullable=True))
     # Scan-time size estimate from MakeMKV TINFO:t,11. Lets the JobDetail

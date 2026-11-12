@@ -206,6 +206,19 @@ async def test_make_proposals_on_a_blu_ray() -> None:
     # The better-read label wins, from its own page.
     panel = next(r for r in rows if r.track_id == "trk_7")
     assert (panel.page, panel.button, panel.score) == ("4", 11, 0.99)
+    # Every row keeps the scan title it plays, a title with no track too.
+    assert {r.plays: r.scan_title for r in rows if r.role != TrackRole.EPISODE} == {
+        "00008.mpls": 5, "00022.mpls": 7, "00023.mpls": 8, "00024.mpls": 19
+    }  # fmt: skip
+
+
+async def test_a_title_under_the_minimum_says_so() -> None:
+    db, job = _db()
+    titles = [dict(t, duration_seconds=92 if t["index"] == 19 else 1400) for t in _TITLES]
+    job.metadata_json = {"scan_result": {"titles": titles, "min_length_seconds": 120}}
+    rows = await make_proposals(db, job, _D2)  # type: ignore[arg-type]
+    op = next(r for r in rows if r.track_id is None)
+    assert (op.scan_title, op.note) == (19, "not ripped: 92 s, under the rip's 120 s minimum")
 
 
 async def test_a_rerun_replaces_undecided_rows_and_keeps_decisions() -> None:
@@ -256,7 +269,7 @@ async def test_no_scan_means_nothing_is_ripped() -> None:
     db, job = _db(_track(7))
     job.metadata_json = {"scan_result": {"titles": "bad"}}
     rows = await make_proposals(db, job, _preview(("1", _button("1", 1, "Panel", _plays("00022")))))  # type: ignore[arg-type]
-    assert rows[0].note == "not ripped"
+    assert (rows[0].note, rows[0].scan_title) == ("not ripped (the disc scan has no title for it)", None)
     job.metadata_json = {"scan_result": "bad"}
     rows = await make_proposals(db, job, _preview(("1", _button("1", 1, "Panel", _plays("00022")))))  # type: ignore[arg-type]
-    assert rows[0].note == "not ripped"
+    assert rows[0].note == "not ripped (the disc scan has no title for it)"

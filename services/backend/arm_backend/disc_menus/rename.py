@@ -180,7 +180,8 @@ def _prune(folder: Path, media_root: Path) -> None:
         folder = folder.parent
 
 
-def _set_track(track: Track, proposal: MenuProposal) -> None:
+def name_track(track: Track, proposal: MenuProposal) -> None:
+    """Give the track the proposal's role and name (and a special its season 0 number)."""
     track.role = proposal.role
     track.custom_filename = proposal.name
     if proposal.role == TrackRole.SPECIAL:
@@ -207,7 +208,7 @@ async def apply_proposal(db: AsyncSession, proposal: MenuProposal, media_root: P
     done = [t for t in encodes if t.status == TranscodeTaskStatus.DONE and t.output_path]
     if any(t.status in _LIVE for t in encodes):
         # Its encode is still running (or a re-encode is queued): the rename waits for /complete.
-        _set_track(track, proposal)
+        name_track(track, proposal)
         proposal.status, proposal.last_error = MenuProposalStatus.ACCEPTED, None
         await db.flush()
         return proposal
@@ -233,7 +234,7 @@ async def apply_proposal(db: AsyncSession, proposal: MenuProposal, media_root: P
                 task.sidecar_paths = [_moved(p, old_video, new_video) for p in task.sidecar_paths]
         _prune((media_root / old_video).parent, media_root)
         logger.info("renamed encode task_id=%s %s -> %s (%d files)", encode.id, old_video, new_video, len(plan.moves))
-    _set_track(track, proposal)
+    name_track(track, proposal)
     proposal.status, proposal.last_error = MenuProposalStatus.APPLIED, None
     proposal.applied_path = new_video
     await db.flush()

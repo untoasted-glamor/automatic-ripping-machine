@@ -33,7 +33,7 @@ def test_0053_downgrade_drops_it() -> None:
 def test_0053_model_matches() -> None:
     table = MenuProposal.__table__
     assert {c.name for c in table.columns} == {
-        "id", "job_id", "track_id", "task_id", "page", "button", "label", "score", "plays", "role", "name",
+        "id", "job_id", "track_id", "scan_title", "task_id", "page", "button", "label", "score", "plays", "role", "name",
         "episode_number", "note", "status", "applied_path", "last_error", "created_at", "updated_at",
     }  # fmt: skip
     assert table.columns["status"].server_default.arg == MenuProposalStatus.PROPOSED.value

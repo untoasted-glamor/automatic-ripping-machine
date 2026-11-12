@@ -33,6 +33,7 @@ from arm_backend.job_abandon import abandon_job_transition
 from arm_backend.job_track_selection import default_for_job, disc_languages, edit_lock_reason, job_override
 from arm_backend.path_template import TemplateValidationError
 from arm_backend.raw_backup import delete_backup, describe_backup
+from arm_backend.rip_retry import RetryRefused, arm_retry, check_retryable, remaining_tracks
 from arm_backend.routers._params import JobIdParam
 from arm_backend.routers.logs import per_job_log_path
 from arm_backend.routers.ripper import persist_review_tracks
@@ -627,7 +628,6 @@ async def _start_held_job(db: AsyncSession, hub: WSHub, job: Job) -> None:
 
 
 # A retry rips the kept titles that have no file; it never touches what was ripped.
-_RETRYABLE_JOB_STATUSES = frozenset({JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL, JobStatus.FAILED})
 
 
 @router.post("/{job_id}/retry-failed", response_model=RetryFailedResponse)
@@ -656,64 +656,15 @@ async def retry_failed(
     job = (await db.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")
-    if job.status not in _RETRYABLE_JOB_STATUSES:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"only a ripped, ripped_partial or failed job can rip its remaining titles, got {enum_value_str(job.status)}",
-        )
-    if not (job.metadata_json or {}).get("scan_result"):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="job has no stored disc scan to retry from")
-    drive = (await db.execute(select(Drive).where(col(Drive.id) == job.drive_id))).scalar_one_or_none()
-    if drive is None or drive.source_kind is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="the job wasn't ripped on a drive that is still enrolled; rip its source again instead",
-        )
-    active = (
-        (
-            await db.execute(
-                select(Job)
-                .where(col(Job.drive_id) == job.drive_id)
-                .where(col(Job.status).in_(tuple(NON_TERMINAL_JOB_STATUSES)))
-            )
-        )
-        .scalars()
-        .all()
-    )
-    busy = next((j for j in active if j.id != job.id), None)
-    if busy is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"the drive is busy with another disc (job {busy.id}); retry once it is done",
-        )
+    try:
+        await check_retryable(db, job)
+    except RetryRefused as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from None
     tracks = list((await db.execute(select(Track).where(col(Track.job_id) == job.id))).scalars().all())
-    remaining = [
-        t
-        for t in tracks
-        if not t.excluded and (t.status == TrackStatus.FAILED or (t.status == TrackStatus.QUEUED and not t.output_path))
-    ]
-    # A skipped disc menu is finished and never comes back. A failed or newly
-    # ticked menu is retried like a title, alone too: the ripper copies it out
-    # of the kept backup, or reads the disc again for it.
+    remaining = remaining_tracks(tracks)
     if not remaining:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="every kept title is ripped")
-
-    for track in remaining:
-        track.status = TrackStatus.QUEUED
-        track.last_error = None
-        db.add(track)
-    job.metadata_json = with_flags(job.metadata_json, retry_armed=True)
-    db.add(job)
-    backup = describe_backup(job.id)
-    from_backup = backup is not None and backup.complete
-    if from_backup:
-        await hub.emit(
-            topic=f"ripper.commands.{job.drive_id}",
-            event_type="rip.retry",
-            payload={"job_id": job.id, "drive_id": job.drive_id},
-            job_id=job.id,
-            session=db,
-        )
+    from_backup = await arm_retry(db, job, hub, remaining)
     await db.commit()
     await db.refresh(job)
     logger.info(

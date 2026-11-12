@@ -159,10 +159,26 @@ def buttons_of(preview: dict[str, Any]) -> list[Button]:
     return out
 
 
-def _proposal(job: Job, task: TranscodeTask | None, b: Button, track: Track | None, chapter_of: bool) -> MenuProposal:
+def _not_ripped(job: Job, index: int | None) -> str:
+    """Why the job has no track for a title a button plays."""
+    if index is None:
+        return "not ripped (the disc scan has no title for it)"
+    scan = (job.metadata_json or {}).get("scan_result") or {}
+    floor = scan.get("min_length_seconds") if isinstance(scan, dict) else None
+    title = next((t for t in scan_titles(job) if t.get("index") == index), {})
+    duration = title.get("duration_seconds")
+    if isinstance(floor, int) and isinstance(duration, int) and duration < floor:
+        return f"not ripped: {duration} s, under the rip's {floor} s minimum"
+    return "not ripped"
+
+
+def _proposal(
+    job: Job, task: TranscodeTask | None, b: Button, track: Track | None, index: int | None, chapter_of: bool
+) -> MenuProposal:
     row = MenuProposal(
         job_id=job.id,
         track_id=track.id if track is not None else None,
+        scan_title=index,
         task_id=task.id if task is not None else None,
         page=b.page,
         button=b.button,
@@ -188,7 +204,7 @@ def _proposal(job: Job, task: TranscodeTask | None, b: Button, track: Track | No
     if row.role == TrackRole.SPECIAL:
         row.episode_number = None  # TMDB's season 0 number, set by the owner
     if track is None:
-        row.note = "not ripped"
+        row.note = _not_ripped(job, index)
     elif chapter_of:
         row.note = "a chapter of this title"
     elif track.excluded:
@@ -214,7 +230,7 @@ async def make_proposals(
             await db.delete(old)
 
     # Best-read button per title (or per "plays" for a title with no track).
-    best: dict[str, tuple[Button, Track | None]] = {}
+    best: dict[str, tuple[Button, Track | None, int | None]] = {}
     chapters: dict[str, set[int]] = {}
     for b in buttons_of(preview):
         if b.outcome.get("kind") == "plays_title":
@@ -229,13 +245,13 @@ async def make_proposals(
             key = f"play_all:{key}"
         prior = best.get(key)
         if prior is None or b.score > prior[0].score:
-            best[key] = (b, track)
+            best[key] = (b, track, index)
     rows: list[MenuProposal] = []
-    for key, (b, track) in best.items():
+    for key, (b, track, index) in best.items():
         if track is not None and track.id in decided_tracks and not key.startswith("play_all:"):
             continue
         chapter_of = len(chapters.get(key, set())) > 1
-        row = _proposal(job, task, b, track, chapter_of)
+        row = _proposal(job, task, b, track, index, chapter_of)
         db.add(row)
         rows.append(row)
     await db.flush()

@@ -31,6 +31,9 @@ class MenuProposal(SQLModel, table=True):
     track_id: str | None = Field(
         default=None, sa_column=Column(String, ForeignKey("tracks.id", ondelete="CASCADE"), nullable=True)
     )
+    # The disc scan title the button plays, when the walk could match it (also
+    # when the job has no track for it, so the title can still be ripped).
+    scan_title: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
     # The menu preview task whose walk made it.
     task_id: str | None = Field(
         default=None, sa_column=Column(String, ForeignKey("transcode_tasks.id", ondelete="SET NULL"), nullable=True)

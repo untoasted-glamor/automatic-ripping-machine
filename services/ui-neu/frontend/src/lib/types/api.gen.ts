@@ -2467,6 +2467,10 @@ export type JobDiscMenuView = {
      * Can Preview
      */
     can_preview?: boolean;
+    /**
+     * Rip Refusal
+     */
+    rip_refusal?: string | null;
 };
 
 /**
@@ -3373,6 +3377,10 @@ export type MenuProposalView = {
      * Track Id
      */
     track_id: string | null;
+    /**
+     * Scan Title
+     */
+    scan_title?: number | null;
     /**
      * Page
      */
@@ -5851,6 +5859,10 @@ export type TrackView = {
      * Excluded
      */
     excluded?: boolean;
+    /**
+     * Any Length
+     */
+    any_length?: boolean;
     /**
      * Custom Filename
      */
@@ -12353,6 +12365,46 @@ export type CreateProposalApiJobsJobIdDiscMenuProposalsPostResponses = {
 };
 
 export type CreateProposalApiJobsJobIdDiscMenuProposalsPostResponse = CreateProposalApiJobsJobIdDiscMenuProposalsPostResponses[keyof CreateProposalApiJobsJobIdDiscMenuProposalsPostResponses];
+
+export type RipProposalApiJobsJobIdDiscMenuProposalsProposalIdRipPostData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+        /**
+         * Proposal Id
+         */
+        proposal_id: string;
+    };
+    query?: never;
+    url: '/api/jobs/{job_id}/disc-menu/proposals/{proposal_id}/rip';
+};
+
+export type RipProposalApiJobsJobIdDiscMenuProposalsProposalIdRipPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type RipProposalApiJobsJobIdDiscMenuProposalsProposalIdRipPostError = RipProposalApiJobsJobIdDiscMenuProposalsProposalIdRipPostErrors[keyof RipProposalApiJobsJobIdDiscMenuProposalsProposalIdRipPostErrors];
+
+export type RipProposalApiJobsJobIdDiscMenuProposalsProposalIdRipPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: MenuProposalView;
+};
+
+export type RipProposalApiJobsJobIdDiscMenuProposalsProposalIdRipPostResponse = RipProposalApiJobsJobIdDiscMenuProposalsProposalIdRipPostResponses[keyof RipProposalApiJobsJobIdDiscMenuProposalsProposalIdRipPostResponses];
 
 export type AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostData = {
     body?: never;

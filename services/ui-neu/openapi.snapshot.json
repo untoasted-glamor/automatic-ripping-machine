@@ -10209,6 +10209,75 @@
         }
       }
     },
+    "/api/jobs/{job_id}/disc-menu/proposals/{proposal_id}/rip": {
+      "post": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Rip Proposal",
+        "description": "Rip the title this proposal's button plays, which the job has no track for, from the kept disc backup, and\nname it with the proposal's role and name once it's encoded. 409 when it can't (with why).",
+        "operationId": "rip_proposal_api_jobs__job_id__disc_menu_proposals__proposal_id__rip_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Proposal Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MenuProposalView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/jobs/{job_id}/disc-menu/proposals/accept-all": {
       "post": {
         "tags": [
@@ -14887,6 +14956,17 @@
             "type": "boolean",
             "title": "Can Preview",
             "default": false
+          },
+          "rip_refusal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rip Refusal"
           }
         },
         "type": "object",
@@ -16534,6 +16614,17 @@
               }
             ],
             "title": "Track Id"
+          },
+          "scan_title": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Title"
           },
           "page": {
             "type": "string",
@@ -21136,6 +21227,11 @@
           "excluded": {
             "type": "boolean",
             "title": "Excluded",
+            "default": false
+          },
+          "any_length": {
+            "type": "boolean",
+            "title": "Any Length",
             "default": false
           },
           "custom_filename": {

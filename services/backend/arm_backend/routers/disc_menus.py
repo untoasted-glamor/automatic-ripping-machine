@@ -2,7 +2,8 @@
 
 `GET` the panel; fetch a page image or button crop; ask for another preview; edit, accept or reject a proposed
 name, accept every proposal at once, or name a title by hand. Accepting renames the title's finished encode
-(`arm_backend.disc_menus.rename`).
+(`arm_backend.disc_menus.rename`). A title the menu plays that the job didn't rip (shorter than the rip's
+minimum) can be ripped from the kept disc backup (`arm_backend.disc_menus.rip`).
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from arm_backend.config import settings
 from arm_backend.db import get_session
 from arm_backend.disc_menus.preview_tasks import PreviewRefused, queue_menu_preview
 from arm_backend.disc_menus.rename import RenameRefused, apply_proposal
+from arm_backend.disc_menus.rip import RipRefused, rip_from_menu
 from arm_backend.disc_menus.views import job_disc_menu_view, preview_file
 from arm_backend.routers._params import JobIdParam
 from arm_backend.ws import WSHub
@@ -168,6 +170,27 @@ async def create_proposal(
     db.add(row)
     await db.flush()
     await _apply(db, row)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
+@router.post("/{job_id}/disc-menu/proposals/{proposal_id}/rip", response_model=MenuProposalView)
+async def rip_proposal(
+    job_id: JobIdParam,
+    proposal_id: str,
+    _: User = Depends(require_writer),
+    db: AsyncSession = Depends(get_session),
+    hub: WSHub = Depends(_get_hub),
+) -> MenuProposal:
+    """Rip the title this proposal's button plays, which the job has no track for, from the kept disc backup, and
+    name it with the proposal's role and name once it's encoded. 409 when it can't (with why)."""
+    job = await _job(db, job_id)
+    row = await _proposal(db, job_id, proposal_id)
+    try:
+        await rip_from_menu(db, job, row, hub, _media_root())
+    except RipRefused as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     await db.commit()
     await db.refresh(row)
     return row

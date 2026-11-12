@@ -391,6 +391,8 @@ class TrackView(BaseModel):
     episode_number_end: int | None = None
     season: int | None = None
     excluded: bool = False
+    # Ripped whatever its length (a title the disc menu plays; fork only).
+    any_length: bool = False
     custom_filename: str | None = None
     # {attribute: source_id} for resolver-managed fields (display-only).
     identity_provenance: dict[str, str] | None = None

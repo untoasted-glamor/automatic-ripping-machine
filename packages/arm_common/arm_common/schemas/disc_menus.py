@@ -20,6 +20,7 @@ class MenuProposalView(BaseModel):
     id: str
     job_id: str
     track_id: str | None
+    scan_title: int | None = None
     page: str
     button: int
     label: str
@@ -90,6 +91,9 @@ class JobDiscMenuView(BaseModel):
     proposals: list[MenuProposalView] = Field(default_factory=list)
     # Another preview can be asked for (the menu is copied and none is live).
     can_preview: bool = False
+    # Why a title the menu plays but the job has no track for can't be ripped
+    # now (no kept disc backup, the drive is busy, ...); None when it can.
+    rip_refusal: str | None = None
 
 
 class MenuProposalUpdate(BaseModel):
