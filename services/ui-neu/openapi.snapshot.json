@@ -9868,6 +9868,406 @@
           }
         }
       }
+    },
+    "/api/jobs/{job_id}/disc-menu": {
+      "get": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Get Disc Menu",
+        "description": "The job's disc menu: its track, the newest preview (pages and buttons) and the proposed names.",
+        "operationId": "get_disc_menu_api_jobs__job_id__disc_menu_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDiscMenuView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/disc-menu/files/{folder}/{name}": {
+      "get": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Get Disc Menu File",
+        "description": "A page image (`pages/<n>.jpg`) or button crop (`crops/<n>.b<id>.png`) of the newest preview.",
+        "operationId": "get_disc_menu_file_api_jobs__job_id__disc_menu_files__folder___name__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "folder",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Folder"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/disc-menu/preview": {
+      "post": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Request Disc Menu Preview",
+        "description": "Preview the menu again (after a failed preview, or to read it with newer rules). 409 when it can't run.",
+        "operationId": "request_disc_menu_preview_api_jobs__job_id__disc_menu_preview_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDiscMenuView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/disc-menu/proposals/{proposal_id}": {
+      "patch": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Update Proposal",
+        "description": "Edit a proposal's role, name or season 0 number, and accept, reject or reopen it. Accepting an applied\nproposal again with a new name renames the encode again. 409 when it can't be applied (with why).",
+        "operationId": "update_proposal_api_jobs__job_id__disc_menu_proposals__proposal_id__patch",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Proposal Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MenuProposalUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MenuProposalView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/disc-menu/proposals": {
+      "post": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Create Proposal",
+        "description": "Name one of the job's titles by hand, and apply it.",
+        "operationId": "create_proposal_api_jobs__job_id__disc_menu_proposals_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MenuProposalCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MenuProposalView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/disc-menu/proposals/accept-all": {
+      "post": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Accept All Proposals",
+        "description": "Accept every proposed name. One that can't be applied stays proposed, with why.",
+        "operationId": "accept_all_proposals_api_jobs__job_id__disc_menu_proposals_accept_all_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MenuProposalAcceptAllResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -14435,6 +14835,67 @@
         ],
         "title": "JobDetailView"
       },
+      "JobDiscMenuView": {
+        "properties": {
+          "track_id": {
+            "type": "string",
+            "title": "Track Id"
+          },
+          "track_status": {
+            "$ref": "#/components/schemas/TrackStatus"
+          },
+          "track_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Error"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MenuPreviewView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/MenuProposalView"
+            },
+            "type": "array",
+            "title": "Proposals"
+          },
+          "can_preview": {
+            "type": "boolean",
+            "title": "Can Preview",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "track_id",
+          "track_status"
+        ],
+        "title": "JobDiscMenuView"
+      },
       "JobFlags": {
         "properties": {
           "unidentified": {
@@ -15673,6 +16134,546 @@
         ],
         "title": "MenuKind",
         "description": "What a disc's menu is, found at scan time (`arm_ripper.menus.probe`,\nfork only): `ScanResult.menu_kind`."
+      },
+      "MenuPreviewButtonView": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "box": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Box"
+          },
+          "visible": {
+            "type": "boolean",
+            "title": "Visible"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "default": ""
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "crop": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crop"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "plays",
+              "page",
+              "stays",
+              "stopped"
+            ],
+            "title": "Outcome"
+          },
+          "plays": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plays"
+          },
+          "goes_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goes To"
+          },
+          "track_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Id"
+          },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "box",
+          "visible",
+          "outcome"
+        ],
+        "title": "MenuPreviewButtonView"
+      },
+      "MenuPreviewPageView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "at": {
+            "type": "string",
+            "title": "At"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language"
+          },
+          "image": {
+            "type": "string",
+            "title": "Image"
+          },
+          "size": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Size"
+          },
+          "buttons": {
+            "items": {
+              "$ref": "#/components/schemas/MenuPreviewButtonView"
+            },
+            "type": "array",
+            "title": "Buttons"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "at",
+          "language",
+          "image",
+          "size",
+          "buttons"
+        ],
+        "title": "MenuPreviewPageView"
+      },
+      "MenuPreviewView": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TranscodeTaskStatus"
+          },
+          "progress_pct": {
+            "type": "integer",
+            "title": "Progress Pct"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "disc": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "bd",
+                  "dvd"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disc"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/MenuPreviewPageView"
+            },
+            "type": "array",
+            "title": "Pages"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notes"
+          },
+          "unsupported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unsupported"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "status",
+          "progress_pct"
+        ],
+        "title": "MenuPreviewView"
+      },
+      "MenuProposalAcceptAllResponse": {
+        "properties": {
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/MenuProposalView"
+            },
+            "type": "array",
+            "title": "Proposals"
+          },
+          "refused": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Refused"
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposals"
+        ],
+        "title": "MenuProposalAcceptAllResponse"
+      },
+      "MenuProposalCreate": {
+        "properties": {
+          "track_id": {
+            "type": "string",
+            "title": "Track Id"
+          },
+          "role": {
+            "$ref": "#/components/schemas/TrackRole"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "episode_number": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 9999.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Number"
+          },
+          "page": {
+            "type": "string",
+            "title": "Page",
+            "default": ""
+          },
+          "button": {
+            "type": "integer",
+            "title": "Button",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "track_id",
+          "role",
+          "name"
+        ],
+        "title": "MenuProposalCreate",
+        "description": "Name a title by hand from the menu panel, and apply it."
+      },
+      "MenuProposalStatus": {
+        "type": "string",
+        "enum": [
+          "proposed",
+          "accepted",
+          "applied",
+          "rejected",
+          "info"
+        ],
+        "title": "MenuProposalStatus",
+        "description": "Where a name proposed from a disc menu button stands (fork only, disc\nmenus plan v5, M2-M4).\n\n`proposed`: made by a menu preview, not yet looked at. `accepted`: the\nowner took it (maybe edited) and its encode isn't finished, so the rename\nwaits for it. `applied`: the track carries the name and its finished\nencode has been renamed. `rejected`: the owner turned it down. `info`:\nnothing to apply (an episode button that confirms or contradicts identity,\na play-all, a title that wasn't ripped)."
+      },
+      "MenuProposalUpdate": {
+        "properties": {
+          "role": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackRole"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "episode_number": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 9999.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Number"
+          },
+          "action": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "accept",
+                  "reject",
+                  "reopen"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          }
+        },
+        "type": "object",
+        "title": "MenuProposalUpdate",
+        "description": "Edit a proposal and/or decide it. `accept` applies it: the track takes\nthe role and name, and its finished encode is renamed (or will be, when\nits encode finishes). `reject` sets it aside; `reopen` puts a rejected one\nback."
+      },
+      "MenuProposalView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "track_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Id"
+          },
+          "page": {
+            "type": "string",
+            "title": "Page"
+          },
+          "button": {
+            "type": "integer",
+            "title": "Button"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "plays": {
+            "type": "string",
+            "title": "Plays"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackRole"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "episode_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Number"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MenuProposalStatus"
+          },
+          "applied_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied Path"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "job_id",
+          "track_id",
+          "page",
+          "button",
+          "label",
+          "score",
+          "plays",
+          "role",
+          "name",
+          "episode_number",
+          "note",
+          "status",
+          "applied_path",
+          "last_error"
+        ],
+        "title": "MenuProposalView"
       },
       "MetadataCandidate": {
         "properties": {
@@ -19766,7 +20767,8 @@
           "extra",
           "trailer",
           "other",
-          "play_all"
+          "play_all",
+          "special"
         ],
         "title": "TrackRole",
         "description": "What one title on a disc is. Set by identity sources via the resolver\n(arm_backend.identity) or by the operator; replaces the old free-text\nrole and the per-track video_type."
@@ -20663,7 +21665,8 @@
         "type": "string",
         "enum": [
           "encode",
-          "subtitle_ocr"
+          "subtitle_ocr",
+          "menu_preview"
         ],
         "title": "TranscodeTaskKind",
         "description": "What a `transcode_tasks` row runs in its transcoder container.\n\n`encode` writes a video (or audio) file from a raw rip. `subtitle_ocr`\nreads the image subtitle sidecars its parent encode task wrote (`.sup`)\nand writes a text subtitle (`.srt`) beside each; it needs no GPU, no\npreset and no raw rip, and never changes its session application's\nstatus."

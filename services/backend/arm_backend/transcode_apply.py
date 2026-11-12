@@ -21,6 +21,7 @@ from typing import Any, Literal, NamedTuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
+from arm_backend.disc_menus.rename import bonus_output_path
 from arm_backend.path_sanitize import sanitize_path_component
 from arm_backend.path_template import (
     NEVER_OPTIONAL,
@@ -282,6 +283,8 @@ def compute_outputs(
             name = f"{stem}{ext}" if ext else stem
             parent = str(p.parent)
             path = name if parent == "." else f"{parent}/{name}"
+        # A bonus with a role and a name (from its disc menu) goes in Jellyfin's bonus layout.
+        path = bonus_output_path(job, track, path)
         resolved.append(ResolvedTask(track_id=track.id, output_path=path))
     return resolved
 

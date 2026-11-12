@@ -39,6 +39,7 @@ from arm_backend.routers import (
     auth,
     config as config_router,
     diagnostics,
+    disc_menus as disc_menus_router,
     drives,
     files as files_router,
     health,
@@ -507,6 +508,8 @@ app.include_router(system_router.router)
 app.include_router(setup_router.router)
 app.include_router(files_router.router)
 app.include_router(users_router.router)
+# Fork only (disc menus M3-M4); last, so its paths don't reorder the OpenAPI snapshot.
+app.include_router(disc_menus_router.router)
 app.include_router(ws_router)
 
 

@@ -11,6 +11,7 @@ a new kind has to say how every one of those places treats it.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from arm_backend.sidecars import TEXT_SUBTITLE_SUFFIX
 from arm_common import TranscodeTaskKind
@@ -26,7 +27,8 @@ class TaskKindRules:
     # task runs in the dispatcher's other slots (`ARM_SUBTITLE_OCR_MAX_PARALLEL`)
     # with no preset and no GPU.
     encodes: bool
-    # Its container gets the raw rips folder (`/raw`, read-only).
+    # Its container gets the raw rips folder (`/raw`, read-only unless
+    # `raw_writable`).
     mounts_raw: bool
     # Only the sidecars it reports with this suffix are recorded as its own
     # (None: every one next to its output).
@@ -35,6 +37,13 @@ class TaskKindRules:
     # removed with the job, like a finished one's. An encode's are not: a
     # failed encode wrote nothing that is kept.
     failed_owns_files: bool
+    # `/raw` is mounted read-write: the task writes into the job's raw folder
+    # (a menu preview, into `<job raw>/menu/preview/`).
+    raw_writable: bool = False
+    # Which image runs it: the transcode image (`ARM_TRANSCODE_IMAGE`, and its
+    # GPU vendor variants for an encode) or the menu preview image
+    # (`ARM_MENU_PREVIEW_IMAGE`: Python, the OCR model and Node; no GPU).
+    image: Literal["transcode", "menu_preview"] = "transcode"
 
 
 TASK_KIND_RULES: dict[TranscodeTaskKind, TaskKindRules] = {
@@ -43,6 +52,16 @@ TASK_KIND_RULES: dict[TranscodeTaskKind, TaskKindRules] = {
     ),
     TranscodeTaskKind.SUBTITLE_OCR: TaskKindRules(
         encodes=False, mounts_raw=False, sidecar_suffix=TEXT_SUBTITLE_SUFFIX, failed_owns_files=True
+    ),
+    # Writes only under the job's raw folder, which job delete removes with
+    # the raw rip; it records no media files.
+    TranscodeTaskKind.MENU_PREVIEW: TaskKindRules(
+        encodes=False,
+        mounts_raw=True,
+        sidecar_suffix=None,
+        failed_owns_files=False,
+        raw_writable=True,
+        image="menu_preview",
     ),
 }
 

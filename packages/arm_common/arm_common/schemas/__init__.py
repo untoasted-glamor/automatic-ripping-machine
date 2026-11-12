@@ -168,6 +168,16 @@ from arm_common.schemas.sessions import (
     TranscodePresetView,
     TranscodeTaskView,
 )
+from arm_common.schemas.disc_menus import (
+    JobDiscMenuView,
+    MenuPreviewButtonView,
+    MenuPreviewPageView,
+    MenuPreviewView,
+    MenuProposalAcceptAllResponse,
+    MenuProposalCreate,
+    MenuProposalUpdate,
+    MenuProposalView,
+)
 from arm_common.schemas.subtitle_ocr import (
     JobSubtitleOcrChoice,
     JobSubtitleOcrView,
@@ -254,6 +264,14 @@ from arm_common.schemas.ws import (
 )
 
 __all__ = [
+    "JobDiscMenuView",
+    "MenuPreviewButtonView",
+    "MenuPreviewPageView",
+    "MenuPreviewView",
+    "MenuProposalAcceptAllResponse",
+    "MenuProposalCreate",
+    "MenuProposalUpdate",
+    "MenuProposalView",
     "AbandonJobRequest",
     "AppriseChannelConfig",
     "BdDiscMeta",

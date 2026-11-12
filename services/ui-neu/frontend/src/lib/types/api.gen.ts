@@ -2442,6 +2442,34 @@ export type JobDetailView = {
 };
 
 /**
+ * JobDiscMenuView
+ */
+export type JobDiscMenuView = {
+    /**
+     * Track Id
+     */
+    track_id: string;
+    track_status: TrackStatus;
+    /**
+     * Track Error
+     */
+    track_error?: string | null;
+    /**
+     * Size Bytes
+     */
+    size_bytes?: number | null;
+    preview?: MenuPreviewView | null;
+    /**
+     * Proposals
+     */
+    proposals?: Array<MenuProposalView>;
+    /**
+     * Can Preview
+     */
+    can_preview?: boolean;
+};
+
+/**
  * JobFlags
  */
 export type JobFlags = {
@@ -3121,6 +3149,281 @@ export type MenuExtract = {
  * fork only): `ScanResult.menu_kind`.
  */
 export type MenuKind = 'hdmv' | 'bdj' | 'dvd' | 'none' | 'unknown';
+
+/**
+ * MenuPreviewButtonView
+ */
+export type MenuPreviewButtonView = {
+    /**
+     * Id
+     */
+    id: number;
+    /**
+     * Box
+     */
+    box: Array<number>;
+    /**
+     * Visible
+     */
+    visible: boolean;
+    /**
+     * Label
+     */
+    label?: string;
+    /**
+     * Score
+     */
+    score?: number | null;
+    /**
+     * Crop
+     */
+    crop?: string | null;
+    /**
+     * Outcome
+     */
+    outcome: 'plays' | 'page' | 'stays' | 'stopped';
+    /**
+     * Plays
+     */
+    plays?: string | null;
+    /**
+     * Goes To
+     */
+    goes_to?: string | null;
+    /**
+     * Track Id
+     */
+    track_id?: string | null;
+    /**
+     * Proposal Id
+     */
+    proposal_id?: string | null;
+};
+
+/**
+ * MenuPreviewPageView
+ */
+export type MenuPreviewPageView = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * At
+     */
+    at: string;
+    /**
+     * Language
+     */
+    language: string;
+    /**
+     * Image
+     */
+    image: string;
+    /**
+     * Size
+     */
+    size: Array<number>;
+    /**
+     * Buttons
+     */
+    buttons: Array<MenuPreviewButtonView>;
+};
+
+/**
+ * MenuPreviewView
+ */
+export type MenuPreviewView = {
+    /**
+     * Task Id
+     */
+    task_id: string;
+    status: TranscodeTaskStatus;
+    /**
+     * Progress Pct
+     */
+    progress_pct: number;
+    /**
+     * Last Error
+     */
+    last_error?: string | null;
+    /**
+     * Updated At
+     */
+    updated_at?: string | null;
+    /**
+     * Disc
+     */
+    disc?: 'bd' | 'dvd' | null;
+    /**
+     * Pages
+     */
+    pages?: Array<MenuPreviewPageView>;
+    /**
+     * Notes
+     */
+    notes?: Array<string>;
+    /**
+     * Unsupported
+     */
+    unsupported?: Array<string>;
+    /**
+     * Truncated
+     */
+    truncated?: boolean;
+};
+
+/**
+ * MenuProposalAcceptAllResponse
+ */
+export type MenuProposalAcceptAllResponse = {
+    /**
+     * Proposals
+     */
+    proposals: Array<MenuProposalView>;
+    /**
+     * Refused
+     */
+    refused?: {
+        [key: string]: string;
+    };
+};
+
+/**
+ * MenuProposalCreate
+ *
+ * Name a title by hand from the menu panel, and apply it.
+ */
+export type MenuProposalCreate = {
+    /**
+     * Track Id
+     */
+    track_id: string;
+    role: TrackRole;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Episode Number
+     */
+    episode_number?: number | null;
+    /**
+     * Page
+     */
+    page?: string;
+    /**
+     * Button
+     */
+    button?: number;
+};
+
+/**
+ * MenuProposalStatus
+ *
+ * Where a name proposed from a disc menu button stands (fork only, disc
+ * menus plan v5, M2-M4).
+ *
+ * `proposed`: made by a menu preview, not yet looked at. `accepted`: the
+ * owner took it (maybe edited) and its encode isn't finished, so the rename
+ * waits for it. `applied`: the track carries the name and its finished
+ * encode has been renamed. `rejected`: the owner turned it down. `info`:
+ * nothing to apply (an episode button that confirms or contradicts identity,
+ * a play-all, a title that wasn't ripped).
+ */
+export type MenuProposalStatus = 'proposed' | 'accepted' | 'applied' | 'rejected' | 'info';
+
+/**
+ * MenuProposalUpdate
+ *
+ * Edit a proposal and/or decide it. `accept` applies it: the track takes
+ * the role and name, and its finished encode is renamed (or will be, when
+ * its encode finishes). `reject` sets it aside; `reopen` puts a rejected one
+ * back.
+ */
+export type MenuProposalUpdate = {
+    role?: TrackRole | null;
+    /**
+     * Name
+     */
+    name?: string | null;
+    /**
+     * Episode Number
+     */
+    episode_number?: number | null;
+    /**
+     * Action
+     */
+    action?: 'accept' | 'reject' | 'reopen' | null;
+};
+
+/**
+ * MenuProposalView
+ */
+export type MenuProposalView = {
+    /**
+     * Id
+     */
+    id: string;
+    /**
+     * Job Id
+     */
+    job_id: string;
+    /**
+     * Track Id
+     */
+    track_id: string | null;
+    /**
+     * Page
+     */
+    page: string;
+    /**
+     * Button
+     */
+    button: number;
+    /**
+     * Label
+     */
+    label: string;
+    /**
+     * Score
+     */
+    score: number | null;
+    /**
+     * Plays
+     */
+    plays: string;
+    role: TrackRole | null;
+    /**
+     * Name
+     */
+    name: string | null;
+    /**
+     * Episode Number
+     */
+    episode_number: number | null;
+    /**
+     * Note
+     */
+    note: string | null;
+    status: MenuProposalStatus;
+    /**
+     * Applied Path
+     */
+    applied_path: string | null;
+    /**
+     * Last Error
+     */
+    last_error: string | null;
+    /**
+     * Created At
+     */
+    created_at?: string | null;
+    /**
+     * Updated At
+     */
+    updated_at?: string | null;
+};
 
 /**
  * MetadataCandidate
@@ -5381,7 +5684,7 @@ export type TrackKind = 'video_title' | 'audio_track' | 'data_dump' | 'disc_back
  * (arm_backend.identity) or by the operator; replaces the old free-text
  * role and the per-track video_type.
  */
-export type TrackRole = 'main' | 'episode' | 'extra' | 'trailer' | 'other' | 'play_all';
+export type TrackRole = 'main' | 'episode' | 'extra' | 'trailer' | 'other' | 'play_all' | 'special';
 
 /**
  * TrackSelection
@@ -5792,7 +6095,7 @@ export type TranscodeStatsView = {
  * preset and no raw rip, and never changes its session application's
  * status.
  */
-export type TranscodeTaskKind = 'encode' | 'subtitle_ocr';
+export type TranscodeTaskKind = 'encode' | 'subtitle_ocr' | 'menu_preview';
 
 /**
  * TranscodeTaskStatus
@@ -11860,3 +12163,229 @@ export type SetPasswordApiUsersUserIdPasswordPostResponses = {
 };
 
 export type SetPasswordApiUsersUserIdPasswordPostResponse = SetPasswordApiUsersUserIdPasswordPostResponses[keyof SetPasswordApiUsersUserIdPasswordPostResponses];
+
+export type GetDiscMenuApiJobsJobIdDiscMenuGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/jobs/{job_id}/disc-menu';
+};
+
+export type GetDiscMenuApiJobsJobIdDiscMenuGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetDiscMenuApiJobsJobIdDiscMenuGetError = GetDiscMenuApiJobsJobIdDiscMenuGetErrors[keyof GetDiscMenuApiJobsJobIdDiscMenuGetErrors];
+
+export type GetDiscMenuApiJobsJobIdDiscMenuGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: JobDiscMenuView;
+};
+
+export type GetDiscMenuApiJobsJobIdDiscMenuGetResponse = GetDiscMenuApiJobsJobIdDiscMenuGetResponses[keyof GetDiscMenuApiJobsJobIdDiscMenuGetResponses];
+
+export type GetDiscMenuFileApiJobsJobIdDiscMenuFilesFolderNameGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+        /**
+         * Folder
+         */
+        folder: string;
+        /**
+         * Name
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/jobs/{job_id}/disc-menu/files/{folder}/{name}';
+};
+
+export type GetDiscMenuFileApiJobsJobIdDiscMenuFilesFolderNameGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetDiscMenuFileApiJobsJobIdDiscMenuFilesFolderNameGetError = GetDiscMenuFileApiJobsJobIdDiscMenuFilesFolderNameGetErrors[keyof GetDiscMenuFileApiJobsJobIdDiscMenuFilesFolderNameGetErrors];
+
+export type GetDiscMenuFileApiJobsJobIdDiscMenuFilesFolderNameGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/jobs/{job_id}/disc-menu/preview';
+};
+
+export type RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostError = RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostErrors[keyof RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostErrors];
+
+export type RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: JobDiscMenuView;
+};
+
+export type RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostResponse = RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostResponses[keyof RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostResponses];
+
+export type UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchData = {
+    body: MenuProposalUpdate;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+        /**
+         * Proposal Id
+         */
+        proposal_id: string;
+    };
+    query?: never;
+    url: '/api/jobs/{job_id}/disc-menu/proposals/{proposal_id}';
+};
+
+export type UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchError = UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchErrors[keyof UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchErrors];
+
+export type UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchResponses = {
+    /**
+     * Successful Response
+     */
+    200: MenuProposalView;
+};
+
+export type UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchResponse = UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchResponses[keyof UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchResponses];
+
+export type CreateProposalApiJobsJobIdDiscMenuProposalsPostData = {
+    body: MenuProposalCreate;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/jobs/{job_id}/disc-menu/proposals';
+};
+
+export type CreateProposalApiJobsJobIdDiscMenuProposalsPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CreateProposalApiJobsJobIdDiscMenuProposalsPostError = CreateProposalApiJobsJobIdDiscMenuProposalsPostErrors[keyof CreateProposalApiJobsJobIdDiscMenuProposalsPostErrors];
+
+export type CreateProposalApiJobsJobIdDiscMenuProposalsPostResponses = {
+    /**
+     * Successful Response
+     */
+    201: MenuProposalView;
+};
+
+export type CreateProposalApiJobsJobIdDiscMenuProposalsPostResponse = CreateProposalApiJobsJobIdDiscMenuProposalsPostResponses[keyof CreateProposalApiJobsJobIdDiscMenuProposalsPostResponses];
+
+export type AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/jobs/{job_id}/disc-menu/proposals/accept-all';
+};
+
+export type AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostError = AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostErrors[keyof AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostErrors];
+
+export type AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: MenuProposalAcceptAllResponse;
+};
+
+export type AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostResponse = AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostResponses[keyof AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostResponses];

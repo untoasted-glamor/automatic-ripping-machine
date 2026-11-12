@@ -86,6 +86,12 @@ class Settings(BaseSettings):
     # this with the versioned, pulled image. Compose always sets it, so this
     # default only applies in tests.
     ARM_TRANSCODE_IMAGE: str = "arm-transcode:latest"
+    # The image a `menu_preview` task runs in (fork only, disc menus plan v5,
+    # decision 15): the base transcode image plus Node and the vendored menu
+    # walk; no GPU. Built from services/transcode/Dockerfile's `menu-preview`
+    # target (the arm-menu-preview compose service, built but never run) and
+    # pulled on first use when it isn't on the docker host.
+    ARM_MENU_PREVIEW_IMAGE: str = "arm-transcode:latest-menu-preview"
 
     # Per-vendor image overrides (the transcode image split: a slimmer image
     # per GPU vendor instead of one fat multi-vendor build). Empty (default):

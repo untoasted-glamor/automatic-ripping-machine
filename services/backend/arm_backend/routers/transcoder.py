@@ -34,6 +34,8 @@ from arm_backend.db import get_session
 from arm_backend.job_track_selection import effective_preset_view
 from arm_backend.log_context import job_log_context
 from arm_backend.sidecars import accepted_sidecars, drop_replaced_sidecars
+from arm_backend.disc_menus.hooks import after_task_complete
+from arm_backend.disc_menus.preview_tasks import menu_preview_inputs
 from arm_backend.subtitle_ocr_tasks import queue_after_encode, subtitle_ocr_inputs
 from arm_backend.task_kinds import rules_for
 from arm_backend.transcode_apply import aggregate_session_application
@@ -160,6 +162,20 @@ async def register(
             raw_input_path=None,
             media_root=request_media_root(),
             input_sidecar_paths=inputs,
+        )
+
+    if task.kind == TranscodeTaskKind.MENU_PREVIEW:
+        # Reads the job's copied disc menu and writes its preview beside it.
+        menu_dir, reason = await menu_preview_inputs(db, task)
+        if reason is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"menu preview cannot run: {reason}")
+        return RegisterTranscoderResponse(
+            task=TranscodeTaskView.model_validate(task),
+            session=SessionView.model_validate(sess),
+            transcode_preset=None,
+            source_track=TrackView.model_validate(track),
+            raw_input_path=str(menu_dir),
+            media_root=request_media_root(),
         )
 
     if not rules_for(task.kind).encodes:  # pragma: no cover - every other kind is handled above
@@ -343,6 +359,9 @@ async def complete(
     # Text subtitles from the image subtitles it just wrote, when the job's
     # choice is on. Only now: the `.sup` files exist from this point.
     await queue_after_encode(db, task, job_id, hub)
+    # A menu preview's names for the job's titles; an encode may apply a
+    # name accepted while it ran.
+    await after_task_complete(db, task, job_id, hub)
 
     outcome = await aggregate_session_application(db, application)
     if outcome.event_type is not None:

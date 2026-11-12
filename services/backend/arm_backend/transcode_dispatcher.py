@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import col, select
 
 from arm_backend.config import Settings, settings
+from arm_backend.disc_menus.preview_tasks import menu_preview_inputs, sweep_menu_previews
 from arm_backend.docker_probe import TtlProbe, probe_backend_url, probe_docker
 from arm_backend.sidecars import is_sidecar_of
 from arm_backend.subtitle_ocr_tasks import subtitle_ocr_inputs
@@ -366,6 +367,7 @@ class TranscodeDispatcher:
             await self._refresh_enabled_gpu_vendors(db)
             await self.sweep_stale_claims(db)
             await self.sweep_orphaned_applications(db)
+            await sweep_menu_previews(db, self._hub)
             await db.commit()
             await self.spawn_pending(db)
 
@@ -782,6 +784,15 @@ class TranscodeDispatcher:
                     # Its container is starting up and claims the task once it
                     # registers.
                     continue
+                if task.kind == TranscodeTaskKind.MENU_PREVIEW:
+                    _, unrunnable = await menu_preview_inputs(db, task)
+                    if unrunnable is not None:
+                        try:
+                            await self._fail_queued_task(db, task, f"menu preview cannot run: {unrunnable}")
+                        except Exception as exc:
+                            logger.exception("failing unrunnable menu preview failed task_id=%s: %s", task_id, exc)
+                            await db.rollback()
+                        continue
                 if task.kind == TranscodeTaskKind.SUBTITLE_OCR:
                     _, unrunnable = await subtitle_ocr_inputs(db, task)
                     if unrunnable is not None:
@@ -815,6 +826,12 @@ class TranscodeDispatcher:
                     # A missing image or unreachable host fails every spawn
                     # the same way; hold the task instead of looping a
                     # traceback per tick or burning its attempts.
+                    held_encode += 1
+                    continue
+                if rules_for(task.kind).image == "menu_preview" and not await asyncio.to_thread(
+                    self.menu_preview_image_available
+                ):
+                    # Its own image, pulled on demand; held while it's absent.
                     held_encode += 1
                     continue
                 # No separate re-verify needed here: the fresh,
@@ -1252,6 +1269,16 @@ class TranscodeDispatcher:
         with self._pull_locks_guard:
             return self._pull_locks.setdefault(image, threading.Lock())
 
+    def menu_preview_image_available(self) -> bool:
+        """Is the menu preview image on the docker host (or pulled now)?
+        A failed pull is retried after the variant images' back-off. Blocking."""
+        image = self._settings.ARM_MENU_PREVIEW_IMAGE
+        if self._docker is None:
+            return False
+        if self.image_exists(image):
+            return True
+        return self._pull_image(image, kind="menu preview", fallback="menu previews stay held")
+
     def variant_available(self, image: str) -> bool:
         """Can the per-vendor variant `image` be spawned on the docker host?
 
@@ -1434,9 +1461,13 @@ class TranscodeDispatcher:
             self._settings.ARM_HOST_LOGS_PATH: {"bind": "/logs", "mode": "rw"},
             str(certs_root / "arm-ca.crt"): {"bind": "/etc/ssl/arm/arm-ca.crt", "mode": "ro"},
         }
-        if not rules_for(task.kind).mounts_raw:
+        rules = rules_for(task.kind)
+        if not rules.mounts_raw:
             # Subtitle OCR reads and writes subtitle files next to the video only.
             del volumes[self._settings.ARM_HOST_RAW_PATH]
+        elif rules.raw_writable:
+            # A menu preview writes into the job's raw folder.
+            volumes[self._settings.ARM_HOST_RAW_PATH]["mode"] = "rw"
         extra_run_kwargs: dict[str, Any] = {}
         if assignment is not None and assignment.encoder is not None:
             # The worker resolves everything from the catalog id. The
@@ -1460,7 +1491,11 @@ class TranscodeDispatcher:
         # never collide.
         hostname = f"arm-transcode-{task.id[-12:]}"
         gpu_vendor = assignment.gpu.vendor if assignment is not None and assignment.gpu is not None else None
-        image = image_for(self._settings, gpu_vendor, exists=self.variant_available)
+        image = (
+            self._settings.ARM_MENU_PREVIEW_IMAGE
+            if rules.image == "menu_preview"
+            else image_for(self._settings, gpu_vendor, exists=self.variant_available)
+        )
         run_kwargs: dict[str, Any] = dict(
             image=image,
             name=hostname,

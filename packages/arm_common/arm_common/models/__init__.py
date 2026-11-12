@@ -4,6 +4,7 @@ from arm_common.models.drive import Drive
 from arm_common.models.event import Event
 from arm_common.models.gpu import Gpu
 from arm_common.models.job import Job
+from arm_common.models.menu_proposal import MenuProposal
 from arm_common.models.notification_channel import NotificationChannel
 from arm_common.models.notification_dispatch_log import NotificationDispatchLog
 from arm_common.models.notification_inbox import NotificationInbox
@@ -26,6 +27,7 @@ __all__ = [
     "GUEST_ROLE",
     "Gpu",
     "Job",
+    "MenuProposal",
     "NotificationChannel",
     "NotificationDispatchLog",
     "NotificationInbox",

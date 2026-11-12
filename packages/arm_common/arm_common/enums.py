@@ -221,6 +221,10 @@ class TrackRole(StrEnum):
     # Plays other titles back to back. Set by the review gate's detector
     # (arm_backend.track_selection) or the operator; starts left out.
     PLAY_ALL = "play_all"
+    # A special: a bonus Jellyfin files as season 0 (`Season 00/`), numbered by
+    # TMDB's season 0 in `episode_number` (fork only, disc menus plan v5,
+    # decision 13). The episode stage leaves it alone.
+    SPECIAL = "special"
 
 
 class MediaType(StrEnum):
@@ -357,6 +361,24 @@ class TranscodeTaskStatus(StrEnum):
     FAILED = "failed"
 
 
+class MenuProposalStatus(StrEnum):
+    """Where a name proposed from a disc menu button stands (fork only, disc
+    menus plan v5, M2-M4).
+
+    `proposed`: made by a menu preview, not yet looked at. `accepted`: the
+    owner took it (maybe edited) and its encode isn't finished, so the rename
+    waits for it. `applied`: the track carries the name and its finished
+    encode has been renamed. `rejected`: the owner turned it down. `info`:
+    nothing to apply (an episode button that confirms or contradicts identity,
+    a play-all, a title that wasn't ripped)."""
+
+    PROPOSED = "proposed"
+    ACCEPTED = "accepted"
+    APPLIED = "applied"
+    REJECTED = "rejected"
+    INFO = "info"
+
+
 class TranscodeTaskKind(StrEnum):
     """What a `transcode_tasks` row runs in its transcoder container.
 
@@ -368,6 +390,12 @@ class TranscodeTaskKind(StrEnum):
 
     ENCODE = "encode"
     SUBTITLE_OCR = "subtitle_ocr"
+    # Reads the job's copied disc menu (`<job raw>/menu/`) and writes a preview
+    # into `<job raw>/menu/preview/`: each reachable menu page as an image,
+    # each visible button's label read by OCR, and what every button plays
+    # (fork only, disc menus plan v5, M1). Runs in the menu preview image, no
+    # GPU, no preset; its source track is the job's `disc_menu` track.
+    MENU_PREVIEW = "menu_preview"
 
 
 class GpuVendor(StrEnum):
