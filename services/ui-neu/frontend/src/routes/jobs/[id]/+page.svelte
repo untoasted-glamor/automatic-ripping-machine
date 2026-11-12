@@ -51,6 +51,7 @@
 	import SkeletonCard from '$lib/components/SkeletonCard.svelte';
 	import JsonTree from '$lib/components/JsonTree.svelte';
 	import JobLogPanel from '$lib/components/JobLogPanel.svelte';
+	import DiscMenuPanel from '$lib/components/DiscMenuPanel.svelte';
 	import { startRipperEvents, onRipperEvent } from '$lib/stores/ripperEvents.svelte';
 	import { ripProgress, reconcileSubscriptions, startWS, formatEta, formatTransfer } from '$lib/stores/rips.svelte';
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
@@ -826,6 +827,11 @@
 						/>
 					{/if}
 				</section>
+			{/if}
+
+			<!-- Disc menu (fork only): its pages, and the names its buttons give the titles -->
+			{#if tracks.some((t) => isDiscMenu(t) && t.status === 'done')}
+				<DiscMenuPanel jobId={job.id} {tracks} canEdit={$isAdmin} onrenamed={() => loadJob()} />
 			{/if}
 
 			<!-- Disc fingerprints (read-only) -->

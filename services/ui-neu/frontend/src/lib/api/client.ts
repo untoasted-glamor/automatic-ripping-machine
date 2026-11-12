@@ -113,6 +113,18 @@ export async function apiFormPost<T>(path: string, formData: FormData): Promise<
 	return handle<T>(res);
 }
 
+/** Fetch an authenticated image (or any file) and return an object URL for it.
+ *  An <img src> can't send the bearer token, so images behind require_jwt are
+ *  fetched here; the caller revokes the URL with URL.revokeObjectURL. */
+export async function fetchObjectUrl(path: string): Promise<string> {
+	const headers: Record<string, string> = {};
+	const token = getToken();
+	if (token) headers['Authorization'] = `Bearer ${token}`;
+	const res = await fetch(path, { headers });
+	if (!res.ok) return handle<never>(res);
+	return URL.createObjectURL(await res.blob());
+}
+
 export function get<T>(path: string): Promise<T> {
 	return apiFetch<T>(path, { method: 'GET' });
 }
