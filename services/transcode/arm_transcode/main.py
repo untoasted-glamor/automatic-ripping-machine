@@ -19,6 +19,11 @@ Run order:
 8. If a heartbeat shows the Backend revoked our claim, stop the encode and
    exit without /fail: the task is no longer ours to report on.
 
+A `menu_preview` task (fork only) runs `menus.preview.make_preview` on the
+register's `raw_input_path` (the job's copied disc menu, `<job raw>/menu/`),
+which writes `<job raw>/menu/preview/`; /complete reports that folder as its
+absolute `output_path` (it is under `/raw`, not the media root).
+
 A `subtitle_ocr` task (register says so in `task.kind`) runs
 `subtitle_ocr.task.make_text_subtitles` over the register's
 `input_sidecar_paths` instead of an encoder, and reports the `.srt` files as
@@ -240,6 +245,18 @@ async def _run_subtitle_ocr(media_root: Path, inputs: list[str], state: Progress
     return EncodeResult(size=sum(p.stat().st_size for p in written), sidecars=written)
 
 
+async def _run_menu_preview(menu_dir: Path, state: ProgressState) -> EncodeResult:
+    """Write `<menu_dir>/preview/`: the menu's pages, button labels and walk."""
+    from arm_transcode.menus.preview import make_preview
+
+    def _on_progress(pct: int, what: str) -> None:
+        state.pct = pct
+        state.current_pass = what
+
+    result = await asyncio.to_thread(make_preview, menu_dir, progress=_on_progress)
+    return EncodeResult(size=result.size())
+
+
 _T = TypeVar("_T")
 
 
@@ -329,10 +346,15 @@ async def run() -> int:
 
                 state = ProgressState()
                 ocr = registered.task.kind == TranscodeTaskKind.SUBTITLE_OCR
-                if ocr:
+                preview = registered.task.kind == TranscodeTaskKind.MENU_PREVIEW
+                if ocr or preview:
                     duration = None
+                if preview:
+                    final_output = Path(registered.raw_input_path or "") / "preview"
 
                 def _work() -> Coroutine[Any, Any, EncodeResult]:
+                    if preview:
+                        return _run_menu_preview(Path(registered.raw_input_path or ""), state)
                     if ocr:
                         return _run_subtitle_ocr(media_root, registered.input_sidecar_paths, state)
                     return _run_encoder(
@@ -368,7 +390,11 @@ async def run() -> int:
                     await api.fail(cfg.task_id, last_error=_clip_error(str(exc)))
                     rc = 1
                 else:
-                    relative = final_output.relative_to(registered.media_root).as_posix()
+                    relative = (
+                        final_output.as_posix()
+                        if preview
+                        else final_output.relative_to(registered.media_root).as_posix()
+                    )
                     sidecars = [p.relative_to(registered.media_root).as_posix() for p in result.sidecars]
                     await api.complete(
                         cfg.task_id,

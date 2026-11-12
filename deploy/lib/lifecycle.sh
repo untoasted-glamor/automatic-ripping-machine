@@ -345,8 +345,8 @@ wait_for_backend() {
 # it names every service except the skipped transcode images, because
 # `compose build`/`up` with no service args builds every service with a
 # `build:` key (deploy.replicas:0 services are never started, but still built):
-#   - --ripper-only skips arm-transcode, arm-transcode-intel and
-#     arm-transcode-amd (no local transcoder ever runs);
+#   - --ripper-only skips arm-transcode, arm-transcode-intel,
+#     arm-transcode-amd and arm-menu-preview (no local transcoder ever runs);
 #   - arm-transcode-intel is built only when this host has a `qsv` GPU, and
 #     arm-transcode-amd only when it has a `vaapi` GPU;
 #   - with ARM_TRANSCODE_DOCKER_HOST set, both variants are skipped (the remote
@@ -362,7 +362,7 @@ select_up_services() {
     fi
     while IFS= read -r svc; do
         case "${svc}" in
-            arm-transcode)
+            arm-transcode|arm-menu-preview)
                 if [[ "${RIPPER_ONLY}" -eq 1 ]]; then skipped=1; continue; fi ;;
             arm-transcode-intel)
                 if [[ "${want_intel}" -eq 0 ]]; then skipped=1; continue; fi ;;

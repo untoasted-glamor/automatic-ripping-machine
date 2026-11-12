@@ -180,6 +180,7 @@ write_image_pins() {
     pin_image ARM_TRANSCODE_IMAGE arm-transcode ""
     pin_image ARM_TRANSCODE_IMAGE_QSV arm-transcode -intel
     pin_image ARM_TRANSCODE_IMAGE_VAAPI arm-transcode -amd
+    pin_image ARM_MENU_PREVIEW_IMAGE arm-transcode -menu-preview
 }
 
 # pin_image <key> <image> <tag suffix>: write_image_pins' per-image step; reads

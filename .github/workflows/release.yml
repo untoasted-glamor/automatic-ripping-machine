@@ -58,7 +58,8 @@ jobs:
         # `target` picks a Dockerfile stage (empty: the file's last stage, the
         # only one that matters for single-image services); `suffix` is
         # appended to every tag. The transcode image publishes three
-        # variants: base (CPU + NVENC), -intel (QSV) and -amd (VAAPI).
+        # variants: base (CPU + NVENC), -intel (QSV) and -amd (VAAPI), plus
+        # -menu-preview (fork only: base plus Node for the disc menu walk).
         # `dir` (default: the service name) is the services/ subdirectory
         # holding the Dockerfile; the arm-ui image is built from ui-neu.
         include:
@@ -67,6 +68,7 @@ jobs:
           - {service: transcode, target: base, suffix: "", alias: "-nvidia"}
           - {service: transcode, target: intel, suffix: "-intel"}
           - {service: transcode, target: amd, suffix: "-amd"}
+          - {service: transcode, target: menu-preview, suffix: "-menu-preview"}
           - {service: ui, dir: ui-neu, target: "", suffix: ""}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1

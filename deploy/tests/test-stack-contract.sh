@@ -81,7 +81,7 @@ check "project name is armv3" "armv3" "$(sed -n 's/^name: //p' <<<"${cfg}" | hea
 while IFS= read -r svc; do
     img="$(image_of "${svc}" "${cfg}")"
     case "${img}" in
-        postgres:*|docker.io/automaticrippingmachine/arm-*:v3.9.9|docker.io/automaticrippingmachine/arm-*:v3.9.9-intel|docker.io/automaticrippingmachine/arm-*:v3.9.9-amd)
+        postgres:*|docker.io/automaticrippingmachine/arm-*:v3.9.9|docker.io/automaticrippingmachine/arm-*:v3.9.9-intel|docker.io/automaticrippingmachine/arm-*:v3.9.9-amd|docker.io/automaticrippingmachine/arm-*:v3.9.9-menu-preview)
             check "${svc} runs a release image" "yes" "yes" ;;
         *)  check "${svc} runs a release image" "a registry image at v3.9.9" "${img:-none}" ;;
     esac

@@ -55,6 +55,7 @@ services:
       ARM_TRANSCODE_IMAGE_QSV: ${ARM_TRANSCODE_IMAGE_QSV:-}
       ARM_TRANSCODE_IMAGE_VAAPI: ${ARM_TRANSCODE_IMAGE_VAAPI:-}
       ARM_TRANSCODE_IMAGE_NVENC: ${ARM_TRANSCODE_IMAGE_NVENC:-}
+      ARM_MENU_PREVIEW_IMAGE: ${ARM_MENU_PREVIEW_IMAGE:-arm-transcode:latest-menu-preview}
       ARM_TRANSCODE_STALE_THRESHOLD_SECONDS: ${ARM_TRANSCODE_STALE_THRESHOLD_SECONDS:-90}
       ARM_TRANSCODE_MAX_ATTEMPTS: ${ARM_TRANSCODE_MAX_ATTEMPTS:-3}
       ARM_TRANSCODE_DISPATCH_INTERVAL_SECONDS: ${ARM_TRANSCODE_DISPATCH_INTERVAL_SECONDS:-5}
@@ -237,6 +238,19 @@ services:
       context: .
       dockerfile: services/transcode/Dockerfile
       target: amd
+    deploy:
+      replicas: 0
+
+  # Disc menu preview variant (fork only): base plus Node and the vendored
+  # menu walk. The Backend spawns it for `menu_preview` tasks (a job's menu
+  # pages, button labels and name proposals). Built, never run here
+  # (`deploy.replicas: 0`, same reason as arm-transcode).
+  arm-menu-preview:
+    image: ${ARM_MENU_PREVIEW_IMAGE:-arm-transcode:latest-menu-preview}
+    build:
+      context: .
+      dockerfile: services/transcode/Dockerfile
+      target: menu-preview
     deploy:
       replicas: 0
 

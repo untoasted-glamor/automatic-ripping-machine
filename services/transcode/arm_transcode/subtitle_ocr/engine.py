@@ -62,6 +62,13 @@ def split_lines(bitmap: Bitmap) -> list[Bitmap]:
     A part too low to be a line (the dots of an umlaut, a line of dots) goes
     with the part below it, or with the line above when it is the last part.
     """
+    return [bitmap[top:bottom] for top, bottom in line_bounds(bitmap)]
+
+
+def line_bounds(bitmap: Bitmap) -> list[tuple[int, int]]:
+    """The (top, bottom) rows of each text line `split_lines` cuts, so a
+    caller can cut another copy of the image (an anti-aliased one) at the
+    same rows."""
     parts: list[list[int]] = []
     for row in np.flatnonzero((bitmap == 0).any(axis=1)).tolist():
         if parts and parts[-1][1] == row:
@@ -79,7 +86,7 @@ def split_lines(bitmap: Bitmap) -> list[Bitmap]:
             start = None
     if start is not None and lines:
         lines[-1][1] = parts[-1][1]
-    return [bitmap[top:bottom] for top, bottom in lines]
+    return [(top, bottom) for top, bottom in lines]
 
 
 def add_border(line: Bitmap, border: int = BORDER) -> Bitmap:

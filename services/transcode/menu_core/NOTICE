@@ -1,0 +1,10 @@
+walk.mjs: the disc menu walk from the Jellyfin disc menu plugin's player core
+(web/src/walk.ts, bundled with esbuild by web/build.mjs), at the plugin commit
+in SOURCE_COMMIT. It runs as a separate program under Node in the menu preview
+image; ARM does not link or import it.
+
+Copyright the plugin's authors. Licensed under the GNU General Public License,
+version 3; the full text and the source are in the plugin repository at that
+commit.
+
+Refresh it with: bash devtools/sync-menu-core.sh

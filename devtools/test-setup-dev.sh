@@ -44,6 +44,7 @@ for f in "${LIB}"/*.sh; do
 done
 present "setup-dev filter names arm-transcode-intel"   '^ *arm-transcode-intel\)$' "${LIB}/lifecycle.sh"
 present "setup-dev filter names arm-transcode-amd"     '^ *arm-transcode-amd\)$'   "${LIB}/lifecycle.sh"
+present "setup-dev filter names arm-menu-preview"      '^ *arm-transcode\|arm-menu-preview\)$' "${LIB}/lifecycle.sh"
 present "detect_gpus emits empty encoder_kinds"        'encoder_kinds\\":\[\]\}' "${LIB}/detect.sh"
 
 # select_up_services, run for real against stubbed compose/detect_gpus: prints
@@ -60,7 +61,7 @@ selected() {  # selected <ripper_only> <remote_host 0|1> <ARM_GPUS json>
         trap 'rm -f "${ENV_FILE}"' EXIT
         [[ "$2" == 1 ]] && echo 'ARM_TRANSCODE_DOCKER_HOST=ssh://transcode-host' > "${ENV_FILE}"
         stub_gpus="$3"
-        compose() { printf '%s\n' arm-db arm-backend arm-transcode arm-transcode-intel arm-transcode-amd arm-ripper; }
+        compose() { printf '%s\n' arm-db arm-backend arm-transcode arm-transcode-intel arm-transcode-amd arm-menu-preview arm-ripper; }
         detect_gpus() { printf '%s' "${stub_gpus}"; }
         eval "${select_defs}"
         select_up_services
@@ -69,12 +70,12 @@ selected() {  # selected <ripper_only> <remote_host 0|1> <ARM_GPUS json>
 }
 qsv='{"vendor":"qsv","device_path":"/dev/dri/renderD128","encoder_kinds":[]}'
 amd='{"vendor":"vaapi","device_path":"/dev/dri/renderD129","encoder_kinds":[]}'
-check "--ripper-only builds no transcode image (base, intel, amd)" "arm-db arm-backend arm-ripper" "$(selected 1 0 "[${qsv},${amd}]")"
-check "no GPU builds base only"            "arm-db arm-backend arm-transcode arm-ripper" "$(selected 0 0 '[]')"
-check "qsv GPU adds arm-transcode-intel"   "arm-db arm-backend arm-transcode arm-transcode-intel arm-ripper" "$(selected 0 0 "[${qsv}]")"
-check "vaapi GPU adds arm-transcode-amd"   "arm-db arm-backend arm-transcode arm-transcode-amd arm-ripper" "$(selected 0 0 "[${amd}]")"
+check "--ripper-only builds no transcode image (base, intel, amd, menu preview)" "arm-db arm-backend arm-ripper" "$(selected 1 0 "[${qsv},${amd}]")"
+check "no GPU builds base and menu preview" "arm-db arm-backend arm-transcode arm-menu-preview arm-ripper" "$(selected 0 0 '[]')"
+check "qsv GPU adds arm-transcode-intel"   "arm-db arm-backend arm-transcode arm-transcode-intel arm-menu-preview arm-ripper" "$(selected 0 0 "[${qsv}]")"
+check "vaapi GPU adds arm-transcode-amd"   "arm-db arm-backend arm-transcode arm-transcode-amd arm-menu-preview arm-ripper" "$(selected 0 0 "[${amd}]")"
 check "qsv + vaapi GPUs build everything"  "ALL" "$(selected 0 0 "[${qsv},${amd}]")"
-check "remote transcode host skips both variants, keeps base" "arm-db arm-backend arm-transcode arm-ripper" "$(selected 0 1 "[${qsv},${amd}]")"
+check "remote transcode host skips both variants, keeps base" "arm-db arm-backend arm-transcode arm-menu-preview arm-ripper" "$(selected 0 1 "[${qsv},${amd}]")"
 
 # remove_retired_services, run for real against stubbed compose/docker: prints
 # the docker filters it queried and the ids it removed.
@@ -231,6 +232,8 @@ present "template has the arm-transcode-intel service" '^  arm-transcode-intel:$
 present "template has the arm-transcode-amd service"   '^  arm-transcode-amd:$'   "${TEMPLATE}"
 present "arm-transcode-intel image defaults to latest-intel" 'ARM_TRANSCODE_IMAGE_QSV:-arm-transcode:latest-intel' "${TEMPLATE}"
 present "arm-transcode-amd image defaults to latest-amd"     'ARM_TRANSCODE_IMAGE_VAAPI:-arm-transcode:latest-amd' "${TEMPLATE}"
+present "template has the arm-menu-preview service" '^  arm-menu-preview:$' "${TEMPLATE}"
+present "backend receives ARM_MENU_PREVIEW_IMAGE" 'ARM_MENU_PREVIEW_IMAGE: \$\{ARM_MENU_PREVIEW_IMAGE:-arm-transcode:latest-menu-preview\}' "${TEMPLATE}"
 present "backend gets /dev/disk read-only"      '/dev/disk:/host-disk:ro'   "${TEMPLATE}"
 present "backend receives ARM_RIPPER_IMAGE"     'ARM_RIPPER_IMAGE: \$\{ARM_RIPPER_IMAGE' "${TEMPLATE}"
 present "backend forwards ripper poll tunable"  'ARM_RIPPER_POLL_INTERVAL_SECONDS' "${TEMPLATE}"
@@ -254,7 +257,7 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
     check "compose config lists no arm-ripper-srN" 1 "${rc}"
     rc=0; grep -qx 'arm-data-init' <<<"${services}" || rc=$?
     check "compose config lists arm-data-init" 0 "${rc}"
-    for svc in arm-transcode arm-transcode-intel arm-transcode-amd; do
+    for svc in arm-transcode arm-transcode-intel arm-transcode-amd arm-menu-preview; do
         rc=0; grep -qx "${svc}" <<<"${services}" || rc=$?
         check "compose config lists ${svc}" 0 "${rc}"
     done
@@ -269,7 +272,7 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
     rendered=""
     rendered="$(cd "${ROOT}" && docker compose --env-file "${envfile}" -f "${TEMPLATE}" config 2>/dev/null)" || true
     rm -f "${envfile}"
-    for pair in arm-transcode:base arm-transcode-intel:intel arm-transcode-amd:amd; do
+    for pair in arm-transcode:base arm-transcode-intel:intel arm-transcode-amd:amd arm-menu-preview:menu-preview; do
         svc="${pair%%:*}"
         got="$(awk -v s="  ${svc}:" '$0 == s {f=1; next} f && /^  [a-z]/ {exit} f && /target:/ {print $2}' <<<"${rendered}")"
         check "${svc} builds Dockerfile target ${pair#*:}" "${pair#*:}" "${got:-missing}"

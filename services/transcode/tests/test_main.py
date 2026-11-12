@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -568,4 +569,37 @@ async def test_run_subtitle_ocr_task_failure_reports_the_kept_srt(monkeypatch, t
             "last_error": "Show - S01E01.fra.sup: subtitle OCR failed (rc=1): PgsError",
             "sidecar_paths": ["Show/Show - S01E01.eng.srt"],
         },
+    )
+
+
+async def test_run_menu_preview_task_reports_the_preview_folder(monkeypatch, tmp_path) -> None:
+    """A `menu_preview` task (fork only) writes `<menu>/preview/` and reports it as an absolute path under /raw."""
+    from types import SimpleNamespace
+
+    from arm_common import TranscodeTaskKind
+    from arm_transcode.menus import preview as preview_module
+
+    menu = tmp_path / "raw" / "job_1" / "menu"
+    seen: list[Path] = []
+
+    def make(menu_dir, *, progress):
+        seen.append(menu_dir)
+        progress(50, "walking the menus")
+        out = menu_dir / "preview"
+        out.mkdir(parents=True)
+        (out / "preview.json").write_text("{}")
+        return preview_module.PreviewResult(out)
+
+    m, api = _ocr_run(monkeypatch, tmp_path, None)
+    api.registered.task = SimpleNamespace(
+        kind=TranscodeTaskKind.MENU_PREVIEW, source_track_id="trk_menu", session_application_id="sap_1",
+        output_path=f"{menu}/preview",
+    )  # fmt: skip
+    api.registered.raw_input_path = str(menu)
+    monkeypatch.setattr(preview_module, "make_preview", make)
+    assert await m.run() == 0
+    assert seen == [menu]
+    assert api.calls[-1] == (
+        "complete",
+        {"output_path": f"{menu}/preview", "size_bytes": 2, "duration_seconds": None, "sidecar_paths": []},
     )

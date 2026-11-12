@@ -202,6 +202,20 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends mesa-va-drivers \
     && rm -rf /var/lib/apt/lists/*
 
+# ---- runtime image: menu-preview (fork only) ------------------------------
+# The `menu_preview` task (arm_transcode.menus.preview): `base` (for its ffmpeg,
+# the OCR model and the arm_transcode venv) plus Node for the disc menu walk.
+# It shares every `base` layer, so it costs only Node on disk. The walk bundle
+# is vendored in services/transcode/menu_core/ (devtools/sync-menu-core.sh);
+# the build fails if it doesn't match its recorded SHA-256. Debian trixie's
+# nodejs is 20.x, the bundle's target.
+FROM base AS menu-preview
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+COPY services/transcode/menu_core/ /opt/arm/menu_core/
+RUN cd /opt/arm/menu_core && sha256sum -c walk.mjs.sha256 && node --version
+
 # ---- default target -------------------------------------------------------
 # Last stage, so a plain `docker build` (no --target) produces the base image.
 FROM base AS default

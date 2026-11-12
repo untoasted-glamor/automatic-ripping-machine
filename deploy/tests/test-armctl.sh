@@ -329,6 +329,7 @@ has "env: ripper image is pinned" "ARM_RIPPER_IMAGE=docker.io/automaticrippingma
 has "env: base transcode image is pinned" "ARM_TRANSCODE_IMAGE=docker.io/automaticrippingmachine/arm-transcode:v3.1.0" "$e"
 has "env: intel variant is pinned" "ARM_TRANSCODE_IMAGE_QSV=docker.io/automaticrippingmachine/arm-transcode:v3.1.0-intel" "$e"
 has "env: amd variant is pinned" "ARM_TRANSCODE_IMAGE_VAAPI=docker.io/automaticrippingmachine/arm-transcode:v3.1.0-amd" "$e"
+has "env: menu preview variant is pinned" "ARM_MENU_PREVIEW_IMAGE=docker.io/automaticrippingmachine/arm-transcode:v3.1.0-menu-preview" "$e"
 has "env: UI origin is allowed" "ARM_ALLOWED_ORIGINS=https://localhost:8081" "$e"
 has "env: cdrom gid is detected" "CDROM_GID=24" "$e"
 has "env: render gid is detected" "ARM_RENDER_GID=993" "$e"
