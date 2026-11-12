@@ -41,6 +41,14 @@ describe('jobs api ids and type', () => {
 		await resolveJob('job_1', { title: 'Kolchak', year: 1974, media_type: 'tv', external_ids: ids });
 		expect(post).toHaveBeenCalledWith('/api/jobs/job_1/resolve', expect.objectContaining({ external_ids: ids }));
 	});
+	it('resolve sends a season, a cleared one as null, and omits an untouched one', async () => {
+		await resolveJob('job_1', { title: 'X', season: 2, disc_number: 1 });
+		expect(post.mock.calls[0][1]).toMatchObject({ season: 2, disc_number: 1 });
+		await resolveJob('job_1', { title: 'X', season: null });
+		expect(post.mock.calls[1][1]).toHaveProperty('season', null);
+		await resolveJob('job_1', { title: 'X' });
+		expect(post.mock.calls[2][1]).not.toHaveProperty('season');
+	});
 	it('resolve omits ids when none were picked', async () => {
 		await resolveJob('job_1', { title: 'X' });
 		expect(post.mock.calls[0][1]).not.toHaveProperty('external_ids');
