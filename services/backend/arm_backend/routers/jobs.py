@@ -692,10 +692,10 @@ async def retry_failed(
         for t in tracks
         if not t.excluded and (t.status == TrackStatus.FAILED or (t.status == TrackStatus.QUEUED and not t.output_path))
     ]
-    # A skipped disc menu is finished and never comes back. A failed or
-    # newly ticked menu goes along with the titles, but isn't a reason to arm
-    # the disc on its own yet (the ripper copies menus only beside titles).
-    if not titles(remaining):
+    # A skipped disc menu is finished and never comes back. A failed or newly
+    # ticked menu is retried like a title, alone too: the ripper copies it out
+    # of the kept backup, or reads the disc again for it.
+    if not remaining:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="every kept title is ripped")
 
     for track in remaining:

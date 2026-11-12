@@ -265,9 +265,15 @@ def test_a_failed_menu_is_retried_with_the_titles(raw_root: Path) -> None:  # no
     assert db.rows["tracks"][-1].status == TrackStatus.QUEUED and db.rows["tracks"][-1].last_error is None
 
 
-def test_a_menu_alone_isnt_retried_and_a_skipped_one_never_is(raw_root: Path) -> None:  # noqa: F811
+def test_a_menu_alone_is_retried_and_a_skipped_one_never_is(raw_root: Path) -> None:  # noqa: F811
     db = _db()
     db.rows["tracks"] = [db.rows["tracks"][0], _menu(TrackStatus.FAILED)]
+    body = _retry(db, _Hub()).json()
+    assert body["retried"] == 0  # titles; the menu goes too
+    assert db.rows["tracks"][-1].status == TrackStatus.QUEUED
+
+    db = _db()
+    db.rows["tracks"] = [db.rows["tracks"][0], _menu(TrackStatus.SKIPPED, last_error="This disc has no menu")]
     r = _retry(db, _Hub())
     assert r.status_code == 422 and r.json()["detail"] == "every kept title is ripped"
 

@@ -25,6 +25,8 @@ from arm_ripper.community_keydb import refresh_community_keydb
 from arm_ripper.drive_handle import DriveHandle
 from arm_ripper.makemkv_sdf import refresh_makemkv_sdf
 from arm_ripper.makemkv_key import refresh_makemkv_key
+from arm_ripper.menus.extract import MenuOutcome
+from arm_ripper.menus.extract import failed as menu_failed
 from arm_ripper.rip import RipResult, rip_all
 from arm_ripper.rip.dispatcher import (
     BACKUP_COMPLETE_MARKER,
@@ -59,8 +61,9 @@ DEVICE_RETURN_WAIT_SECONDS = 180.0
 DEVICE_WATCH_INTERVAL_SECONDS = 1.0
 MAX_DEVICE_RESUMES = 3
 RESOLUTION_WS_FIRST_WAIT_SECONDS = 5.0
-# The disc menu row's reason while menu extraction isn't built (design v5 A2).
-MENU_EXTRACT_UNAVAILABLE = "This ripper can't copy disc menus yet"
+# The disc menu row's error when a rip ends without settling it (the drive
+# dropped during the backup and didn't come back).
+MENU_NOT_COPIED = "The rip ended before the disc menu was copied"
 
 
 @dataclass(frozen=True)
@@ -990,8 +993,7 @@ class JobController:
         output_dir = RAW_ROOT / job_id
         output_dir.mkdir(parents=True, exist_ok=True)
         tracks = list(rip_start.tracks)
-        if rip_start.extract_menu is not None:
-            await self._skip_menu(rip_start.extract_menu.track_id)
+        menu = _MenuRow(self, job_id, rip_start.extract_menu.track_id) if rip_start.extract_menu is not None else None
         # A DVD/BD rip whose drive drops off the bus mid-rip stops makemkvcon
         # and resumes on the drive's new node instead of failing every
         # remaining title (D-133). ISO and folder sources have no bus to drop.
@@ -1060,25 +1062,7 @@ class JobController:
 
         async def on_track_progress(track: TrackView, fraction: float, stats: TransferStats | None = None, /) -> None:
             with with_log_context(track_id=track.id):
-                logger.debug("track %s progress=%.2f", track.id, fraction)
-                if self._ws is not None:
-                    payload: dict[str, object] = {
-                        "track_id": track.id,
-                        "progress_pct": round(fraction * 100, 1),
-                    }
-                    if stats is not None:
-                        # Byte detail for a copy (the full-disc dump): the UI shows
-                        # "X of Y GB at R MB/s" and derives the ETA from the rate.
-                        payload["bytes_done"] = stats["bytes_done"]
-                        payload["bytes_total"] = stats["bytes_total"]
-                        payload["rate_bps"] = round(stats["rate_bps"]) if stats["rate_bps"] is not None else None
-                        if "phase" in stats:
-                            payload["phase"] = stats["phase"]
-                    await self._ws.publish(
-                        topic=f"ripper.progress.{job_id}",
-                        event_type="ripper.progress",
-                        payload=payload,
-                    )
+                await self._publish_progress(job_id, track.id, fraction, stats)
 
         min_length_seconds = (
             rip_start.min_length_seconds
@@ -1127,6 +1111,9 @@ class JobController:
                     # resume remuxes from a backup an earlier pass finished.
                     backup_dir=output_dir / SELECTION_BACKUP_DIRNAME,
                     on_backup_done=on_backup_done,
+                    # Until a pass settles it: a resume after the drive
+                    # dropped during the backup copies it then.
+                    menu=menu if menu is not None and not menu.settled else None,
                 )
             finally:
                 if watcher is not None:
@@ -1161,6 +1148,8 @@ class JobController:
                 resumes,
             )
 
+        if menu is not None and not menu.settled:
+            await menu.finish(menu_failed(MENU_NOT_COPIED))
         completed = await self._rip_complete_with_retry(job_id)
         logger.info("rip-complete job_id=%s status=%s", job_id, completed.status.value)
 
@@ -1341,17 +1330,29 @@ class JobController:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, PATCH_RETRY_MAX_SECONDS)
 
-    async def _skip_menu(self, track_id: str) -> None:
-        """The disc menu row (fork only): this ripper doesn't copy menus out of
-        the disc yet (design v5 A2), so the row is skipped with that reason
-        rather than left queued. A refusal is logged and never stops the rip."""
-        with with_log_context(track_id=track_id):
-            try:
-                await self._patch_track_with_retry(
-                    track_id, status=TrackStatus.SKIPPED, last_error=MENU_EXTRACT_UNAVAILABLE
-                )
-            except httpx.HTTPError as e:
-                logger.warning("disc menu %s not marked skipped: %s", track_id, e)
+    async def _publish_progress(
+        self, job_id: str, track_id: str, fraction: float, stats: TransferStats | None = None
+    ) -> None:
+        logger.debug("track %s progress=%.2f", track_id, fraction)
+        if self._ws is None:
+            return
+        payload: dict[str, object] = {
+            "track_id": track_id,
+            "progress_pct": round(fraction * 100, 1),
+        }
+        if stats is not None:
+            # Byte detail for a copy (the full-disc dump): the UI shows
+            # "X of Y GB at R MB/s" and derives the ETA from the rate.
+            payload["bytes_done"] = stats["bytes_done"]
+            payload["bytes_total"] = stats["bytes_total"]
+            payload["rate_bps"] = round(stats["rate_bps"]) if stats["rate_bps"] is not None else None
+            if "phase" in stats:
+                payload["phase"] = stats["phase"]
+        await self._ws.publish(
+            topic=f"ripper.progress.{job_id}",
+            event_type="ripper.progress",
+            payload=payload,
+        )
 
     async def _patch_track_with_retry(self, track_id: str, **fields: object) -> None:
         delay = PATCH_RETRY_INITIAL_SECONDS
@@ -1366,6 +1367,45 @@ class JobController:
                 logger.warning("PATCH track %s failed (%s); retrying in %.1fs", track_id, e, delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, PATCH_RETRY_MAX_SECONDS)
+
+
+class _MenuRow:
+    """The disc menu row (fork only, design v5 A2), as the rip's `MenuSink`: its state goes to the backend as a
+    track PATCH (in progress, then done, failed or skipped). A refused PATCH is logged and never stops the rip:
+    the titles matter more than the menu."""
+
+    def __init__(self, controller: JobController, job_id: str, track_id: str) -> None:
+        self._controller = controller
+        self._job_id = job_id
+        self.track_id = track_id
+        self.settled = False
+
+    async def _patch(self, **fields: object) -> None:
+        with with_log_context(track_id=self.track_id):
+            try:
+                await self._controller._patch_track_with_retry(self.track_id, **fields)
+            except httpx.HTTPError as e:
+                logger.warning("disc menu %s not updated to %s: %s", self.track_id, fields.get("status"), e)
+
+    async def start(self) -> None:
+        await self._patch(status=TrackStatus.IN_PROGRESS)
+
+    async def progress(self, fraction: float) -> None:
+        with with_log_context(track_id=self.track_id):
+            await self._controller._publish_progress(self._job_id, self.track_id, fraction)
+
+    async def finish(self, outcome: MenuOutcome) -> None:
+        self.settled = True
+        fields: dict[str, object] = {"status": outcome.status}
+        if outcome.output_path is not None:
+            fields["output_path"] = str(outcome.output_path)
+        if outcome.size_bytes is not None:
+            fields["size_bytes"] = outcome.size_bytes
+        if outcome.error is not None:
+            fields["last_error"] = outcome.error
+        await self._patch(**fields)
+        detail = f": {outcome.error}" if outcome.error else ""
+        logger.info("disc menu %s %s%s", self.track_id, outcome.status.value, detail)
 
 
 def _remove_partial_outputs(output_dir: Path, kept: set[Path]) -> None:
