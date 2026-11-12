@@ -439,7 +439,11 @@ async def _rip_optical(
     # disk; an ISO or folder source is already on disk. The menu comes only
     # out of a backup.
     every_title_kept = bool(kept) and set(eligible_source_indexes) <= set(kept)
-    titles_by_mkv_all = every_title_kept and (file_source or not backup_full_selections)
+    # A track kept whatever its length (a title the disc menu plays, added
+    # from the job page; fork only) is remuxed even below the minimum, which
+    # only the per-title path can do: `mkv all` never writes it.
+    any_length = sorted(idx for idx, t in kept.items() if t.any_length and idx not in eligible_source_indexes)
+    titles_by_mkv_all = every_title_kept and not any_length and (file_source or not backup_full_selections)
     fall_back = False
     if scan_titles is not None and (menu_from_backup or not titles_by_mkv_all):
         fall_back = await _rip_kept_titles(
@@ -448,7 +452,7 @@ async def _rip_optical(
             file_source=file_source,
             kept=kept,
             scan_titles=scan_titles,
-            eligible_source_indexes=eligible_source_indexes,
+            eligible_source_indexes=sorted({*eligible_source_indexes, *any_length}),
             output_dir=output_dir,
             backup_dir=backup_dir,
             on_backup_done=on_backup_done,

@@ -1696,6 +1696,32 @@ async def test_rip_minimum_below_the_baseline_keeps_files_on_their_own_titles(mo
     assert sorted(p for p in out.iterdir()) == sorted(claimed)
 
 
+async def test_a_track_kept_whatever_its_length_is_remuxed_below_the_minimum(monkeypatch, tmp_path):
+    """Sintel at the 120 s minimum, every eligible title kept (`mkv all` would fit), plus title 2 (1:59), kept
+    `any_length` from the job page's Disc menu panel (fork only): only the per-title remux can write a title below
+    the minimum, so every title is remuxed and title 2 gets its own file."""
+    fake, iso = _install_sources(monkeypatch, tmp_path, "dvd-iso")
+    scan = await _scan(monkeypatch, iso)
+    short = next(t for t in scan.titles if t.index == 2)
+    extra = _track(2, duration_seconds=None).model_copy(
+        update={"expected_duration_seconds": short.duration_seconds, "any_length": True}
+    )
+    tracks = sorted([*_rip_start_tracks(scan), extra], key=lambda t: t.index)
+    out = tmp_path / "job"
+    fake.invocations.clear()
+
+    reports, _ = await _rip_tracks(
+        tracks, out, disc_type=scan.disc_type, device=iso, scan_titles=scan.titles, min_length_seconds=120
+    )
+
+    final = {track_id: r[-1] for track_id, r in reports.items()}
+    assert sorted(final) == ["trk_0", "trk_1", "trk_2", "trk_3", "trk_4", "trk_6"]
+    assert all(r.ok for r in final.values()), {k: r.error for k, r in final.items()}
+    assert final["trk_2"].output_path is not None and final["trk_2"].output_path.name.endswith("_t02.mkv")
+    assert final["trk_2"].size_bytes == file_size(short.size_bytes or 0)
+    assert "all" not in {inv.argv[-2] for inv in fake.invocations if inv.command == "mkv"}
+
+
 async def test_rip_minimum_above_a_kept_title_fails_only_that_title(monkeypatch, tmp_path):
     """Same disc ripped at 600 s: the 6:05 and 3:36 tracks are FAILED below
     minlength; the others get their own titles' files."""
