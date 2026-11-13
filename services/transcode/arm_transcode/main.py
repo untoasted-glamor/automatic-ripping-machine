@@ -24,6 +24,11 @@ register's `raw_input_path` (the job's copied disc menu, `<job raw>/menu/`),
 which writes `<job raw>/menu/preview/`; /complete reports that folder as its
 absolute `output_path` (it is under `/raw`, not the media root).
 
+A `menu_pack` task (fork only) runs `menus.task.build_pack` on the register's
+`menu_pack` plan and `raw_input_path` (the menu copy), which writes the pack
+into `<show folder>/.discmenus/<disc>/` under the media root; /complete
+reports that folder, relative to the media root.
+
 A `subtitle_ocr` task (register says so in `task.kind`) runs
 `subtitle_ocr.task.make_text_subtitles` over the register's
 `input_sidecar_paths` instead of an encoder, and reports the `.srt` files as
@@ -50,6 +55,7 @@ from typing import Any, TypeVar
 from arm_common import configure_service_logging, with_log_context
 from arm_common.schemas import (
     HardwareCaps,
+    MenuPackPlan,
     TranscodePresetView,
     WSEnvelope,
 )
@@ -257,6 +263,22 @@ async def _run_menu_preview(menu_dir: Path, state: ProgressState) -> EncodeResul
     return EncodeResult(size=result.size())
 
 
+async def _run_menu_pack(
+    plan: MenuPackPlan, menu_dir: Path, media_root: Path, state: ProgressState, built: list[Path]
+) -> EncodeResult:
+    """Build the job's menu pack and swap it in; `built` gets the folder it wrote."""
+    from arm_transcode.menus.media import FfmpegTools
+    from arm_transcode.menus.task import build_pack
+
+    def _on_progress(pct: int, what: str) -> None:
+        state.pct = pct
+        state.current_pass = what
+
+    result = await asyncio.to_thread(build_pack, plan, menu_dir, media_root, FfmpegTools(), _on_progress)
+    built.append(result.folder)
+    return EncodeResult(size=result.report.bytes)
+
+
 _T = TypeVar("_T")
 
 
@@ -347,12 +369,24 @@ async def run() -> int:
                 state = ProgressState()
                 ocr = registered.task.kind == TranscodeTaskKind.SUBTITLE_OCR
                 preview = registered.task.kind == TranscodeTaskKind.MENU_PREVIEW
-                if ocr or preview:
+                pack = registered.task.kind == TranscodeTaskKind.MENU_PACK
+                if ocr or preview or pack:
                     duration = None
                 if preview:
                     final_output = Path(registered.raw_input_path or "") / "preview"
+                pack_built: list[Path] = []
 
                 def _work() -> Coroutine[Any, Any, EncodeResult]:
+                    if pack:
+                        if registered.menu_pack is None:
+                            raise RuntimeError("register sent no menu pack plan")
+                        return _run_menu_pack(
+                            registered.menu_pack,
+                            Path(registered.raw_input_path or ""),
+                            media_root,
+                            state,
+                            pack_built,
+                        )
                     if preview:
                         return _run_menu_preview(Path(registered.raw_input_path or ""), state)
                     if ocr:
@@ -390,6 +424,8 @@ async def run() -> int:
                     await api.fail(cfg.task_id, last_error=_clip_error(str(exc)))
                     rc = 1
                 else:
+                    if pack_built:
+                        final_output = pack_built[0]
                     relative = (
                         final_output.as_posix()
                         if preview

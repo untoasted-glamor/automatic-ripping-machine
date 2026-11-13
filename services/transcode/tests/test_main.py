@@ -603,3 +603,58 @@ async def test_run_menu_preview_task_reports_the_preview_folder(monkeypatch, tmp
         "complete",
         {"output_path": f"{menu}/preview", "size_bytes": 2, "duration_seconds": None, "sidecar_paths": []},
     )
+
+
+async def test_run_menu_pack_task_reports_the_pack_folder(monkeypatch, tmp_path) -> None:
+    """A `menu_pack` task (fork only) builds the register's plan and reports the folder it wrote, relative to the
+    media root (another job's pack may hold the one the backend meant)."""
+    from types import SimpleNamespace
+
+    from arm_common import TranscodeTaskKind
+    from arm_common.schemas import MenuPackItem, MenuPackPlan
+    from arm_transcode.menus import task as task_module
+    from arm_transcode.menus.model import BuildReport
+
+    menu = tmp_path / "raw" / "job_1" / "menu"
+    plan = MenuPackPlan(
+        pack_dir="Show/.discmenus/bd-d1", name="Show, Disc 1", job_id="job_1",
+        items=[MenuPackItem(file="Show/Season 01/Show - S01E01.mkv", episode=1, bd_clip="00014")],
+    )  # fmt: skip
+    seen: list[tuple[object, ...]] = []
+
+    def build(p, menu_dir, media_root, tools, progress):
+        seen.append((p, menu_dir, media_root))
+        progress(50, "building the pack")
+        report = BuildReport("hdmv-1")
+        report.bytes = 1234
+        return task_module.PackResult(media_root / "Show/.discmenus/bd-d1-2", report)
+
+    m, api = _ocr_run(monkeypatch, tmp_path, None)
+    api.registered.task = SimpleNamespace(
+        kind=TranscodeTaskKind.MENU_PACK, source_track_id="trk_menu", session_application_id="sap_1",
+        output_path="Show/.discmenus/bd-d1",
+    )  # fmt: skip
+    api.registered.raw_input_path = str(menu)
+    api.registered.menu_pack = plan
+    monkeypatch.setattr(task_module, "build_pack", build)
+    assert await m.run() == 0
+    assert seen == [(plan, menu, tmp_path)]
+    assert api.calls[-1] == (
+        "complete",
+        {"output_path": "Show/.discmenus/bd-d1-2", "size_bytes": 1234, "duration_seconds": None, "sidecar_paths": []},
+    )
+
+
+async def test_run_menu_pack_task_fails_without_a_plan(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from arm_common import TranscodeTaskKind
+
+    m, api = _ocr_run(monkeypatch, tmp_path, None)
+    api.registered.task = SimpleNamespace(
+        kind=TranscodeTaskKind.MENU_PACK, source_track_id="trk_menu", session_application_id="sap_1",
+        output_path="Show/.discmenus/bd-d1",
+    )  # fmt: skip
+    api.registered.menu_pack = None
+    assert await m.run() == 1
+    assert api.calls[-1] == ("fail", {"last_error": "register sent no menu pack plan"})
