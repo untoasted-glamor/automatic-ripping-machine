@@ -6,6 +6,9 @@
   and what each button plays.
 - `rename`: applying an accepted name to a finished encode, and the bonus
   layout by role (`Season 00/`, `trailers/`, `other/`, `extras/`).
+- `packs`: the `menu_pack` task, which builds the pack the Jellyfin plugin
+  plays into the show folder's `.discmenus/`, queued by the same sweep once
+  the job's encodes finish.
 - `views`: the job page's Disc menu panel.
 
 Hooks in shared code stay one-line calls into these modules, so an upstream

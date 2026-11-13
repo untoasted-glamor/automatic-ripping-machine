@@ -170,6 +170,7 @@ from arm_common.schemas.sessions import (
 )
 from arm_common.schemas.disc_menus import (
     JobDiscMenuView,
+    MenuPackView,
     MenuPreviewButtonView,
     MenuPreviewPageView,
     MenuPreviewView,
@@ -197,6 +198,8 @@ from arm_common.schemas.transcoder import (
     FailTaskRequest,
     HardwareCaps,
     HeartbeatRequest,
+    MenuPackItem,
+    MenuPackPlan,
     RegisterTranscoderRequest,
     RegisterTranscoderResponse,
     TranscodeStatsView,
@@ -268,6 +271,9 @@ __all__ = [
     "MenuPreviewButtonView",
     "MenuPreviewPageView",
     "MenuPreviewView",
+    "MenuPackView",
+    "MenuPackItem",
+    "MenuPackPlan",
     "MenuProposalAcceptAllResponse",
     "MenuProposalCreate",
     "MenuProposalUpdate",

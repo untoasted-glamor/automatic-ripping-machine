@@ -10060,6 +10060,124 @@
         }
       }
     },
+    "/api/jobs/{job_id}/disc-menu/pack": {
+      "post": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Request Disc Menu Pack",
+        "description": "Build the menu pack again from the copied menu and the job's encodes. 409 when it can't (with why).",
+        "operationId": "request_disc_menu_pack_api_jobs__job_id__disc_menu_pack_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDiscMenuView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Delete Disc Menu Pack",
+        "description": "Remove the job's menu pack folders from the show folder (only those whose `menu.json` still names the\njob). The copied menu stays, so Build makes it again. 404 when there is none.",
+        "operationId": "delete_disc_menu_pack_api_jobs__job_id__disc_menu_pack_delete",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDiscMenuView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/jobs/{job_id}/disc-menu/proposals/{proposal_id}": {
       "patch": {
         "tags": [
@@ -14967,6 +15085,27 @@
               }
             ],
             "title": "Rip Refusal"
+          },
+          "pack": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MenuPackView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pack_refusal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pack Refusal"
           }
         },
         "type": "object",
@@ -16214,6 +16353,203 @@
         ],
         "title": "MenuKind",
         "description": "What a disc's menu is, found at scan time (`arm_ripper.menus.probe`,\nfork only): `ScanResult.menu_kind`."
+      },
+      "MenuPackItem": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "title": "File"
+          },
+          "episode": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode"
+          },
+          "season": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Season"
+          },
+          "extra": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extra"
+          },
+          "bd_clip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bd Clip"
+          },
+          "bd_playlist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bd Playlist"
+          },
+          "dvd_title": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dvd Title"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "MenuPackItem",
+        "description": "One library file a disc menu pack's cells play, and which disc title it is (fork only, disc menus A3).\n\n`file` is relative to the media root. It is an episode (`episode`, with `season` when it isn't the disc's: 0\nfor a special), an extra (`extra`, its path under the show folder: `trailers/...`, `other/...`, `extras/...`)\nor, on a movie disc, neither. The disc title is a Blu-ray clip (`bd_clip`, a title of one clip: every play of\nit, the episode buttons' marks into a play-all included), a Blu-ray playlist (`bd_playlist`, a title of\nseveral clips) or a DVD title number (`dvd_title`, the whole title)."
+      },
+      "MenuPackPlan": {
+        "properties": {
+          "pack_dir": {
+            "type": "string",
+            "title": "Pack Dir"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "season": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Season"
+          },
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MenuPackItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pack_dir",
+          "name",
+          "job_id"
+        ],
+        "title": "MenuPackPlan",
+        "description": "What a `menu_pack` task builds (fork only, disc menus A3): `pack_dir` (relative to the media root,\n`<show folder>/.discmenus/<disc>`) unless another job's pack holds it, the disc's name and season, the job\nthat owns the pack, and the library items. `notes` says what the backend left out of the map, and why."
+      },
+      "MenuPackView": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TranscodeTaskStatus"
+          },
+          "progress_pct": {
+            "type": "integer",
+            "title": "Progress Pct"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "status",
+          "progress_pct"
+        ],
+        "title": "MenuPackView",
+        "description": "The newest `menu_pack` task: the pack Jellyfin plays, in the show folder's `.discmenus/`."
       },
       "MenuPreviewButtonView": {
         "properties": {
@@ -18317,6 +18653,16 @@
             },
             "type": "array",
             "title": "Input Sidecar Paths"
+          },
+          "menu_pack": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MenuPackPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -18329,7 +18675,7 @@
           "media_root"
         ],
         "title": "RegisterTranscoderResponse",
-        "description": "Bootstrap bundle the transcoder needs before it can claim + run.\n\nFor an `encode` task, `raw_input_path` is the absolute path the\ntranscoder should read from (`/raw/<job>/title_tNN.mkv` for video,\n`/raw/<job>/track_NN.wav` for audio, `/raw/<job>/dump.iso` for data).\n`media_root` plus the task's `output_path` is where the final file lands.\n\nA `subtitle_ocr` task has no raw input and no preset: it reads\n`input_sidecar_paths` (the image subtitle sidecars of its parent encode\ntask, relative to `media_root`) and writes a `.srt` beside each."
+        "description": "Bootstrap bundle the transcoder needs before it can claim + run.\n\nFor an `encode` task, `raw_input_path` is the absolute path the\ntranscoder should read from (`/raw/<job>/title_tNN.mkv` for video,\n`/raw/<job>/track_NN.wav` for audio, `/raw/<job>/dump.iso` for data).\n`media_root` plus the task's `output_path` is where the final file lands.\n\nA `subtitle_ocr` task has no raw input and no preset: it reads\n`input_sidecar_paths` (the image subtitle sidecars of its parent encode\ntask, relative to `media_root`) and writes a `.srt` beside each.\n\nA `menu_pack` task's `raw_input_path` is the job's copied disc menu, and\n`menu_pack` says what to build from it."
       },
       "RenameRequest": {
         "properties": {
@@ -21762,7 +22108,8 @@
         "enum": [
           "encode",
           "subtitle_ocr",
-          "menu_preview"
+          "menu_preview",
+          "menu_pack"
         ],
         "title": "TranscodeTaskKind",
         "description": "What a `transcode_tasks` row runs in its transcoder container.\n\n`encode` writes a video (or audio) file from a raw rip. `subtitle_ocr`\nreads the image subtitle sidecars its parent encode task wrote (`.sup`)\nand writes a text subtitle (`.srt`) beside each; it needs no GPU, no\npreset and no raw rip, and never changes its session application's\nstatus."

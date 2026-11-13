@@ -63,6 +63,13 @@ TASK_KIND_RULES: dict[TranscodeTaskKind, TaskKindRules] = {
         raw_writable=True,
         image="menu_preview",
     ),
+    # Reads the menu copy under `/raw` (read-only) and the job's encodes, and
+    # writes a pack folder under the media root, which job delete removes by
+    # itself (`arm_backend.disc_menus.packs.remove_job_packs`) only while the
+    # pack still names the job; it records no sidecars.
+    TranscodeTaskKind.MENU_PACK: TaskKindRules(
+        encodes=False, mounts_raw=True, sidecar_suffix=None, failed_owns_files=False
+    ),
 }
 
 

@@ -35,6 +35,7 @@ from arm_backend.job_track_selection import effective_preset_view
 from arm_backend.log_context import job_log_context
 from arm_backend.sidecars import accepted_sidecars, drop_replaced_sidecars
 from arm_backend.disc_menus.hooks import after_task_complete
+from arm_backend.disc_menus.packs import menu_pack_inputs
 from arm_backend.disc_menus.preview_tasks import menu_preview_inputs
 from arm_backend.subtitle_ocr_tasks import queue_after_encode, subtitle_ocr_inputs
 from arm_backend.task_kinds import rules_for
@@ -176,6 +177,21 @@ async def register(
             source_track=TrackView.model_validate(track),
             raw_input_path=str(menu_dir),
             media_root=request_media_root(),
+        )
+
+    if task.kind == TranscodeTaskKind.MENU_PACK:
+        # Reads the job's copied disc menu and its encodes, and writes the pack into the show folder.
+        pack_menu, plan, reason = await menu_pack_inputs(db, task)
+        if reason is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"menu pack cannot be built: {reason}")
+        return RegisterTranscoderResponse(
+            task=TranscodeTaskView.model_validate(task),
+            session=SessionView.model_validate(sess),
+            transcode_preset=None,
+            source_track=TrackView.model_validate(track),
+            raw_input_path=str(pack_menu),
+            media_root=request_media_root(),
+            menu_pack=plan,
         )
 
     if not rules_for(task.kind).encodes:  # pragma: no cover - every other kind is handled above

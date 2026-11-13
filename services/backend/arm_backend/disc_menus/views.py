@@ -1,4 +1,4 @@
-"""The job page's Disc menu panel: the newest preview, drawn page by page, and the job's proposals."""
+"""The job page's Disc menu panel: the newest preview, drawn page by page, the job's proposals, and its pack."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
+from arm_backend.disc_menus.packs import folder_size, owned_pack_folder, pack_refusal, pack_tasks_of
 from arm_backend.disc_menus.preview_tasks import menu_dir_of, preview_tasks_of
 from arm_backend.disc_menus.rip import rip_refusal
 from arm_backend.disc_menus.proposals import (
@@ -22,6 +23,7 @@ from arm_backend.disc_menus.proposals import (
 from arm_common import Job, MenuProposal, Track, TrackKind, TranscodeTaskStatus
 from arm_common.schemas import (
     JobDiscMenuView,
+    MenuPackView,
     MenuPreviewButtonView,
     MenuPreviewPageView,
     MenuPreviewView,
@@ -96,6 +98,32 @@ def _pages(
     return pages
 
 
+def _media_root() -> Path:
+    from arm_backend.config import settings
+
+    return Path(settings.MEDIA_ROOT)
+
+
+async def _pack_view(db: AsyncSession, job: Job, track: Track) -> MenuPackView | None:
+    tasks = await pack_tasks_of(db, track.id)
+    if not tasks:
+        return None
+    task = tasks[-1]
+    view = MenuPackView(
+        task_id=task.id,
+        status=task.status,
+        progress_pct=task.progress_pct,
+        last_error=task.last_error,
+        updated_at=task.updated_at,
+    )
+    done = [t for t in tasks if t.status == TranscodeTaskStatus.DONE]
+    folder = owned_pack_folder(_media_root(), done[-1].output_path, job.id) if done else None
+    if folder is not None:
+        view.path = done[-1].output_path
+        view.size_bytes = folder_size(folder)
+    return view
+
+
 async def job_disc_menu_view(db: AsyncSession, job: Job) -> JobDiscMenuView | None:
     """The panel, or None for a job with no disc menu track."""
     track = await menu_track(db, job.id)
@@ -113,6 +141,8 @@ async def job_disc_menu_view(db: AsyncSession, job: Job) -> JobDiscMenuView | No
     )
     if any(p.track_id is None and p.scan_title is not None for p in proposals):
         view.rip_refusal = await rip_refusal(db, job)
+    view.pack = await _pack_view(db, job, track)
+    view.pack_refusal = await pack_refusal(db, job, track)
     if not tasks:
         return view
     task = tasks[-1]

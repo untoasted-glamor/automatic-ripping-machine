@@ -396,6 +396,13 @@ class TranscodeTaskKind(StrEnum):
     # (fork only, disc menus plan v5, M1). Runs in the menu preview image, no
     # GPU, no preset; its source track is the job's `disc_menu` track.
     MENU_PREVIEW = "menu_preview"
+    # Builds the job's disc menu pack for the Jellyfin Disc Menu plugin
+    # (fork only, disc menus plan v5, A3): reads `<job raw>/menu/` and the
+    # job's encodes, writes `<show folder>/.discmenus/<disc>/`. Runs in the
+    # transcode image (ffmpeg for backgrounds), no GPU, no preset; its source
+    # track is the job's `disc_menu` track, and `/register` hands it the map
+    # of which encode each disc title is (`MenuPackPlan`).
+    MENU_PACK = "menu_pack"
 
 
 class GpuVendor(StrEnum):

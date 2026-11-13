@@ -3,7 +3,8 @@
 `GET` the panel; fetch a page image or button crop; ask for another preview; edit, accept or reject a proposed
 name, accept every proposal at once, or name a title by hand. Accepting renames the title's finished encode
 (`arm_backend.disc_menus.rename`). A title the menu plays that the job didn't rip (shorter than the rip's
-minimum) can be ripped from the kept disc backup (`arm_backend.disc_menus.rip`).
+minimum) can be ripped from the kept disc backup (`arm_backend.disc_menus.rip`). Build the menu pack again, or
+delete it (`arm_backend.disc_menus.packs`); a rename rebuilds a pack already built.
 """
 
 from __future__ import annotations
@@ -19,6 +20,13 @@ from sqlmodel import col, select
 from arm_backend.auth import require_jwt, require_writer
 from arm_backend.config import settings
 from arm_backend.db import get_session
+from arm_backend.disc_menus.packs import (
+    PackRefused,
+    job_pack_folders,
+    queue_menu_pack,
+    rebuild_after_rename,
+    remove_pack_folder,
+)
 from arm_backend.disc_menus.preview_tasks import PreviewRefused, queue_menu_preview
 from arm_backend.disc_menus.rename import RenameRefused, apply_proposal
 from arm_backend.disc_menus.rip import RipRefused, rip_from_menu
@@ -111,11 +119,51 @@ async def request_disc_menu_preview(
     return await _view(db, job)
 
 
-async def _apply(db: AsyncSession, proposal: MenuProposal) -> None:
+@router.post("/{job_id}/disc-menu/pack", response_model=JobDiscMenuView)
+async def request_disc_menu_pack(
+    job_id: JobIdParam,
+    _: User = Depends(require_writer),
+    db: AsyncSession = Depends(get_session),
+    hub: WSHub = Depends(_get_hub),
+) -> JobDiscMenuView:
+    """Build the menu pack again from the copied menu and the job's encodes. 409 when it can't (with why)."""
+    job = await _job(db, job_id)
+    try:
+        await queue_menu_pack(db, job, hub)
+    except PackRefused as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    await db.commit()
+    return await _view(db, job)
+
+
+@router.delete("/{job_id}/disc-menu/pack", response_model=JobDiscMenuView)
+async def delete_disc_menu_pack(
+    job_id: JobIdParam,
+    _: User = Depends(require_writer),
+    db: AsyncSession = Depends(get_session),
+) -> JobDiscMenuView:
+    """Remove the job's menu pack folders from the show folder (only those whose `menu.json` still names the
+    job). The copied menu stays, so Build makes it again. 404 when there is none."""
+    job = await _job(db, job_id)
+    folders = await job_pack_folders(db, job.id, _media_root())
+    if not folders:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="this job has no menu pack in the library")
+    for folder in folders:
+        try:
+            remove_pack_folder(folder)
+        except OSError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"could not remove {folder.name}: {exc}")
+    return await _view(db, job)
+
+
+async def _apply(db: AsyncSession, proposal: MenuProposal, hub: WSHub | None = None) -> None:
     try:
         await apply_proposal(db, proposal, _media_root())
     except RenameRefused as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if proposal.status == MenuProposalStatus.APPLIED:
+        job = await _job(db, proposal.job_id)
+        await rebuild_after_rename(db, job, hub)
 
 
 @router.patch("/{job_id}/disc-menu/proposals/{proposal_id}", response_model=MenuProposalView)
@@ -125,6 +173,7 @@ async def update_proposal(
     req: MenuProposalUpdate,
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
+    hub: WSHub = Depends(_get_hub),
 ) -> MenuProposal:
     """Edit a proposal's role, name or season 0 number, and accept, reject or reopen it. Accepting an applied
     proposal again with a new name renames the encode again. 409 when it can't be applied (with why)."""
@@ -137,7 +186,7 @@ async def update_proposal(
     elif req.action == "reopen":
         row.status = MenuProposalStatus.PROPOSED
     elif req.action == "accept":
-        await _apply(db, row)
+        await _apply(db, row, hub)
     await db.commit()
     await db.refresh(row)
     return row
@@ -149,6 +198,7 @@ async def create_proposal(
     req: MenuProposalCreate,
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
+    hub: WSHub = Depends(_get_hub),
 ) -> MenuProposal:
     """Name one of the job's titles by hand, and apply it."""
     await _job(db, job_id)
@@ -169,7 +219,7 @@ async def create_proposal(
     )
     db.add(row)
     await db.flush()
-    await _apply(db, row)
+    await _apply(db, row, hub)
     await db.commit()
     await db.refresh(row)
     return row
@@ -201,9 +251,10 @@ async def accept_all_proposals(
     job_id: JobIdParam,
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
+    hub: WSHub = Depends(_get_hub),
 ) -> MenuProposalAcceptAllResponse:
     """Accept every proposed name. One that can't be applied stays proposed, with why."""
-    await _job(db, job_id)
+    job = await _job(db, job_id)
     rows = (
         (
             await db.execute(
@@ -222,6 +273,8 @@ async def accept_all_proposals(
         except RenameRefused as exc:
             refused[row.id] = str(exc)
             row.last_error = str(exc)
+    if any(r.status == MenuProposalStatus.APPLIED for r in rows):
+        await rebuild_after_rename(db, job, hub)
     await db.commit()
     for row in rows:
         await db.refresh(row)

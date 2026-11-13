@@ -18,6 +18,7 @@ from arm_backend.auto_session import (
     fan_out_waiting_identify_applications,
 )
 from arm_backend.config import settings
+from arm_backend.disc_menus.packs import remove_job_packs
 from arm_backend.db import get_session
 from arm_backend.log_context import job_log_context
 from arm_backend.identity.ids import current_ids
@@ -986,6 +987,8 @@ async def delete_job(
 
     counters: dict[str, int] | None = None
     if delete_raw:
+        # The job's disc menu pack first, so its show folder can be pruned with the encodes.
+        await remove_job_packs(db, job.id, Path(settings.MEDIA_ROOT))
         media_outputs = await _resolve_media_outputs(db, job.id)
         counters = _delete_job_files(
             job.id,
@@ -1086,6 +1089,7 @@ async def delete_all_jobs(
             skipped.append(job.id)
             continue
         if delete_raw:
+            await remove_job_packs(db, job.id, media_root)
             media_outputs = await _resolve_media_outputs(db, job.id)
             counters = _delete_job_files(
                 job.id,

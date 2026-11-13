@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import col, select
 
 from arm_backend.config import Settings, settings
+from arm_backend.disc_menus.packs import menu_pack_inputs, sweep_menu_packs
 from arm_backend.disc_menus.preview_tasks import menu_preview_inputs, sweep_menu_previews
 from arm_backend.docker_probe import TtlProbe, probe_backend_url, probe_docker
 from arm_backend.sidecars import is_sidecar_of
@@ -368,6 +369,7 @@ class TranscodeDispatcher:
             await self.sweep_stale_claims(db)
             await self.sweep_orphaned_applications(db)
             await sweep_menu_previews(db, self._hub)
+            await sweep_menu_packs(db, self._hub)
             await db.commit()
             await self.spawn_pending(db)
 
@@ -791,6 +793,15 @@ class TranscodeDispatcher:
                             await self._fail_queued_task(db, task, f"menu preview cannot run: {unrunnable}")
                         except Exception as exc:
                             logger.exception("failing unrunnable menu preview failed task_id=%s: %s", task_id, exc)
+                            await db.rollback()
+                        continue
+                if task.kind == TranscodeTaskKind.MENU_PACK:
+                    _, _, unrunnable = await menu_pack_inputs(db, task)
+                    if unrunnable is not None:
+                        try:
+                            await self._fail_queued_task(db, task, f"menu pack cannot be built: {unrunnable}")
+                        except Exception as exc:
+                            logger.exception("failing unrunnable menu pack failed task_id=%s: %s", task_id, exc)
                             await db.rollback()
                         continue
                 if task.kind == TranscodeTaskKind.SUBTITLE_OCR:

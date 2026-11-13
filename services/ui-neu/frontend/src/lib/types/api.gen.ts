@@ -2471,6 +2471,11 @@ export type JobDiscMenuView = {
      * Rip Refusal
      */
     rip_refusal?: string | null;
+    pack?: MenuPackView | null;
+    /**
+     * Pack Refusal
+     */
+    pack_refusal?: string | null;
 };
 
 /**
@@ -3153,6 +3158,115 @@ export type MenuExtract = {
  * fork only): `ScanResult.menu_kind`.
  */
 export type MenuKind = 'hdmv' | 'bdj' | 'dvd' | 'none' | 'unknown';
+
+/**
+ * MenuPackItem
+ *
+ * One library file a disc menu pack's cells play, and which disc title it is (fork only, disc menus A3).
+ *
+ * `file` is relative to the media root. It is an episode (`episode`, with `season` when it isn't the disc's: 0
+ * for a special), an extra (`extra`, its path under the show folder: `trailers/...`, `other/...`, `extras/...`)
+ * or, on a movie disc, neither. The disc title is a Blu-ray clip (`bd_clip`, a title of one clip: every play of
+ * it, the episode buttons' marks into a play-all included), a Blu-ray playlist (`bd_playlist`, a title of
+ * several clips) or a DVD title number (`dvd_title`, the whole title).
+ */
+export type MenuPackItem = {
+    /**
+     * File
+     */
+    file: string;
+    /**
+     * Episode
+     */
+    episode?: number | null;
+    /**
+     * Season
+     */
+    season?: number | null;
+    /**
+     * Extra
+     */
+    extra?: string | null;
+    /**
+     * Bd Clip
+     */
+    bd_clip?: string | null;
+    /**
+     * Bd Playlist
+     */
+    bd_playlist?: string | null;
+    /**
+     * Dvd Title
+     */
+    dvd_title?: number | null;
+};
+
+/**
+ * MenuPackPlan
+ *
+ * What a `menu_pack` task builds (fork only, disc menus A3): `pack_dir` (relative to the media root,
+ * `<show folder>/.discmenus/<disc>`) unless another job's pack holds it, the disc's name and season, the job
+ * that owns the pack, and the library items. `notes` says what the backend left out of the map, and why.
+ */
+export type MenuPackPlan = {
+    /**
+     * Pack Dir
+     */
+    pack_dir: string;
+    /**
+     * Name
+     */
+    name: string;
+    /**
+     * Season
+     */
+    season?: number | null;
+    /**
+     * Job Id
+     */
+    job_id: string;
+    /**
+     * Items
+     */
+    items?: Array<MenuPackItem>;
+    /**
+     * Notes
+     */
+    notes?: Array<string>;
+};
+
+/**
+ * MenuPackView
+ *
+ * The newest `menu_pack` task: the pack Jellyfin plays, in the show folder's `.discmenus/`.
+ */
+export type MenuPackView = {
+    /**
+     * Task Id
+     */
+    task_id: string;
+    status: TranscodeTaskStatus;
+    /**
+     * Progress Pct
+     */
+    progress_pct: number;
+    /**
+     * Last Error
+     */
+    last_error?: string | null;
+    /**
+     * Updated At
+     */
+    updated_at?: string | null;
+    /**
+     * Path
+     */
+    path?: string | null;
+    /**
+     * Size Bytes
+     */
+    size_bytes?: number | null;
+};
 
 /**
  * MenuPreviewButtonView
@@ -4270,6 +4384,9 @@ export type RegisterTranscoderRequest = {
  * A `subtitle_ocr` task has no raw input and no preset: it reads
  * `input_sidecar_paths` (the image subtitle sidecars of its parent encode
  * task, relative to `media_root`) and writes a `.srt` beside each.
+ *
+ * A `menu_pack` task's `raw_input_path` is the job's copied disc menu, and
+ * `menu_pack` says what to build from it.
  */
 export type RegisterTranscoderResponse = {
     task: TranscodeTaskView;
@@ -4288,6 +4405,7 @@ export type RegisterTranscoderResponse = {
      * Input Sidecar Paths
      */
     input_sidecar_paths?: Array<string>;
+    menu_pack?: MenuPackPlan | null;
 };
 
 /**
@@ -6107,7 +6225,7 @@ export type TranscodeStatsView = {
  * preset and no raw rip, and never changes its session application's
  * status.
  */
-export type TranscodeTaskKind = 'encode' | 'subtitle_ocr' | 'menu_preview';
+export type TranscodeTaskKind = 'encode' | 'subtitle_ocr' | 'menu_preview' | 'menu_pack';
 
 /**
  * TranscodeTaskStatus
@@ -12289,6 +12407,78 @@ export type RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostResponses = {
 };
 
 export type RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostResponse = RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostResponses[keyof RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostResponses];
+
+export type DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/jobs/{job_id}/disc-menu/pack';
+};
+
+export type DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteError = DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteErrors[keyof DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteErrors];
+
+export type DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteResponses = {
+    /**
+     * Successful Response
+     */
+    200: JobDiscMenuView;
+};
+
+export type DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteResponse = DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteResponses[keyof DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteResponses];
+
+export type RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/jobs/{job_id}/disc-menu/pack';
+};
+
+export type RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostError = RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostErrors[keyof RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostErrors];
+
+export type RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: JobDiscMenuView;
+};
+
+export type RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostResponse = RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostResponses[keyof RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostResponses];
 
 export type UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchData = {
     body: MenuProposalUpdate;

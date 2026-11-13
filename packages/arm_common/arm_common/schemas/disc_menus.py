@@ -81,6 +81,19 @@ class MenuPreviewView(BaseModel):
     truncated: bool = False
 
 
+class MenuPackView(BaseModel):
+    """The newest `menu_pack` task: the pack Jellyfin plays, in the show folder's `.discmenus/`."""
+
+    task_id: str
+    status: TranscodeTaskStatus
+    progress_pct: int
+    last_error: str | None = None
+    updated_at: datetime | None = None
+    # Relative to the media root, once built (and while the folder is there).
+    path: str | None = None
+    size_bytes: int | None = None
+
+
 class JobDiscMenuView(BaseModel):
     track_id: str
     track_status: TrackStatus
@@ -94,6 +107,10 @@ class JobDiscMenuView(BaseModel):
     # Why a title the menu plays but the job has no track for can't be ripped
     # now (no kept disc backup, the drive is busy, ...); None when it can.
     rip_refusal: str | None = None
+    # The newest pack build, or None before the first one is queued.
+    pack: MenuPackView | None = None
+    # Why the pack can't be built (again) now; None when Build can be pressed.
+    pack_refusal: str | None = None
 
 
 class MenuProposalUpdate(BaseModel):

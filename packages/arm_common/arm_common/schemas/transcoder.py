@@ -37,6 +37,38 @@ class RegisterTranscoderRequest(BaseModel):
     hw_caps: HardwareCaps
 
 
+class MenuPackItem(BaseModel):
+    """One library file a disc menu pack's cells play, and which disc title it is (fork only, disc menus A3).
+
+    `file` is relative to the media root. It is an episode (`episode`, with `season` when it isn't the disc's: 0
+    for a special), an extra (`extra`, its path under the show folder: `trailers/...`, `other/...`, `extras/...`)
+    or, on a movie disc, neither. The disc title is a Blu-ray clip (`bd_clip`, a title of one clip: every play of
+    it, the episode buttons' marks into a play-all included), a Blu-ray playlist (`bd_playlist`, a title of
+    several clips) or a DVD title number (`dvd_title`, the whole title).
+    """
+
+    file: str
+    episode: int | None = None
+    season: int | None = None
+    extra: str | None = None
+    bd_clip: str | None = None
+    bd_playlist: str | None = None
+    dvd_title: int | None = None
+
+
+class MenuPackPlan(BaseModel):
+    """What a `menu_pack` task builds (fork only, disc menus A3): `pack_dir` (relative to the media root,
+    `<show folder>/.discmenus/<disc>`) unless another job's pack holds it, the disc's name and season, the job
+    that owns the pack, and the library items. `notes` says what the backend left out of the map, and why."""
+
+    pack_dir: str
+    name: str
+    season: int | None = None
+    job_id: str
+    items: list[MenuPackItem] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class RegisterTranscoderResponse(BaseModel):
     """Bootstrap bundle the transcoder needs before it can claim + run.
 
@@ -48,6 +80,9 @@ class RegisterTranscoderResponse(BaseModel):
     A `subtitle_ocr` task has no raw input and no preset: it reads
     `input_sidecar_paths` (the image subtitle sidecars of its parent encode
     task, relative to `media_root`) and writes a `.srt` beside each.
+
+    A `menu_pack` task's `raw_input_path` is the job's copied disc menu, and
+    `menu_pack` says what to build from it.
     """
 
     task: TranscodeTaskView
@@ -57,6 +92,8 @@ class RegisterTranscoderResponse(BaseModel):
     raw_input_path: str | None
     media_root: str
     input_sidecar_paths: list[str] = Field(default_factory=list)
+    # A `menu_pack` task's build (its `raw_input_path` is the menu copy).
+    menu_pack: MenuPackPlan | None = None
 
 
 class ClaimTaskResponse(BaseModel):

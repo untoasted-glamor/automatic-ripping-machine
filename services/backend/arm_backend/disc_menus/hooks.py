@@ -23,8 +23,8 @@ def _media_root() -> Path:
 
 
 async def after_task_complete(db: AsyncSession, task: TranscodeTask, job_id: str, hub: WSHub | None) -> None:
-    """At a task's /complete: a menu preview's proposals, or an encode's pending rename. Never raises: the task's
-    own completion must stand."""
+    """At a task's /complete: a menu preview's proposals, a menu pack's event, or an encode's pending rename. Never
+    raises: the task's own completion must stand."""
     try:
         if task.kind == TranscodeTaskKind.MENU_PREVIEW:
             preview = read_preview(Path(task.output_path or ""))
@@ -37,6 +37,16 @@ async def after_task_complete(db: AsyncSession, task: TranscodeTask, job_id: str
                     topic="transcode.events",
                     event_type="menu.proposals",
                     payload={"job_id": job_id, "task_id": task.id},
+                    job_id=job_id,
+                    session=db,
+                )
+        elif task.kind == TranscodeTaskKind.MENU_PACK:
+            logger.info("menu pack built job_id=%s task_id=%s path=%s", job_id, task.id, task.output_path)
+            if hub is not None:
+                await hub.emit(
+                    topic="transcode.events",
+                    event_type="menu.pack",
+                    payload={"job_id": job_id, "task_id": task.id, "path": task.output_path},
                     job_id=job_id,
                     session=db,
                 )
