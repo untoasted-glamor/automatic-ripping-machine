@@ -1,6 +1,7 @@
 // The job page's Disc menu panel (fork only): labels and rules for the menu's
 // name proposals, and where a menu button's box sits over its page image.
 import type {
+	MenuPackView,
 	MenuPreviewButtonView,
 	MenuPreviewView,
 	MenuProposalView,
@@ -113,5 +114,24 @@ export function previewState(p: MenuPreviewView | null | undefined): string {
 }
 
 export function isPreviewLive(p: MenuPreviewView | null | undefined): boolean {
+	return p?.status === 'queued' || p?.status === 'in_progress';
+}
+
+/** One line on where the menu pack is. */
+export function packState(p: MenuPackView | null | undefined): string {
+	if (!p) return 'No menu pack yet. It is built once the encodes finish.';
+	switch (p.status) {
+		case 'queued':
+			return 'Waiting to build the menu pack.';
+		case 'in_progress':
+			return `Building the menu pack (${p.progress_pct}%).`;
+		case 'failed':
+			return `Building the menu pack failed: ${p.last_error ?? 'no reason given'}`;
+		default:
+			return p.path ? 'The menu pack is in the show folder.' : 'The menu pack is not in the show folder any more.';
+	}
+}
+
+export function isPackLive(p: MenuPackView | null | undefined): boolean {
 	return p?.status === 'queued' || p?.status === 'in_progress';
 }

@@ -1,7 +1,8 @@
-// The job page's Disc menu panel (fork only, disc menus M3-M4): the menu's
-// pages and buttons from the preview, and the names the menu proposes for the
-// job's titles. Accepting a name renames the finished encode into the
-// library's trailers/, other/, extras/ or Season 00 folder.
+// The job page's Disc menu panel (fork only, disc menus M3-M4, A4): the menu's
+// pages and buttons from the preview, the names the menu proposes for the
+// job's titles, and the menu pack Jellyfin plays. Accepting a name renames the
+// finished encode into the library's trailers/, other/, extras/ or Season 00
+// folder.
 import type {
 	JobDiscMenuView,
 	MenuProposalAcceptAllResponse,
@@ -9,7 +10,7 @@ import type {
 	MenuProposalUpdate,
 	MenuProposalView
 } from '$lib/types/api.gen';
-import { fetchObjectUrl, get, patch, post } from './client';
+import { del, fetchObjectUrl, get, patch, post } from './client';
 
 const base = (jobId: string) => `/api/jobs/${jobId}/disc-menu`;
 
@@ -45,4 +46,14 @@ export function ripMenuTitle(jobId: string, proposalId: string): Promise<MenuPro
 
 export function acceptAllMenuProposals(jobId: string): Promise<MenuProposalAcceptAllResponse> {
 	return post<MenuProposalAcceptAllResponse>(`${base(jobId)}/proposals/accept-all`);
+}
+
+/** Build the menu pack again (from the copied menu and the job's encodes). */
+export function buildDiscMenuPack(jobId: string): Promise<JobDiscMenuView> {
+	return post<JobDiscMenuView>(`${base(jobId)}/pack`);
+}
+
+/** Remove the menu pack from the show folder; Build makes it again. */
+export function deleteDiscMenuPack(jobId: string): Promise<JobDiscMenuView> {
+	return del<JobDiscMenuView>(`${base(jobId)}/pack`);
 }

@@ -7,7 +7,9 @@ import {
 	canRip,
 	draftOf,
 	isOpen,
+	isPackLive,
 	isPreviewLive,
+	packState,
 	previewState,
 	roleLabel,
 	statusText
@@ -133,5 +135,21 @@ describe('disc menu helpers', () => {
 		expect(isPreviewLive(preview({ status: 'queued' }))).toBe(true);
 		expect(isPreviewLive(preview())).toBe(false);
 		expect(isPreviewLive(null)).toBe(false);
+	});
+});
+
+describe('packState', () => {
+	const pack = (over = {}) => ({ task_id: 'txt_p', status: 'done' as const, progress_pct: 100, ...over });
+	it('says where the menu pack stands', () => {
+		expect(packState(null)).toBe('No menu pack yet. It is built once the encodes finish.');
+		expect(packState(pack({ status: 'queued' }))).toBe('Waiting to build the menu pack.');
+		expect(packState(pack({ status: 'in_progress', progress_pct: 30 }))).toBe('Building the menu pack (30%).');
+		expect(packState(pack({ status: 'failed', last_error: 'moved' }))).toBe('Building the menu pack failed: moved');
+		expect(packState(pack({ status: 'failed' }))).toBe('Building the menu pack failed: no reason given');
+		expect(packState(pack({ path: 'Show/.discmenus/bd-d2' }))).toBe('The menu pack is in the show folder.');
+		expect(packState(pack())).toBe('The menu pack is not in the show folder any more.');
+		expect(isPackLive(pack({ status: 'in_progress' }))).toBe(true);
+		expect(isPackLive(pack())).toBe(false);
+		expect(isPackLive(undefined)).toBe(false);
 	});
 });

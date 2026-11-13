@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { renderComponent, screen, fireEvent, cleanup, waitFor } from '$lib/test-utils';
+import { renderComponent, screen, fireEvent, cleanup, waitFor, within } from '$lib/test-utils';
 import { createTrack } from './__fixtures__/job';
 import type { JobDiscMenuView, MenuProposalView } from '$lib/types/api.gen';
 import DiscMenuPanel from './DiscMenuPanel.svelte';
@@ -11,12 +11,16 @@ vi.mock('$lib/api/discMenus', () => ({
 	updateMenuProposal: vi.fn(),
 	createMenuProposal: vi.fn(),
 	acceptAllMenuProposals: vi.fn(),
-	ripMenuTitle: vi.fn()
+	ripMenuTitle: vi.fn(),
+	buildDiscMenuPack: vi.fn(),
+	deleteDiscMenuPack: vi.fn()
 }));
 
 import {
 	acceptAllMenuProposals,
+	buildDiscMenuPack,
 	createMenuProposal,
+	deleteDiscMenuPack,
 	fetchDiscMenu,
 	fetchDiscMenuImage,
 	requestDiscMenuPreview,
@@ -387,6 +391,87 @@ describe('DiscMenuPanel', () => {
 		expect(screen.queryByTestId('dm-accept-all')).toBeNull();
 		expect(screen.queryByTestId('dm-read-again')).toBeNull();
 		expect(screen.queryByTestId('dm-hand-open')).toBeNull();
+	});
+
+	it('builds the menu pack and polls until it is built', async () => {
+		vi.useFakeTimers();
+		fetchMock.mockResolvedValue(menu());
+		vi.mocked(buildDiscMenuPack).mockResolvedValue(
+			menu({
+				pack: { task_id: 'txt_p', status: 'queued', progress_pct: 0 },
+				pack_refusal: 'a pack build is already queued or running'
+			})
+		);
+		render();
+		expect(await screen.findByTestId('dm-pack-state')).toHaveTextContent('No menu pack yet');
+		const build = screen.getByTestId('dm-pack-build');
+		expect(build).toHaveTextContent('Build');
+		await fireEvent.click(build);
+		expect(await screen.findByText('Waiting to build the menu pack.')).toBeInTheDocument();
+		expect(screen.queryByTestId('dm-pack-build')).toBeNull();
+		expect(screen.queryByTestId('dm-pack-refusal')).toBeNull();
+		fetchMock.mockResolvedValue(
+			menu({
+				pack: { task_id: 'txt_p', status: 'done', progress_pct: 100, path: 'Show/.discmenus/bd-d2', size_bytes: 2048 }
+			})
+		);
+		await vi.advanceTimersByTimeAsync(4100);
+		await waitFor(() => expect(screen.getByTestId('dm-pack-state')).toHaveTextContent('in the show folder'));
+		expect(screen.getByTestId('dm-pack-path')).toHaveTextContent('Show/.discmenus/bd-d2');
+		expect(screen.getByTestId('dm-pack')).toHaveTextContent('2 KB');
+		expect(screen.getByTestId('dm-pack-build')).toHaveTextContent('Build again');
+	});
+
+	it('says why the pack cannot be built, and shows a build failure', async () => {
+		fetchMock.mockResolvedValue(menu({ pack_refusal: 'the job has no finished encodes yet' }));
+		render();
+		expect(await screen.findByTestId('dm-pack-refusal')).toHaveTextContent(
+			"Can't build now: the job has no finished encodes yet"
+		);
+		expect(screen.queryByTestId('dm-pack-build')).toBeNull();
+		cleanup();
+		fetchMock.mockResolvedValue(menu());
+		vi.mocked(buildDiscMenuPack).mockRejectedValue(new Error('a pack build is already queued or running'));
+		render();
+		await fireEvent.click(await screen.findByTestId('dm-pack-build'));
+		expect(await screen.findByTestId('dm-error')).toHaveTextContent('already queued');
+	});
+
+	it('deletes the pack after asking', async () => {
+		const built = { task_id: 'txt_p', status: 'done' as const, progress_pct: 100, path: 'Show/.discmenus/bd-d2' };
+		fetchMock.mockResolvedValue(menu({ pack: built }));
+		vi.mocked(deleteDiscMenuPack).mockResolvedValue(menu({ pack: { ...built, path: null } }));
+		render();
+		await fireEvent.click(await screen.findByTestId('dm-pack-delete'));
+		expect(screen.getByText('Delete the menu pack?')).toBeInTheDocument();
+		await fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+		expect(deleteDiscMenuPack).not.toHaveBeenCalled();
+		await fireEvent.click(screen.getByTestId('dm-pack-delete'));
+		await fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete pack' }));
+		await waitFor(() => expect(deleteDiscMenuPack).toHaveBeenCalledWith('job_1'));
+		expect(await screen.findByTestId('dm-pack-state')).toHaveTextContent('not in the show folder any more');
+		expect(screen.queryByTestId('dm-pack-delete')).toBeNull();
+	});
+
+	it('shows a delete failure', async () => {
+		fetchMock.mockResolvedValue(
+			menu({ pack: { task_id: 'txt_p', status: 'done', progress_pct: 100, path: 'Show/.discmenus/bd-d2' } })
+		);
+		vi.mocked(deleteDiscMenuPack).mockRejectedValue(new Error('read-only'));
+		render();
+		await fireEvent.click(await screen.findByTestId('dm-pack-delete'));
+		await fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete pack' }));
+		expect(await screen.findByTestId('dm-error')).toHaveTextContent('read-only');
+	});
+
+	it('shows the pack but no pack buttons to a guest', async () => {
+		fetchMock.mockResolvedValue(
+			menu({ pack: { task_id: 'txt_p', status: 'done', progress_pct: 100, path: 'Show/.discmenus/bd-d2' } })
+		);
+		render({ canEdit: false });
+		expect(await screen.findByTestId('dm-pack-path')).toBeInTheDocument();
+		expect(screen.queryByTestId('dm-pack-build')).toBeNull();
+		expect(screen.queryByTestId('dm-pack-delete')).toBeNull();
 	});
 
 	it('draws the page without its picture when the image fails', async () => {

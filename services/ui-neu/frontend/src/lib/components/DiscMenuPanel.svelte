@@ -4,12 +4,15 @@
 	// menu's buttons propose for the job's titles. Accepting a name renames the
 	// finished encode into the library's trailers/, other/, extras/ or Season 00
 	// folder (an encode still running is renamed when it finishes). A title the
-	// menu doesn't name can be named here by hand. Shown only when the job has a
-	// copied disc menu (the GET 404s otherwise).
+	// menu doesn't name can be named here by hand. The menu pack row says where
+	// the pack Jellyfin plays stands, and builds or deletes it. Shown only when
+	// the job has a copied disc menu (the GET 404s otherwise).
 	import { onDestroy } from 'svelte';
 	import {
 		acceptAllMenuProposals,
+		buildDiscMenuPack,
 		createMenuProposal,
+		deleteDiscMenuPack,
 		fetchDiscMenu,
 		fetchDiscMenuImage,
 		requestDiscMenuPreview,
@@ -33,12 +36,16 @@
 		canRip,
 		draftOf,
 		isOpen,
+		isPackLive,
 		isPreviewLive,
+		packState,
 		previewState,
 		statusText,
 		type ProposalDraft
 	} from '$lib/utils/disc-menu';
 	import { usePoll } from '$lib/utils/poll';
+	import { formatBytes } from '$lib/utils/format';
+	import ConfirmDialog from './ConfirmDialog.svelte';
 	import Glyph from './Glyph.svelte';
 
 	interface Props {
@@ -63,6 +70,7 @@
 	let refusedCount = $state(0);
 	let images = $state<Record<string, string>>({});
 	let byHand = $state(false);
+	let confirmDelete = $state(false);
 	let handDraft = $state<ProposalDraft & { trackId: string }>({ trackId: '', role: null, name: '', episode: null });
 
 	const pages = $derived(view?.preview?.pages ?? []);
@@ -114,9 +122,9 @@
 		void load();
 	});
 
-	// Poll while the preview runs; stop once it's done or failed.
+	// Poll while the preview or the pack build runs; stop once both are done or failed.
 	$effect(() => {
-		if (!isPreviewLive(view?.preview)) return;
+		if (!isPreviewLive(view?.preview) && !isPackLive(view?.pack)) return;
 		let first = true;
 		const poll = usePoll(async () => {
 			if (first) {
@@ -213,6 +221,31 @@
 		}
 	}
 
+	async function buildPack(): Promise<void> {
+		busy = 'pack';
+		error = null;
+		try {
+			view = await buildDiscMenuPack(jobId);
+		} catch (e) {
+			error = message(e, 'Could not build the menu pack');
+		} finally {
+			busy = null;
+		}
+	}
+
+	async function deletePack(): Promise<void> {
+		confirmDelete = false;
+		busy = 'pack';
+		error = null;
+		try {
+			view = await deleteDiscMenuPack(jobId);
+		} catch (e) {
+			error = message(e, 'Could not delete the menu pack');
+		} finally {
+			busy = null;
+		}
+	}
+
 	async function nameByHand(): Promise<void> {
 		busy = 'hand';
 		error = null;
@@ -273,6 +306,47 @@
 		{#if error}
 			<p class="field-error" data-testid="dm-error">{error}</p>
 		{/if}
+
+		<div class="disc-menu-pack" data-testid="dm-pack">
+			<span class="field-help" data-testid="dm-pack-state">{packState(view?.pack)}</span>
+			{#if view?.pack?.path}
+				<span class="disc-menu-faint mono" data-testid="dm-pack-path">{view.pack.path}</span>
+				{#if view.pack.size_bytes != null}
+					<span class="disc-menu-faint">{formatBytes(view.pack.size_bytes)}</span>
+				{/if}
+			{/if}
+			{#if canEdit}
+				<span class="disc-menu-pack-actions">
+					{#if view && !view.pack_refusal}
+						<button
+							type="button"
+							class="btn btn-sm"
+							data-testid="dm-pack-build"
+							disabled={busy !== null}
+							onclick={buildPack}
+						>
+							<Glyph name="refresh" />
+							{view.pack ? 'Build again' : 'Build'}
+						</button>
+					{/if}
+					{#if view?.pack?.path}
+						<button
+							type="button"
+							class="btn btn-sm"
+							data-testid="dm-pack-delete"
+							disabled={busy !== null}
+							onclick={() => (confirmDelete = true)}
+						>
+							<Glyph name="x" />
+							Delete pack
+						</button>
+					{/if}
+				</span>
+			{/if}
+			{#if canEdit && view?.pack_refusal && !isPackLive(view?.pack)}
+				<span class="disc-menu-faint" data-testid="dm-pack-refusal">Can't build now: {view.pack_refusal}</span>
+			{/if}
+		</div>
 
 		{#if page}
 			{#if pages.length > 1}
@@ -539,6 +613,15 @@
 			{/if}
 		{/if}
 	</section>
+	<ConfirmDialog
+		open={confirmDelete}
+		title="Delete the menu pack?"
+		message="The menu pack is removed from the show folder, so Jellyfin shows no menu for this disc. The copied menu stays, and Build makes the pack again."
+		confirmLabel="Delete pack"
+		variant="danger"
+		onconfirm={() => void deletePack()}
+		oncancel={() => (confirmDelete = false)}
+	/>
 {/if}
 
 <style>
@@ -553,6 +636,19 @@
 		flex-wrap: wrap;
 		align-items: center;
 		gap: 0.5rem 0.75rem;
+	}
+	.disc-menu-pack {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.25rem 0.75rem;
+	}
+	.disc-menu-pack .disc-menu-faint {
+		display: inline;
+	}
+	.disc-menu-pack-actions {
+		display: inline-flex;
+		gap: 0.375rem;
 	}
 	.disc-menu-title {
 		font-size: 1.125rem;

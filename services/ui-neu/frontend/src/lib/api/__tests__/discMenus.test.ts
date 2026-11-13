@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
 	acceptAllMenuProposals,
+	buildDiscMenuPack,
 	createMenuProposal,
+	deleteDiscMenuPack,
 	fetchDiscMenu,
 	fetchDiscMenuImage,
 	requestDiscMenuPreview,
@@ -29,6 +31,16 @@ describe('disc menu API', () => {
 		await requestDiscMenuPreview('job_1');
 		expect(mockFetch.mock.calls[1][0]).toBe('/api/jobs/job_1/disc-menu/preview');
 		expect(mockFetch.mock.calls[1][1].method).toBe('POST');
+	});
+
+	it('builds and deletes the menu pack', async () => {
+		mockFetch.mockResolvedValue(jsonResponse({ track_id: 'trk_menu' }));
+		await buildDiscMenuPack('job_1');
+		expect(mockFetch.mock.calls[0][0]).toBe('/api/jobs/job_1/disc-menu/pack');
+		expect(mockFetch.mock.calls[0][1].method).toBe('POST');
+		await deleteDiscMenuPack('job_1');
+		expect(mockFetch.mock.calls[1][0]).toBe('/api/jobs/job_1/disc-menu/pack');
+		expect(mockFetch.mock.calls[1][1].method).toBe('DELETE');
 	});
 
 	it('edits, adds and accepts names', async () => {
