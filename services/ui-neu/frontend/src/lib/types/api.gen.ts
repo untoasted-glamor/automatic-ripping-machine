@@ -31,11 +31,6 @@ export type ApplySessionRequest = {
      * Overwrite
      */
     overwrite?: boolean;
-    track_selection?: TrackSelectionSettings | null;
-    /**
-     * Subtitle Ocr
-     */
-    subtitle_ocr?: boolean | null;
 };
 
 /**
@@ -80,34 +75,6 @@ export type AppriseChannelConfig = {
         [key: string]: string | number | number | boolean;
     } | null;
 };
-
-/**
- * AudioFormat
- *
- * What each kept audio track becomes (when ARM picks the audio tracks).
- *
- * `preset` leaves it to the engine (HandBrake: the preset's audio encoders;
- * ffmpeg VAAPI: every track copied). `aac_best` keeps one track per
- * language: its best track (lossless TrueHD first) converted to AAC with up
- * to 5.1 channels. `ac3_else_aac51` keeps one track per language: an
- * untouched copy of its AC-3 (Dolby Digital) track, else its best track
- * converted to AAC with up to 5.1 channels. `aac_stereo`
- * converts every kept track to AAC stereo, `aac_51` to AAC with up to 5.1
- * channels, and `copy` keeps every kept track untouched.
- */
-export type AudioFormat = 'preset' | 'aac_best' | 'ac3_else_aac51' | 'aac_stereo' | 'aac_51' | 'copy';
-
-/**
- * AudioSelection
- *
- * Which source audio tracks a transcode preset keeps.
- *
- * `preset` leaves the choice to the engine (HandBrake: the preset's own
- * rule, which keeps the first track; ffmpeg VAAPI: every track). `all`
- * keeps every track in source order; `languages` keeps the tracks whose
- * language is in the preset's ordered `audio_languages` list.
- */
-export type AudioSelection = 'preset' | 'all' | 'languages';
 
 /**
  * BashChannelConfig
@@ -493,10 +460,6 @@ export type CompleteTaskRequest = {
      */
     output_path: string;
     /**
-     * Sidecar Paths
-     */
-    sidecar_paths?: Array<string>;
-    /**
      * Size Bytes
      */
     size_bytes?: number | null;
@@ -714,31 +677,43 @@ export type ConfigUpdateRequest = {
      * Manual Wait Seconds
      */
     manual_wait_seconds?: number | null;
-    /**
-     * Review Requires Confirm
-     */
-    review_requires_confirm?: boolean | null;
     on_previously_ripped?: PreviouslyRippedAction | null;
-    /**
-     * Rip Disc Menus
-     */
-    rip_disc_menus?: boolean | null;
-    /**
-     * Subtitle Ocr Enabled
-     */
-    subtitle_ocr_enabled?: boolean | null;
-    /**
-     * Subtitle Ocr Default On
-     */
-    subtitle_ocr_default_on?: boolean | null;
     /**
      * Notifications Enabled
      */
     notifications_enabled?: boolean | null;
     /**
-     * Metadata Provider
+     * Movie Sources
      */
-    metadata_provider?: string | null;
+    movie_sources?: Array<string> | null;
+    /**
+     * Music Sources
+     */
+    music_sources?: Array<string> | null;
+    /**
+     * Search Provider Movie
+     */
+    search_provider_movie?: string | null;
+    /**
+     * Search Provider Tv
+     */
+    search_provider_tv?: string | null;
+    /**
+     * Search Provider Music
+     */
+    search_provider_music?: string | null;
+    /**
+     * Movie Auto Apply
+     */
+    movie_auto_apply?: boolean | null;
+    /**
+     * Music Auto Apply
+     */
+    music_auto_apply?: boolean | null;
+    /**
+     * Crc64Service Enabled
+     */
+    crc64service_enabled?: boolean | null;
 };
 
 /**
@@ -847,24 +822,7 @@ export type ConfigView = {
      * Manual Wait Seconds
      */
     manual_wait_seconds: number;
-    /**
-     * Review Requires Confirm
-     */
-    review_requires_confirm: boolean;
     on_previously_ripped: PreviouslyRippedAction;
-    /**
-     * Rip Disc Menus
-     */
-    rip_disc_menus: boolean;
-    /**
-     * Subtitle Ocr Enabled
-     */
-    subtitle_ocr_enabled: boolean;
-    /**
-     * Subtitle Ocr Default On
-     */
-    subtitle_ocr_default_on: boolean;
-    subtitle_ocr_model: SubtitleOcrModelView;
     default_retention_policy: RetentionPolicy;
     /**
      * Notification Apprise Urls
@@ -875,9 +833,37 @@ export type ConfigView = {
      */
     notifications_enabled: boolean;
     /**
-     * Metadata Provider
+     * Movie Sources
      */
-    metadata_provider: string;
+    movie_sources: Array<string>;
+    /**
+     * Music Sources
+     */
+    music_sources: Array<string>;
+    /**
+     * Search Provider Movie
+     */
+    search_provider_movie: string;
+    /**
+     * Search Provider Tv
+     */
+    search_provider_tv: string;
+    /**
+     * Search Provider Music
+     */
+    search_provider_music: string;
+    /**
+     * Movie Auto Apply
+     */
+    movie_auto_apply: boolean;
+    /**
+     * Music Auto Apply
+     */
+    music_auto_apply: boolean;
+    /**
+     * Crc64Service Enabled
+     */
+    crc64service_enabled: boolean;
     /**
      * Makemkv Key Valid
      */
@@ -1023,34 +1009,6 @@ export type DiscFingerprintView = {
 };
 
 /**
- * DiscLanguageTracks
- *
- * One language the disc's kept titles carry, for the track picker.
- */
-export type DiscLanguageTracks = {
-    /**
-     * Language
-     */
-    language: string;
-    /**
-     * Language Name
-     */
-    language_name?: string | null;
-    /**
-     * Tracks
-     */
-    tracks?: Array<string>;
-    /**
-     * Title Count
-     */
-    title_count?: number;
-    /**
-     * Forced Only
-     */
-    forced_only?: boolean;
-};
-
-/**
  * DiscRouteSummary
  *
  * What one kind of disc gets with no drive default and no per-rip choice.
@@ -1077,24 +1035,6 @@ export type DiscRouteSummary = {
      * Output Template
      */
     output_template?: string | null;
-};
-
-/**
- * DiscTrackLanguages
- */
-export type DiscTrackLanguages = {
-    /**
-     * Audio
-     */
-    audio?: Array<DiscLanguageTracks>;
-    /**
-     * Subtitles
-     */
-    subtitles?: Array<DiscLanguageTracks>;
-    /**
-     * Known
-     */
-    known?: boolean;
 };
 
 /**
@@ -1172,18 +1112,6 @@ export type Drive = {
      * Media Status At
      */
     media_status_at: string | null;
-    /**
-     * Scan Started At
-     */
-    scan_started_at?: string | null;
-    /**
-     * Scan Attempt
-     */
-    scan_attempt?: number | null;
-    /**
-     * Scan Max Attempts
-     */
-    scan_max_attempts?: number | null;
     /**
      * Rip Params Json
      */
@@ -1481,18 +1409,6 @@ export type DriveView = {
      */
     media_status_at: string | null;
     /**
-     * Scan Started At
-     */
-    scan_started_at?: string | null;
-    /**
-     * Scan Attempt
-     */
-    scan_attempt?: number | null;
-    /**
-     * Scan Max Attempts
-     */
-    scan_max_attempts?: number | null;
-    /**
      * Default Session Id
      */
     default_session_id: string | null;
@@ -1740,10 +1656,6 @@ export type FailTaskRequest = {
      * Last Error
      */
     last_error: string;
-    /**
-     * Sidecar Paths
-     */
-    sidecar_paths?: Array<string>;
 };
 
 /**
@@ -2051,6 +1963,55 @@ export type IdentityClaims = {
 };
 
 /**
+ * IdentitySuggestion
+ *
+ * A confident online match identify did not apply because the media
+ * type's "Apply confident matches" switch is off (identification-sources
+ * spec D-10). The job keeps its miss title and the `unidentified` flag and
+ * waits in AWAITING_REVIEW with no countdown until the operator accepts
+ * it (POST /api/jobs/{id}/identity/accept) or identifies the disc another
+ * way (any resolve clears this section).
+ */
+export type IdentitySuggestion = {
+    /**
+     * Provider
+     */
+    provider: string;
+    /**
+     * Title
+     */
+    title: string;
+    /**
+     * Year
+     */
+    year?: number | null;
+    /**
+     * Kind
+     */
+    kind: 'movie' | 'tv' | 'music';
+    /**
+     * Poster Url
+     */
+    poster_url?: string | null;
+    external_ids?: ExternalIds;
+    /**
+     * Overview
+     */
+    overview?: string | null;
+    /**
+     * Payload
+     */
+    payload?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Suggested At
+     */
+    suggested_at: string;
+    [key: string]: unknown;
+};
+
+/**
  * IdentityView
  *
  * `GET /api/jobs/{id}/identity` response.
@@ -2334,16 +2295,6 @@ export type Job = {
      */
     manual_pause?: boolean;
     /**
-     * Track Selection
-     */
-    track_selection?: {
-        [key: string]: unknown;
-    } | null;
-    /**
-     * Subtitle Ocr
-     */
-    subtitle_ocr?: boolean | null;
-    /**
      * Started At
      */
     started_at: string | null;
@@ -2437,49 +2388,6 @@ export type JobDetailView = {
      */
     fingerprints?: Array<DiscFingerprintView>;
     previous_rip?: PreviousRipView | null;
-    raw_backup?: RawBackupView | null;
-    subtitle_ocr?: JobSubtitleOcrView | null;
-    /**
-     * Parks After Backup
-     */
-    parks_after_backup?: boolean;
-    /**
-     * Retry Backs Up
-     */
-    retry_backs_up?: boolean;
-};
-
-/**
- * JobDiscMenuView
- */
-export type JobDiscMenuView = {
-    /**
-     * Track Id
-     */
-    track_id: string;
-    track_status: TrackStatus;
-    /**
-     * Track Error
-     */
-    track_error?: string | null;
-    /**
-     * Size Bytes
-     */
-    size_bytes?: number | null;
-    preview?: MenuPreviewView | null;
-    /**
-     * Proposals
-     */
-    proposals?: Array<MenuProposalView>;
-    /**
-     * Can Preview
-     */
-    can_preview?: boolean;
-    pack?: MenuPackView | null;
-    /**
-     * Pack Refusal
-     */
-    pack_refusal?: string | null;
 };
 
 /**
@@ -2498,10 +2406,6 @@ export type JobFlags = {
      * Rerip Allowed
      */
     rerip_allowed?: boolean;
-    /**
-     * Parked
-     */
-    parked?: boolean;
     [key: string]: unknown;
 };
 
@@ -2544,10 +2448,7 @@ export type JobMetadata = {
     } | null;
     flags?: JobFlags;
     previously_ripped?: PreviouslyRipped | null;
-    /**
-     * Identify Miss Reasons
-     */
-    identify_miss_reasons?: Array<string>;
+    identity_suggestion?: IdentitySuggestion | null;
     /**
      * Provider Raw
      */
@@ -2605,104 +2506,7 @@ export type JobStatsResponse = {
 /**
  * JobStatus
  */
-export type JobStatus = 'created' | 'awaiting_user_id' | 'identified' | 'ripping' | 'ripped' | 'ripped_partial' | 'awaiting_review' | 'ripped_awaiting_identify' | 'remuxing' | 'awaiting_titles' | 'abandoned' | 'failed';
-
-/**
- * JobSubtitleOcrChoice
- *
- * A job's text subtitles choice. `effective` is what its encodes get on
- * completion: `override` when set, else `default` (the Settings default).
- */
-export type JobSubtitleOcrChoice = {
-    /**
-     * Override
-     */
-    override?: boolean | null;
-    /**
-     * Default
-     */
-    default: boolean;
-    /**
-     * Effective
-     */
-    effective: boolean;
-};
-
-/**
- * JobSubtitleOcrView
- *
- * The job page's text subtitles: the choice, and what Make text
- * subtitles would read.
- */
-export type JobSubtitleOcrView = {
-    /**
-     * Override
-     */
-    override?: boolean | null;
-    /**
-     * Default
-     */
-    default: boolean;
-    /**
-     * Effective
-     */
-    effective: boolean;
-    /**
-     * Eligible Encodes
-     */
-    eligible_encodes?: number;
-    /**
-     * With Text Subtitles
-     */
-    with_text_subtitles?: number;
-};
-
-/**
- * JobTrackSelectionRequest
- *
- * PUT /api/jobs/{id}/track-selection. Null clears the override.
- */
-export type JobTrackSelectionRequest = {
-    track_selection?: TrackSelectionSettings | null;
-    /**
-     * Subtitle Ocr
-     */
-    subtitle_ocr?: boolean | null;
-};
-
-/**
- * JobTrackSelectionView
- *
- * GET /api/jobs/{id}/track-selection: what the picker needs.
- *
- * `effective` is what the job's transcodes use: `override` when set, else
- * `default`, the track fields of the transcode preset this job would use
- * (`default_source` names it), or the built-in default when no preset is
- * known yet.
- */
-export type JobTrackSelectionView = {
-    override?: TrackSelectionSettings | null;
-    default: TrackSelectionSettings;
-    /**
-     * Default Source
-     */
-    default_source: string;
-    /**
-     * Default Preset Id
-     */
-    default_preset_id?: string | null;
-    effective: TrackSelectionSettings;
-    disc: DiscTrackLanguages;
-    /**
-     * Editable
-     */
-    editable: boolean;
-    /**
-     * Locked Reason
-     */
-    locked_reason?: string | null;
-    subtitle_ocr?: JobSubtitleOcrChoice | null;
-};
+export type JobStatus = 'created' | 'awaiting_user_id' | 'identified' | 'ripping' | 'ripped' | 'ripped_partial' | 'awaiting_review' | 'ripped_awaiting_identify' | 'abandoned' | 'failed';
 
 /**
  * JobUpdateRequest
@@ -2799,7 +2603,6 @@ export type JobView = {
      * Manual Pause
      */
     manual_pause?: boolean;
-    track_selection?: TrackSelectionSettings | null;
     rip_progress?: RipProgressSummary | null;
     transcode_progress?: TranscodeProgressSummary | null;
     readonly actions: JobActions;
@@ -3145,426 +2948,6 @@ export type MemoryInfo = {
      * Percent
      */
     percent: number;
-};
-
-/**
- * MenuExtract
- *
- * The disc menu the ripper copies out of the disc (fork only): its track.
- */
-export type MenuExtract = {
-    /**
-     * Track Id
-     */
-    track_id: string;
-};
-
-/**
- * MenuKind
- *
- * What a disc's menu is, found at scan time (`arm_ripper.menus.probe`,
- * fork only): `ScanResult.menu_kind`.
- */
-export type MenuKind = 'hdmv' | 'bdj' | 'dvd' | 'none' | 'unknown';
-
-/**
- * MenuPackItem
- *
- * One library file a disc menu pack's cells play, and which disc title it is (fork only, disc menus A3).
- *
- * `file` is relative to the media root. It is an episode (`episode`, with `season` when it isn't the disc's: 0
- * for a special), an extra (`extra`, its path under the show folder: `trailers/...`, `other/...`, `extras/...`)
- * or, on a movie disc, neither. The disc title is a Blu-ray clip (`bd_clip`, a title of one clip: every play of
- * it, the episode buttons' marks into a play-all included), a Blu-ray playlist (`bd_playlist`, a title of
- * several clips) or a DVD title number (`dvd_title`, the whole title).
- */
-export type MenuPackItem = {
-    /**
-     * File
-     */
-    file: string;
-    /**
-     * Episode
-     */
-    episode?: number | null;
-    /**
-     * Season
-     */
-    season?: number | null;
-    /**
-     * Extra
-     */
-    extra?: string | null;
-    /**
-     * Bd Clip
-     */
-    bd_clip?: string | null;
-    /**
-     * Bd Playlist
-     */
-    bd_playlist?: string | null;
-    /**
-     * Dvd Title
-     */
-    dvd_title?: number | null;
-};
-
-/**
- * MenuPackPlan
- *
- * What a `menu_pack` task builds (fork only, disc menus A3): `pack_dir` (relative to the media root,
- * `<show folder>/.discmenus/<disc>`) unless another job's pack holds it, the disc's name and season, the job
- * that owns the pack, and the library items. `notes` says what the backend left out of the map, and why.
- */
-export type MenuPackPlan = {
-    /**
-     * Pack Dir
-     */
-    pack_dir: string;
-    /**
-     * Name
-     */
-    name: string;
-    /**
-     * Season
-     */
-    season?: number | null;
-    /**
-     * Job Id
-     */
-    job_id: string;
-    /**
-     * Items
-     */
-    items?: Array<MenuPackItem>;
-    /**
-     * Notes
-     */
-    notes?: Array<string>;
-};
-
-/**
- * MenuPackView
- *
- * The newest `menu_pack` task: the pack Jellyfin plays, in the show folder's `.discmenus/`.
- */
-export type MenuPackView = {
-    /**
-     * Task Id
-     */
-    task_id: string;
-    status: TranscodeTaskStatus;
-    /**
-     * Progress Pct
-     */
-    progress_pct: number;
-    /**
-     * Last Error
-     */
-    last_error?: string | null;
-    /**
-     * Updated At
-     */
-    updated_at?: string | null;
-    /**
-     * Path
-     */
-    path?: string | null;
-    /**
-     * Size Bytes
-     */
-    size_bytes?: number | null;
-};
-
-/**
- * MenuPreviewButtonView
- */
-export type MenuPreviewButtonView = {
-    /**
-     * Id
-     */
-    id: number;
-    /**
-     * Box
-     */
-    box: Array<number>;
-    /**
-     * Visible
-     */
-    visible: boolean;
-    /**
-     * Label
-     */
-    label?: string;
-    /**
-     * Score
-     */
-    score?: number | null;
-    /**
-     * Crop
-     */
-    crop?: string | null;
-    /**
-     * Outcome
-     */
-    outcome: 'plays' | 'page' | 'stays' | 'stopped';
-    /**
-     * Plays
-     */
-    plays?: string | null;
-    /**
-     * Goes To
-     */
-    goes_to?: string | null;
-    /**
-     * Track Id
-     */
-    track_id?: string | null;
-    /**
-     * Proposal Id
-     */
-    proposal_id?: string | null;
-    /**
-     * Title Index
-     */
-    title_index?: number | null;
-    /**
-     * Clip Titles
-     */
-    clip_titles?: Array<number | null>;
-    /**
-     * Whole Title Index
-     */
-    whole_title_index?: number | null;
-};
-
-/**
- * MenuPreviewPageView
- */
-export type MenuPreviewPageView = {
-    /**
-     * Id
-     */
-    id: string;
-    /**
-     * At
-     */
-    at: string;
-    /**
-     * Language
-     */
-    language: string;
-    /**
-     * Image
-     */
-    image: string;
-    /**
-     * Size
-     */
-    size: Array<number>;
-    /**
-     * Buttons
-     */
-    buttons: Array<MenuPreviewButtonView>;
-};
-
-/**
- * MenuPreviewView
- */
-export type MenuPreviewView = {
-    /**
-     * Task Id
-     */
-    task_id: string;
-    status: TranscodeTaskStatus;
-    /**
-     * Progress Pct
-     */
-    progress_pct: number;
-    /**
-     * Last Error
-     */
-    last_error?: string | null;
-    /**
-     * Updated At
-     */
-    updated_at?: string | null;
-    /**
-     * Disc
-     */
-    disc?: 'bd' | 'dvd' | null;
-    /**
-     * Pages
-     */
-    pages?: Array<MenuPreviewPageView>;
-    /**
-     * Notes
-     */
-    notes?: Array<string>;
-    /**
-     * Unsupported
-     */
-    unsupported?: Array<string>;
-    /**
-     * Truncated
-     */
-    truncated?: boolean;
-};
-
-/**
- * MenuProposalAcceptAllResponse
- */
-export type MenuProposalAcceptAllResponse = {
-    /**
-     * Proposals
-     */
-    proposals: Array<MenuProposalView>;
-    /**
-     * Refused
-     */
-    refused?: {
-        [key: string]: string;
-    };
-};
-
-/**
- * MenuProposalCreate
- *
- * Name a title by hand from the menu panel, and apply it.
- */
-export type MenuProposalCreate = {
-    /**
-     * Track Id
-     */
-    track_id: string;
-    role: TrackRole;
-    /**
-     * Name
-     */
-    name: string;
-    /**
-     * Episode Number
-     */
-    episode_number?: number | null;
-    /**
-     * Page
-     */
-    page?: string;
-    /**
-     * Button
-     */
-    button?: number;
-};
-
-/**
- * MenuProposalStatus
- *
- * Where a name proposed from a disc menu button stands (fork only, disc
- * menus plan v5, M2-M4).
- *
- * `proposed`: made by a menu preview, not yet looked at. `accepted`: the
- * owner took it (maybe edited) and its encode isn't finished, so the rename
- * waits for it. `applied`: the track carries the name and its finished
- * encode has been renamed. `rejected`: the owner turned it down. `info`:
- * nothing to apply (an episode button that confirms or contradicts identity,
- * a play-all, a title that wasn't ripped).
- */
-export type MenuProposalStatus = 'proposed' | 'accepted' | 'applied' | 'rejected' | 'info';
-
-/**
- * MenuProposalUpdate
- *
- * Edit a proposal and/or decide it. `accept` applies it: the track takes
- * the role and name, and its finished encode is renamed (or will be, when
- * its encode finishes). `reject` sets it aside; `reopen` puts a rejected one
- * back.
- */
-export type MenuProposalUpdate = {
-    role?: TrackRole | null;
-    /**
-     * Name
-     */
-    name?: string | null;
-    /**
-     * Episode Number
-     */
-    episode_number?: number | null;
-    /**
-     * Action
-     */
-    action?: 'accept' | 'reject' | 'reopen' | null;
-};
-
-/**
- * MenuProposalView
- */
-export type MenuProposalView = {
-    /**
-     * Id
-     */
-    id: string;
-    /**
-     * Job Id
-     */
-    job_id: string;
-    /**
-     * Track Id
-     */
-    track_id: string | null;
-    /**
-     * Scan Title
-     */
-    scan_title?: number | null;
-    /**
-     * Page
-     */
-    page: string;
-    /**
-     * Button
-     */
-    button: number;
-    /**
-     * Label
-     */
-    label: string;
-    /**
-     * Score
-     */
-    score: number | null;
-    /**
-     * Plays
-     */
-    plays: string;
-    role: TrackRole | null;
-    /**
-     * Name
-     */
-    name: string | null;
-    /**
-     * Episode Number
-     */
-    episode_number: number | null;
-    /**
-     * Note
-     */
-    note: string | null;
-    status: MenuProposalStatus;
-    /**
-     * Applied Path
-     */
-    applied_path: string | null;
-    /**
-     * Last Error
-     */
-    last_error: string | null;
-    /**
-     * Created At
-     */
-    created_at?: string | null;
-    /**
-     * Updated At
-     */
-    updated_at?: string | null;
 };
 
 /**
@@ -4323,24 +3706,6 @@ export type PreviouslyRipped = {
 export type PreviouslyRippedAction = 'hold' | 'reject' | 'rip';
 
 /**
- * RawBackupView
- *
- * The job's raw disc backup under `/raw/<job_id>/.backup/`: a decrypted
- * copy of the disc (an ISO image for a DVD, a folder for a Blu-ray) the
- * ripper remuxes kept titles from. Kept only while a title still needs it.
- */
-export type RawBackupView = {
-    /**
-     * Size Bytes
-     */
-    size_bytes: number;
-    /**
-     * Complete
-     */
-    complete: boolean;
-};
-
-/**
  * RegisterRequest
  *
  * POST /api/ripper/register. Keyed on the Drive row the backend handed
@@ -4396,17 +3761,10 @@ export type RegisterTranscoderRequest = {
  *
  * Bootstrap bundle the transcoder needs before it can claim + run.
  *
- * For an `encode` task, `raw_input_path` is the absolute path the
- * transcoder should read from (`/raw/<job>/title_tNN.mkv` for video,
- * `/raw/<job>/track_NN.wav` for audio, `/raw/<job>/dump.iso` for data).
- * `media_root` plus the task's `output_path` is where the final file lands.
- *
- * A `subtitle_ocr` task has no raw input and no preset: it reads
- * `input_sidecar_paths` (the image subtitle sidecars of its parent encode
- * task, relative to `media_root`) and writes a `.srt` beside each.
- *
- * A `menu_pack` task's `raw_input_path` is the job's copied disc menu, and
- * `menu_pack` says what to build from it.
+ * `raw_input_path` is the absolute path the transcoder should read from
+ * (`/raw/<job>/title_tNN.mkv` for video, `/raw/<job>/track_NN.wav` for
+ * audio, `/raw/<job>/dump.iso` for data). `media_root` plus the task's
+ * `output_path` is where the final file lands.
  */
 export type RegisterTranscoderResponse = {
     task: TranscodeTaskView;
@@ -4416,16 +3774,11 @@ export type RegisterTranscoderResponse = {
     /**
      * Raw Input Path
      */
-    raw_input_path: string | null;
+    raw_input_path: string;
     /**
      * Media Root
      */
     media_root: string;
-    /**
-     * Input Sidecar Paths
-     */
-    input_sidecar_paths?: Array<string>;
-    menu_pack?: MenuPackPlan | null;
 };
 
 /**
@@ -4552,27 +3905,6 @@ export type ResolveResponse = {
  * RetentionPolicy
  */
 export type RetentionPolicy = 'keep_forever' | 'prune_after_session' | 'custom';
-
-/**
- * RetryFailedResponse
- *
- * POST /api/jobs/{id}/retry-failed. `retried` kept titles with no file
- * (failed, or left out before the rip and kept since) are queued to rip.
- * `from_backup`: the job keeps a finished disc backup and its drive's ripper
- * was told to remux them from it, with no disc; otherwise the job is armed
- * and the retry starts when the disc goes back in that drive.
- */
-export type RetryFailedResponse = {
-    job: JobView;
-    /**
-     * Retried
-     */
-    retried: number;
-    /**
-     * From Backup
-     */
-    from_backup: boolean;
-};
 
 /**
  * RipAgainResponse
@@ -4726,19 +4058,6 @@ export type RipStartResponse = {
      * Min Length Seconds
      */
     min_length_seconds?: number | null;
-    /**
-     * Scan Titles
-     */
-    scan_titles?: Array<ScanTitle> | null;
-    /**
-     * Retry
-     */
-    retry?: boolean;
-    extract_menu?: MenuExtract | null;
-    /**
-     * Park After Backup
-     */
-    park_after_backup?: boolean;
 };
 
 /**
@@ -4774,14 +4093,6 @@ export type RipperConfigView = {
      * Manual Wait Seconds
      */
     manual_wait_seconds?: number;
-    /**
-     * Review Requires Confirm
-     */
-    review_requires_confirm?: boolean;
-    /**
-     * Hold For Review
-     */
-    hold_for_review?: boolean;
 };
 
 /**
@@ -4790,8 +4101,7 @@ export type RipperConfigView = {
  * POST /api/ripper/heartbeat body. Each ripper sends one of these
  * every HEARTBEAT_INTERVAL_SECONDS so the backend can refuse manual-
  * trigger requests against drives whose tray is open / empty without
- * waiting for a doomed identify. It also sends one at once when a disc
- * scan starts, moves to a retry, or ends.
+ * waiting for a doomed identify.
  *
  * Named distinctly from the transcoder HeartbeatRequest because the
  * two services post completely different payloads to different paths.
@@ -4802,33 +4112,6 @@ export type RipperHeartbeatRequest = {
      */
     drive_id: string;
     media_status: DriveMediaStatus;
-    scan?: RipperScanActivity | null;
-};
-
-/**
- * RipperScanActivity
- *
- * A disc scan in progress on the reporting ripper's drive.
- *
- * The scan runs before identify creates a job and can take minutes across
- * not-ready retries, so this is the only sign the drive is busy.
- * `started_at` is when the first attempt began (elapsed time spans
- * retries); `attempt` is the 1-based attempt running or being backed off
- * before.
- */
-export type RipperScanActivity = {
-    /**
-     * Started At
-     */
-    started_at: string;
-    /**
-     * Attempt
-     */
-    attempt: number;
-    /**
-     * Max Attempts
-     */
-    max_attempts: number;
 };
 
 /**
@@ -4859,67 +4142,6 @@ export type ScanResult = {
     raw?: {
         [key: string]: unknown;
     };
-    /**
-     * Min Length Seconds
-     */
-    min_length_seconds?: number | null;
-    menu_kind?: MenuKind | null;
-};
-
-/**
- * ScanStream
- *
- * One audio or subtitle stream of a scanned title (MakeMKV `SINFO`).
- *
- * What the disc offers, for the track picker; the transcoder still probes
- * the ripped file, since MakeMKV's own stream selection can leave a stream
- * (e.g. a derived forced-only subtitle) out of the rip.
- */
-export type ScanStream = {
-    /**
-     * Index
-     */
-    index: number;
-    /**
-     * Kind
-     */
-    kind: 'audio' | 'subtitle';
-    /**
-     * Language
-     */
-    language?: string;
-    /**
-     * Language Name
-     */
-    language_name?: string | null;
-    /**
-     * Codec Id
-     */
-    codec_id?: string | null;
-    /**
-     * Codec
-     */
-    codec?: string | null;
-    /**
-     * Description
-     */
-    description?: string | null;
-    /**
-     * Channels
-     */
-    channels?: number | null;
-    /**
-     * Forced
-     */
-    forced?: boolean;
-    /**
-     * Derived
-     */
-    derived?: boolean;
-    /**
-     * Default
-     */
-    default?: boolean;
 };
 
 /**
@@ -4933,7 +4155,7 @@ export type ScanTitle = {
     /**
      * Duration Seconds
      */
-    duration_seconds: number | null;
+    duration_seconds: number;
     /**
      * Chapter Count
      */
@@ -4946,26 +4168,6 @@ export type ScanTitle = {
      * Source File
      */
     source_file?: string | null;
-    /**
-     * Source Playlist
-     */
-    source_playlist?: string | null;
-    /**
-     * Original Title Id
-     */
-    original_title_id?: number | null;
-    /**
-     * Segment Count
-     */
-    segment_count?: number | null;
-    /**
-     * Segment Map
-     */
-    segment_map?: string | null;
-    /**
-     * Streams
-     */
-    streams?: Array<ScanStream>;
 };
 
 /**
@@ -5472,97 +4674,6 @@ export type StorageRoot = {
 };
 
 /**
- * SubtitleOcrModelView
- *
- * The text-line model built into the transcode image.
- */
-export type SubtitleOcrModelView = {
-    /**
-     * Name
-     */
-    name: string;
-    /**
-     * Version
-     */
-    version: string;
-    /**
-     * Size
-     */
-    size: number;
-    /**
-     * Sha256
-     */
-    sha256: string;
-    /**
-     * Licence
-     */
-    licence: string;
-    /**
-     * Source
-     */
-    source: string;
-};
-
-/**
- * SubtitleOcrRequest
- *
- * POST /api/jobs/{id}/subtitle-ocr.
- */
-export type SubtitleOcrRequest = {
-    /**
-     * Overwrite
-     */
-    overwrite?: boolean;
-};
-
-/**
- * SubtitleOcrResponse
- */
-export type SubtitleOcrResponse = {
-    /**
-     * Tasks
-     */
-    tasks?: Array<TranscodeTaskView>;
-    /**
-     * Skipped
-     */
-    skipped?: Array<SubtitleOcrSkip>;
-};
-
-/**
- * SubtitleOcrSkip
- */
-export type SubtitleOcrSkip = {
-    /**
-     * Encode Task Id
-     */
-    encode_task_id: string;
-    /**
-     * Output Path
-     */
-    output_path: string | null;
-    /**
-     * Reason
-     */
-    reason: 'running' | 'exists';
-};
-
-/**
- * SubtitleOutput
- *
- * Where kept subtitle tracks go: muxed into the video, written as
- * separate files next to it (Jellyfin/Plex sidecars), or both.
- */
-export type SubtitleOutput = 'embedded' | 'separate' | 'both';
-
-/**
- * SubtitleSelection
- *
- * Which source subtitle tracks a transcode preset keeps (see AudioSelection).
- */
-export type SubtitleSelection = 'preset' | 'all' | 'languages' | 'none';
-
-/**
  * SystemDiagnosticCheck
  */
 export type SystemDiagnosticCheck = {
@@ -5829,7 +4940,7 @@ export type TrackIdentityView = {
 /**
  * TrackKind
  */
-export type TrackKind = 'video_title' | 'audio_track' | 'data_dump' | 'disc_backup' | 'disc_menu';
+export type TrackKind = 'video_title' | 'audio_track' | 'data_dump' | 'disc_backup';
 
 /**
  * TrackRole
@@ -5838,7 +4949,7 @@ export type TrackKind = 'video_title' | 'audio_track' | 'data_dump' | 'disc_back
  * (arm_backend.identity) or by the operator; replaces the old free-text
  * role and the per-track video_type.
  */
-export type TrackRole = 'main' | 'episode' | 'extra' | 'trailer' | 'other' | 'play_all' | 'special';
+export type TrackRole = 'main' | 'episode' | 'extra' | 'trailer' | 'other';
 
 /**
  * TrackSelection
@@ -5846,35 +4957,9 @@ export type TrackRole = 'main' | 'episode' | 'extra' | 'trailer' | 'other' | 'pl
 export type TrackSelection = 'main_feature' | 'all_tracks' | 'archive' | 'custom';
 
 /**
- * TrackSelectionSettings
- *
- * Which audio and subtitle tracks a transcode keeps and where the
- * subtitles go: the track fields of a transcode preset, and the shape of a
- * job's own override (`jobs.track_selection`), which wins over the preset.
- *
- * The defaults keep every audio language (one track each: its best track
- * as AAC with up to 5.1 channels) and write every subtitle as a separate file. `audio_format`
- * applies only when `audio_selection` is not `preset`.
- */
-export type TrackSelectionSettings = {
-    audio_selection?: AudioSelection;
-    /**
-     * Audio Languages
-     */
-    audio_languages?: Array<string>;
-    subtitle_selection?: SubtitleSelection;
-    /**
-     * Subtitle Languages
-     */
-    subtitle_languages?: Array<string>;
-    subtitle_output?: SubtitleOutput;
-    audio_format?: AudioFormat;
-};
-
-/**
  * TrackStatus
  */
-export type TrackStatus = 'queued' | 'in_progress' | 'done' | 'failed' | 'skipped';
+export type TrackStatus = 'queued' | 'in_progress' | 'done' | 'failed';
 
 /**
  * TrackUpdateRequest
@@ -5931,7 +5016,6 @@ export type TrackView = {
     source_ref: string;
     status: TrackStatus;
     transcode_status?: TranscodeTaskStatus | null;
-    subtitle_ocr_status?: TranscodeTaskStatus | null;
     /**
      * Output Path
      */
@@ -6006,10 +5090,6 @@ export type TrackView = {
      */
     excluded?: boolean;
     /**
-     * Any Length
-     */
-    any_length?: boolean;
-    /**
      * Custom Filename
      */
     custom_filename?: string | null;
@@ -6025,18 +5105,6 @@ export type TrackView = {
  * TranscodePresetCreateRequest
  */
 export type TranscodePresetCreateRequest = {
-    audio_selection?: AudioSelection;
-    /**
-     * Audio Languages
-     */
-    audio_languages?: Array<string>;
-    subtitle_selection?: SubtitleSelection;
-    /**
-     * Subtitle Languages
-     */
-    subtitle_languages?: Array<string>;
-    subtitle_output?: SubtitleOutput;
-    audio_format?: AudioFormat;
     /**
      * Name
      */
@@ -6092,18 +5160,6 @@ export type TranscodePresetUpdateRequest = {
      * Extra Args
      */
     extra_args?: string | null;
-    audio_selection?: AudioSelection | null;
-    /**
-     * Audio Languages
-     */
-    audio_languages?: Array<string> | null;
-    subtitle_selection?: SubtitleSelection | null;
-    /**
-     * Subtitle Languages
-     */
-    subtitle_languages?: Array<string> | null;
-    subtitle_output?: SubtitleOutput | null;
-    audio_format?: AudioFormat | null;
 };
 
 /**
@@ -6143,18 +5199,6 @@ export type TranscodePresetView = {
      * Extra Args
      */
     extra_args: string | null;
-    audio_selection?: AudioSelection;
-    /**
-     * Audio Languages
-     */
-    audio_languages?: Array<string>;
-    subtitle_selection?: SubtitleSelection;
-    /**
-     * Subtitle Languages
-     */
-    subtitle_languages?: Array<string>;
-    subtitle_output?: SubtitleOutput;
-    audio_format?: AudioFormat;
     /**
      * Created By User Id
      */
@@ -6219,12 +5263,6 @@ export type TranscodeStatsView = {
      */
     total_tasks: number;
     /**
-     * Subtitle Ocr Tasks By Status
-     */
-    subtitle_ocr_tasks_by_status?: {
-        [key: string]: number;
-    };
-    /**
      * Gpus Total
      */
     gpus_total: number;
@@ -6241,19 +5279,6 @@ export type TranscodeStatsView = {
      */
     queued_encode_tasks?: number;
 };
-
-/**
- * TranscodeTaskKind
- *
- * What a `transcode_tasks` row runs in its transcoder container.
- *
- * `encode` writes a video (or audio) file from a raw rip. `subtitle_ocr`
- * reads the image subtitle sidecars its parent encode task wrote (`.sup`)
- * and writes a text subtitle (`.srt`) beside each; it needs no GPU, no
- * preset and no raw rip, and never changes its session application's
- * status.
- */
-export type TranscodeTaskKind = 'encode' | 'subtitle_ocr' | 'menu_preview' | 'menu_pack';
 
 /**
  * TranscodeTaskStatus
@@ -6281,19 +5306,10 @@ export type TranscodeTaskView = {
      */
     source_track_id: string;
     status: TranscodeTaskStatus;
-    kind?: TranscodeTaskKind;
-    /**
-     * Parent Task Id
-     */
-    parent_task_id?: string | null;
     /**
      * Output Path
      */
     output_path: string | null;
-    /**
-     * Sidecar Paths
-     */
-    sidecar_paths?: Array<string> | null;
     /**
      * Progress Pct
      */
@@ -6337,7 +5353,6 @@ export type TranscodeWorkerView = {
      * Task Id
      */
     task_id: string;
-    kind?: TranscodeTaskKind;
     /**
      * Claimed By
      */
@@ -6493,16 +5508,6 @@ export type JobDetailViewWritable = {
      */
     fingerprints?: Array<DiscFingerprintView>;
     previous_rip?: PreviousRipView | null;
-    raw_backup?: RawBackupView | null;
-    subtitle_ocr?: JobSubtitleOcrView | null;
-    /**
-     * Parks After Backup
-     */
-    parks_after_backup?: boolean;
-    /**
-     * Retry Backs Up
-     */
-    retry_backs_up?: boolean;
 };
 
 /**
@@ -6573,7 +5578,6 @@ export type JobViewWritable = {
      * Manual Pause
      */
     manual_pause?: boolean;
-    track_selection?: TrackSelectionSettings | null;
     rip_progress?: RipProgressSummary | null;
     transcode_progress?: TranscodeProgressSummary | null;
 };
@@ -6592,27 +5596,6 @@ export type ResolveResponseWritable = {
      * Fan Out
      */
     fan_out: Array<ResolveFanOutOutcomeView>;
-};
-
-/**
- * RetryFailedResponse
- *
- * POST /api/jobs/{id}/retry-failed. `retried` kept titles with no file
- * (failed, or left out before the rip and kept since) are queued to rip.
- * `from_backup`: the job keeps a finished disc backup and its drive's ripper
- * was told to remux them from it, with no disc; otherwise the job is armed
- * and the retry starts when the disc goes back in that drive.
- */
-export type RetryFailedResponseWritable = {
-    job: JobViewWritable;
-    /**
-     * Retried
-     */
-    retried: number;
-    /**
-     * From Backup
-     */
-    from_backup: boolean;
 };
 
 export type HealthApiHealthGetData = {
@@ -7224,42 +6207,6 @@ export type GetCurrentJobApiRipperDrivesDriveIdCurrentJobGetResponses = {
 
 export type GetCurrentJobApiRipperDrivesDriveIdCurrentJobGetResponse = GetCurrentJobApiRipperDrivesDriveIdCurrentJobGetResponses[keyof GetCurrentJobApiRipperDrivesDriveIdCurrentJobGetResponses];
 
-export type GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetData = {
-    body?: never;
-    headers?: {
-        /**
-         * Authorization
-         */
-        authorization?: string | null;
-    };
-    path: {
-        /**
-         * Drive Id
-         */
-        drive_id: string;
-    };
-    query?: never;
-    url: '/api/ripper/drives/{drive_id}/remux-job';
-};
-
-export type GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetError = GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetErrors[keyof GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetErrors];
-
-export type GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetResponses = {
-    /**
-     * Successful Response
-     */
-    200: JobView;
-};
-
-export type GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetResponse = GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetResponses[keyof GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetResponses];
-
 export type GetHeldJobApiRipperDrivesDriveIdHeldJobGetData = {
     body?: never;
     headers?: {
@@ -7371,46 +6318,6 @@ export type UpdateTrackApiRipperTracksTrackIdPatchResponses = {
 };
 
 export type UpdateTrackApiRipperTracksTrackIdPatchResponse = UpdateTrackApiRipperTracksTrackIdPatchResponses[keyof UpdateTrackApiRipperTracksTrackIdPatchResponses];
-
-export type RipParkedApiRipperJobsJobIdRipParkedPostData = {
-    body?: never;
-    headers?: {
-        /**
-         * X-Arm-Hostname
-         */
-        'x-arm-hostname'?: string | null;
-        /**
-         * Authorization
-         */
-        authorization?: string | null;
-    };
-    path: {
-        /**
-         * Job Id
-         */
-        job_id: string;
-    };
-    query?: never;
-    url: '/api/ripper/jobs/{job_id}/rip-parked';
-};
-
-export type RipParkedApiRipperJobsJobIdRipParkedPostErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type RipParkedApiRipperJobsJobIdRipParkedPostError = RipParkedApiRipperJobsJobIdRipParkedPostErrors[keyof RipParkedApiRipperJobsJobIdRipParkedPostErrors];
-
-export type RipParkedApiRipperJobsJobIdRipParkedPostResponses = {
-    /**
-     * Successful Response
-     */
-    200: JobView;
-};
-
-export type RipParkedApiRipperJobsJobIdRipParkedPostResponse = RipParkedApiRipperJobsJobIdRipParkedPostResponses[keyof RipParkedApiRipperJobsJobIdRipParkedPostResponses];
 
 export type RipCompleteApiRipperJobsJobIdRipCompletePostData = {
     body: JobCompleteRequestWritable;
@@ -7760,42 +6667,6 @@ export type RipStartReviewApiJobsJobIdRipStartReviewPostResponses = {
 
 export type RipStartReviewApiJobsJobIdRipStartReviewPostResponse = RipStartReviewApiJobsJobIdRipStartReviewPostResponses[keyof RipStartReviewApiJobsJobIdRipStartReviewPostResponses];
 
-export type RetryFailedApiJobsJobIdRetryFailedPostData = {
-    body?: never;
-    headers?: {
-        /**
-         * Authorization
-         */
-        authorization?: string | null;
-    };
-    path: {
-        /**
-         * Job Id
-         */
-        job_id: string;
-    };
-    query?: never;
-    url: '/api/jobs/{job_id}/retry-failed';
-};
-
-export type RetryFailedApiJobsJobIdRetryFailedPostErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type RetryFailedApiJobsJobIdRetryFailedPostError = RetryFailedApiJobsJobIdRetryFailedPostErrors[keyof RetryFailedApiJobsJobIdRetryFailedPostErrors];
-
-export type RetryFailedApiJobsJobIdRetryFailedPostResponses = {
-    /**
-     * Successful Response
-     */
-    200: RetryFailedResponse;
-};
-
-export type RetryFailedApiJobsJobIdRetryFailedPostResponse = RetryFailedApiJobsJobIdRetryFailedPostResponses[keyof RetryFailedApiJobsJobIdRetryFailedPostResponses];
-
 export type RipAgainApiJobsJobIdRipAgainPostData = {
     body?: never;
     headers?: {
@@ -7873,42 +6744,6 @@ export type ReviewPauseApiJobsJobIdReviewPausePostResponses = {
 
 export type ReviewPauseApiJobsJobIdReviewPausePostResponse = ReviewPauseApiJobsJobIdReviewPausePostResponses[keyof ReviewPauseApiJobsJobIdReviewPausePostResponses];
 
-export type DeleteJobBackupApiJobsJobIdBackupDeleteData = {
-    body?: never;
-    headers?: {
-        /**
-         * Authorization
-         */
-        authorization?: string | null;
-    };
-    path: {
-        /**
-         * Job Id
-         */
-        job_id: string;
-    };
-    query?: never;
-    url: '/api/jobs/{job_id}/backup';
-};
-
-export type DeleteJobBackupApiJobsJobIdBackupDeleteErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type DeleteJobBackupApiJobsJobIdBackupDeleteError = DeleteJobBackupApiJobsJobIdBackupDeleteErrors[keyof DeleteJobBackupApiJobsJobIdBackupDeleteErrors];
-
-export type DeleteJobBackupApiJobsJobIdBackupDeleteResponses = {
-    /**
-     * Successful Response
-     */
-    204: void;
-};
-
-export type DeleteJobBackupApiJobsJobIdBackupDeleteResponse = DeleteJobBackupApiJobsJobIdBackupDeleteResponses[keyof DeleteJobBackupApiJobsJobIdBackupDeleteResponses];
-
 export type ManualTriggerApiJobsManualPostData = {
     body: ManualTriggerRequest;
     headers?: {
@@ -7976,7 +6811,7 @@ export type ResolveApiJobsJobIdResolvePostResponses = {
 
 export type ResolveApiJobsJobIdResolvePostResponse = ResolveApiJobsJobIdResolvePostResponses[keyof ResolveApiJobsJobIdResolvePostResponses];
 
-export type GetTrackSelectionApiJobsJobIdTrackSelectionGetData = {
+export type AcceptIdentitySuggestionApiJobsJobIdIdentityAcceptPostData = {
     body?: never;
     headers?: {
         /**
@@ -7990,104 +6825,27 @@ export type GetTrackSelectionApiJobsJobIdTrackSelectionGetData = {
          */
         job_id: string;
     };
-    query?: {
-        /**
-         * Session Id
-         */
-        session_id?: string | null;
-    };
-    url: '/api/jobs/{job_id}/track-selection';
-};
-
-export type GetTrackSelectionApiJobsJobIdTrackSelectionGetErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type GetTrackSelectionApiJobsJobIdTrackSelectionGetError = GetTrackSelectionApiJobsJobIdTrackSelectionGetErrors[keyof GetTrackSelectionApiJobsJobIdTrackSelectionGetErrors];
-
-export type GetTrackSelectionApiJobsJobIdTrackSelectionGetResponses = {
-    /**
-     * Successful Response
-     */
-    200: JobTrackSelectionView;
-};
-
-export type GetTrackSelectionApiJobsJobIdTrackSelectionGetResponse = GetTrackSelectionApiJobsJobIdTrackSelectionGetResponses[keyof GetTrackSelectionApiJobsJobIdTrackSelectionGetResponses];
-
-export type PutTrackSelectionApiJobsJobIdTrackSelectionPutData = {
-    body: JobTrackSelectionRequest;
-    headers?: {
-        /**
-         * Authorization
-         */
-        authorization?: string | null;
-    };
-    path: {
-        /**
-         * Job Id
-         */
-        job_id: string;
-    };
     query?: never;
-    url: '/api/jobs/{job_id}/track-selection';
+    url: '/api/jobs/{job_id}/identity/accept';
 };
 
-export type PutTrackSelectionApiJobsJobIdTrackSelectionPutErrors = {
+export type AcceptIdentitySuggestionApiJobsJobIdIdentityAcceptPostErrors = {
     /**
      * Validation Error
      */
     422: HttpValidationError;
 };
 
-export type PutTrackSelectionApiJobsJobIdTrackSelectionPutError = PutTrackSelectionApiJobsJobIdTrackSelectionPutErrors[keyof PutTrackSelectionApiJobsJobIdTrackSelectionPutErrors];
+export type AcceptIdentitySuggestionApiJobsJobIdIdentityAcceptPostError = AcceptIdentitySuggestionApiJobsJobIdIdentityAcceptPostErrors[keyof AcceptIdentitySuggestionApiJobsJobIdIdentityAcceptPostErrors];
 
-export type PutTrackSelectionApiJobsJobIdTrackSelectionPutResponses = {
+export type AcceptIdentitySuggestionApiJobsJobIdIdentityAcceptPostResponses = {
     /**
      * Successful Response
      */
-    200: JobTrackSelectionView;
+    200: ResolveResponse;
 };
 
-export type PutTrackSelectionApiJobsJobIdTrackSelectionPutResponse = PutTrackSelectionApiJobsJobIdTrackSelectionPutResponses[keyof PutTrackSelectionApiJobsJobIdTrackSelectionPutResponses];
-
-export type RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostData = {
-    body?: SubtitleOcrRequest;
-    headers?: {
-        /**
-         * Authorization
-         */
-        authorization?: string | null;
-    };
-    path: {
-        /**
-         * Job Id
-         */
-        job_id: string;
-    };
-    query?: never;
-    url: '/api/jobs/{job_id}/subtitle-ocr';
-};
-
-export type RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostError = RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostErrors[keyof RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostErrors];
-
-export type RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostResponses = {
-    /**
-     * Successful Response
-     */
-    200: SubtitleOcrResponse;
-};
-
-export type RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostResponse = RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostResponses[keyof RequestSubtitleOcrApiJobsJobIdSubtitleOcrPostResponses];
+export type AcceptIdentitySuggestionApiJobsJobIdIdentityAcceptPostResponse = AcceptIdentitySuggestionApiJobsJobIdIdentityAcceptPostResponses[keyof AcceptIdentitySuggestionApiJobsJobIdIdentityAcceptPostResponses];
 
 export type ApplySessionApiJobsJobIdTranscodePostData = {
     body: ApplySessionRequest;
@@ -10264,7 +9022,7 @@ export type SearchMetadataApiMetadataSearchGetData = {
         /**
          * Provider
          */
-        provider?: 'tmdb' | 'omdb' | null;
+        provider?: 'tmdb' | 'omdb' | 'tvmaze' | 'tvdb' | null;
     };
     url: '/api/metadata/search';
 };
@@ -12405,301 +11163,3 @@ export type SetPasswordApiUsersUserIdPasswordPostResponses = {
 };
 
 export type SetPasswordApiUsersUserIdPasswordPostResponse = SetPasswordApiUsersUserIdPasswordPostResponses[keyof SetPasswordApiUsersUserIdPasswordPostResponses];
-
-export type GetDiscMenuApiJobsJobIdDiscMenuGetData = {
-    body?: never;
-    headers?: {
-        /**
-         * Authorization
-         */
-        authorization?: string | null;
-    };
-    path: {
-        /**
-         * Job Id
-         */
-        job_id: string;
-    };
-    query?: never;
-    url: '/api/jobs/{job_id}/disc-menu';
-};
-
-export type GetDiscMenuApiJobsJobIdDiscMenuGetErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type GetDiscMenuApiJobsJobIdDiscMenuGetError = GetDiscMenuApiJobsJobIdDiscMenuGetErrors[keyof GetDiscMenuApiJobsJobIdDiscMenuGetErrors];
-
-export type GetDiscMenuApiJobsJobIdDiscMenuGetResponses = {
-    /**
-     * Successful Response
-     */
-    200: JobDiscMenuView;
-};
-
-export type GetDiscMenuApiJobsJobIdDiscMenuGetResponse = GetDiscMenuApiJobsJobIdDiscMenuGetResponses[keyof GetDiscMenuApiJobsJobIdDiscMenuGetResponses];
-
-export type GetDiscMenuFileApiJobsJobIdDiscMenuFilesFolderNameGetData = {
-    body?: never;
-    headers?: {
-        /**
-         * Authorization
-         */
-        authorization?: string | null;
-    };
-    path: {
-        /**
-         * Job Id
-         */
-        job_id: string;
-        /**
-         * Folder
-         */
-        folder: string;
-        /**
-         * Name
-         */
-        name: string;
-    };
-    query?: never;
-    url: '/api/jobs/{job_id}/disc-menu/files/{folder}/{name}';
-};
-
-export type GetDiscMenuFileApiJobsJobIdDiscMenuFilesFolderNameGetErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type GetDiscMenuFileApiJobsJobIdDiscMenuFilesFolderNameGetError = GetDiscMenuFileApiJobsJobIdDiscMenuFilesFolderNameGetErrors[keyof GetDiscMenuFileApiJobsJobIdDiscMenuFilesFolderNameGetErrors];
-
-export type GetDiscMenuFileApiJobsJobIdDiscMenuFilesFolderNameGetResponses = {
-    /**
-     * Successful Response
-     */
-    200: unknown;
-};
-
-export type RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostData = {
-    body?: never;
-    headers?: {
-        /**
-         * Authorization
-         */
-        authorization?: string | null;
-    };
-    path: {
-        /**
-         * Job Id
-         */
-        job_id: string;
-    };
-    query?: never;
-    url: '/api/jobs/{job_id}/disc-menu/preview';
-};
-
-export type RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostError = RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostErrors[keyof RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostErrors];
-
-export type RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostResponses = {
-    /**
-     * Successful Response
-     */
-    200: JobDiscMenuView;
-};
-
-export type RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostResponse = RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostResponses[keyof RequestDiscMenuPreviewApiJobsJobIdDiscMenuPreviewPostResponses];
-
-export type DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteData = {
-    body?: never;
-    headers?: {
-        /**
-         * Authorization
-         */
-        authorization?: string | null;
-    };
-    path: {
-        /**
-         * Job Id
-         */
-        job_id: string;
-    };
-    query?: never;
-    url: '/api/jobs/{job_id}/disc-menu/pack';
-};
-
-export type DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteError = DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteErrors[keyof DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteErrors];
-
-export type DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteResponses = {
-    /**
-     * Successful Response
-     */
-    200: JobDiscMenuView;
-};
-
-export type DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteResponse = DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteResponses[keyof DeleteDiscMenuPackApiJobsJobIdDiscMenuPackDeleteResponses];
-
-export type RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostData = {
-    body?: never;
-    headers?: {
-        /**
-         * Authorization
-         */
-        authorization?: string | null;
-    };
-    path: {
-        /**
-         * Job Id
-         */
-        job_id: string;
-    };
-    query?: never;
-    url: '/api/jobs/{job_id}/disc-menu/pack';
-};
-
-export type RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostError = RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostErrors[keyof RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostErrors];
-
-export type RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostResponses = {
-    /**
-     * Successful Response
-     */
-    200: JobDiscMenuView;
-};
-
-export type RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostResponse = RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostResponses[keyof RequestDiscMenuPackApiJobsJobIdDiscMenuPackPostResponses];
-
-export type UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchData = {
-    body: MenuProposalUpdate;
-    headers?: {
-        /**
-         * Authorization
-         */
-        authorization?: string | null;
-    };
-    path: {
-        /**
-         * Job Id
-         */
-        job_id: string;
-        /**
-         * Proposal Id
-         */
-        proposal_id: string;
-    };
-    query?: never;
-    url: '/api/jobs/{job_id}/disc-menu/proposals/{proposal_id}';
-};
-
-export type UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchError = UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchErrors[keyof UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchErrors];
-
-export type UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchResponses = {
-    /**
-     * Successful Response
-     */
-    200: MenuProposalView;
-};
-
-export type UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchResponse = UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchResponses[keyof UpdateProposalApiJobsJobIdDiscMenuProposalsProposalIdPatchResponses];
-
-export type CreateProposalApiJobsJobIdDiscMenuProposalsPostData = {
-    body: MenuProposalCreate;
-    headers?: {
-        /**
-         * Authorization
-         */
-        authorization?: string | null;
-    };
-    path: {
-        /**
-         * Job Id
-         */
-        job_id: string;
-    };
-    query?: never;
-    url: '/api/jobs/{job_id}/disc-menu/proposals';
-};
-
-export type CreateProposalApiJobsJobIdDiscMenuProposalsPostErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type CreateProposalApiJobsJobIdDiscMenuProposalsPostError = CreateProposalApiJobsJobIdDiscMenuProposalsPostErrors[keyof CreateProposalApiJobsJobIdDiscMenuProposalsPostErrors];
-
-export type CreateProposalApiJobsJobIdDiscMenuProposalsPostResponses = {
-    /**
-     * Successful Response
-     */
-    201: MenuProposalView;
-};
-
-export type CreateProposalApiJobsJobIdDiscMenuProposalsPostResponse = CreateProposalApiJobsJobIdDiscMenuProposalsPostResponses[keyof CreateProposalApiJobsJobIdDiscMenuProposalsPostResponses];
-
-export type AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostData = {
-    body?: never;
-    headers?: {
-        /**
-         * Authorization
-         */
-        authorization?: string | null;
-    };
-    path: {
-        /**
-         * Job Id
-         */
-        job_id: string;
-    };
-    query?: never;
-    url: '/api/jobs/{job_id}/disc-menu/proposals/accept-all';
-};
-
-export type AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostErrors = {
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostError = AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostErrors[keyof AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostErrors];
-
-export type AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostResponses = {
-    /**
-     * Successful Response
-     */
-    200: MenuProposalAcceptAllResponse;
-};
-
-export type AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostResponse = AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostResponses[keyof AcceptAllProposalsApiJobsJobIdDiscMenuProposalsAcceptAllPostResponses];

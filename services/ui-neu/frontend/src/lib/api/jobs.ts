@@ -248,7 +248,7 @@ export function requestSubtitleOcr(jobId: string, overwrite = false): Promise<Su
 export function searchMetadata(
 	query: string,
 	type?: 'movie' | 'tv',
-	provider?: 'tmdb' | 'omdb'
+	provider?: 'tmdb' | 'omdb' | 'tvmaze' | 'tvdb'
 ): Promise<MetadataSearchResponse> {
 	const params = new URLSearchParams({ title: query });
 	if (type) params.set('type', type);
