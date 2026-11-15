@@ -209,6 +209,7 @@ from arm_common.schemas.transcoder import (
     TranscodeWorkerView,
 )
 from arm_common.schemas.system import (
+    JobLogFileView,
     MemoryInfo,
     PathStatus,
     StatsResponse,
@@ -350,6 +351,7 @@ __all__ = [
     "JobClaim",
     "JobCompleteRequest",
     "JobDetailView",
+    "JobLogFileView",
     "JobStatsResponse",
     "JobUpdateRequest",
     "JobView",
