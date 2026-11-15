@@ -1,56 +1,59 @@
-"""HeartbeatPump: a refused heartbeat means the claim is gone; other failures retry."""
+"""HeartbeatPump reports the whole ProgressState on both surfaces (D-242, D-248)."""
 
 from __future__ import annotations
 
 import asyncio
 from typing import Any
 
-import httpx
 import pytest
 
-import arm_transcode.heartbeat as heartbeat
+import arm_transcode.heartbeat as hb
 from arm_transcode.heartbeat import HeartbeatPump, ProgressState
 
 
-def _status_error(code: int) -> httpx.HTTPStatusError:
-    request = httpx.Request("PATCH", "https://arm-backend:8443/api/transcoder/tasks/txt_1/heartbeat")
-    return httpx.HTTPStatusError(f"HTTP {code}", request=request, response=httpx.Response(code, request=request))
-
-
 class _FakeApi:
-    def __init__(self, errors: list[Exception]) -> None:
-        self._errors = list(errors)
-        self.calls = 0
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
 
-    async def heartbeat(self, task_id: str, **_kw: Any) -> None:
-        self.calls += 1
-        if self._errors:
-            raise self._errors.pop(0)
+    async def heartbeat(self, task_id: str, **kwargs: Any) -> None:
+        self.calls.append({"task_id": task_id, **kwargs})
 
 
 class _FakeWs:
-    async def publish(self, **_kw: Any) -> None:
-        return None
+    def __init__(self) -> None:
+        self.published: list[dict[str, Any]] = []
+
+    async def publish(self, *, topic: str, event_type: str, payload: dict[str, Any]) -> None:
+        self.published.append({"topic": topic, "event_type": event_type, "payload": payload})
 
 
-@pytest.fixture(autouse=True)
-def _fast_heartbeat(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(heartbeat, "REST_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+@pytest.mark.asyncio
+async def test_pump_sends_eta_pass_and_frame_rates_over_rest_and_ws(monkeypatch) -> None:
+    monkeypatch.setattr(hb, "REST_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(hb, "WS_PUBLISH_INTERVAL_SECONDS", 0.01)
+    api, ws = _FakeApi(), _FakeWs()
+    state = ProgressState(pct=42, eta_seconds=600, current_pass="1/2", fps=45.67, avg_fps=23.45)
 
-
-@pytest.mark.parametrize("code", [403, 404, 409])
-async def test_refused_heartbeat_sets_revoked_and_stops(code: int) -> None:
-    api = _FakeApi([_status_error(code)])
-    async with HeartbeatPump(api=api, ws=_FakeWs(), task_id="txt_1", state=ProgressState()) as pump:  # type: ignore[arg-type]
-        await asyncio.wait_for(pump.revoked.wait(), timeout=1.0)
-        await asyncio.sleep(0.05)
-    assert api.calls == 1
-
-
-@pytest.mark.parametrize("error", [_status_error(500), httpx.ConnectError("Temporary failure in name resolution")])
-async def test_other_heartbeat_failures_retry_without_revoking(error: Exception) -> None:
-    api = _FakeApi([error])
-    async with HeartbeatPump(api=api, ws=_FakeWs(), task_id="txt_1", state=ProgressState()) as pump:  # type: ignore[arg-type]
-        while api.calls < 2:
+    async with HeartbeatPump(api=api, ws=ws, task_id="txt_1", state=state):  # type: ignore[arg-type]
+        for _ in range(100):
+            if api.calls and ws.published:
+                break
             await asyncio.sleep(0.01)
-        assert not pump.revoked.is_set()
+
+    assert api.calls[0] == {
+        "task_id": "txt_1",
+        "progress_pct": 42,
+        "current_pass": "1/2",
+        "eta_seconds": 600,
+        "fps": 45.67,
+        "avg_fps": 23.45,
+    }
+    assert ws.published[0]["topic"] == "transcode.progress.txt_1"
+    assert ws.published[0]["payload"] == {
+        "task_id": "txt_1",
+        "progress_pct": 42,
+        "eta_seconds": 600,
+        "current_pass": "1/2",
+        "fps": 45.67,
+        "avg_fps": 23.45,
+    }

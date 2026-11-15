@@ -380,6 +380,11 @@ class TrackView(BaseModel):
     # Status of the track's most recent text subtitles task (`subtitle_ocr`),
     # None when it has none. Display-only, like `transcode_status`.
     subtitle_ocr_status: TranscodeTaskStatus | None = None
+    # Encoder frame rate from that task's latest heartbeat, so the job page
+    # can show it beside an in-progress transcode. Same provenance as
+    # transcode_status: display-only, set by get_job_detail.
+    transcode_fps: float | None = None
+    transcode_avg_fps: float | None = None
     output_path: str | None
     size_bytes: int | None
     # `expected_size_bytes` is the scan-time MakeMKV estimate (TINFO:t,11);

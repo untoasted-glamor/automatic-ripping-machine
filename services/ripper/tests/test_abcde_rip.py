@@ -18,6 +18,8 @@ fires its `on_track_done` callback. Covers:
     unfinalised track gets a timeout failure.
   - on_track_done=None: no callback fires; the return dict still has an
     entry per requested track.
+  - Kill path: abcde runs in its own session and the whole process group
+    is killed, so cdparanoia does not outlive an abandon or timeout.
 """
 
 from __future__ import annotations
@@ -32,6 +34,17 @@ import pytest
 import arm_ripper.rip.abcde_rip as abcde_rip
 from arm_ripper.rip.abcde_rip import rip_cd
 from arm_ripper.rip.makemkv_rip import RipResult
+
+
+_FAKE_PID = 424242
+
+
+@pytest.fixture(autouse=True)
+def killpg_calls(monkeypatch) -> list[tuple[int, int]]:
+    """Record os.killpg instead of signalling a real process group."""
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(abcde_rip.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
+    return calls
 
 
 class _FakeStream:
@@ -63,6 +76,7 @@ class _FakeProc:
         self.stderr = _FakeStream(stderr_lines or [])
         self.returncode: int | None = None
         self._final_returncode = returncode
+        self.pid = _FAKE_PID
 
     async def wait(self) -> int:
         await asyncio.sleep(0)

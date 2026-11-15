@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
+from arm_backend.auth import declare_guest_reads
 from arm_backend.config import effective_transcode_capable, settings
 from arm_backend.crash_recovery import sweep_in_flight_jobs
 from arm_backend.db import SessionLocal
@@ -511,6 +512,7 @@ app.include_router(users_router.router)
 # Fork only (disc menus M3-M4); last, so its paths don't reorder the OpenAPI snapshot.
 app.include_router(disc_menus_router.router)
 app.include_router(ws_router)
+declare_guest_reads(app.routes)
 
 
 def main() -> None:

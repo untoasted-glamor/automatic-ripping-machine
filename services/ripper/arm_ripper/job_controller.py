@@ -193,6 +193,7 @@ class JobController:
         self._scan_notify_tasks: set[asyncio.Task[None]] = set()
         self._keydb_tasks: set[asyncio.Task[None]] = set()
         self._sdf_tasks: set[asyncio.Task[None]] = set()
+        self._wipe_tasks: set[asyncio.Task[None]] = set()
         self._drive_id = drive_id
         self._ws = ws
         # Each ripper container owns exactly one optical drive. The node it
@@ -382,10 +383,12 @@ class JobController:
     def _handle_abandon(self, job_id: str, *, delete_raw: bool, off_drive: bool = False) -> None:
         """Cancel the active pipeline if it owns this job (or the remux lane's
         run, if that does), optionally wipe `/raw/<job_id>/`, then give the
-        disc back. Runs synchronously from the WS handler; cancel + rmtree are
-        both fast and don't need awaitable plumbing (eject spawns as a task).
-        `off_drive`: the job was remuxing from its disc backup, its disc long
-        gone; whatever disc is in the drive now isn't its to eject.
+        disc back. Runs synchronously from the WS handler, so the slow parts
+        (the raw-dir wipe and the eject) are spawned as tasks: deleting a
+        50-100 GB rip can take seconds on NFS, and the WS receive loop must
+        not stall behind it. `off_drive`: the job was remuxing from its disc
+        backup, its disc long gone; whatever disc is in the drive now isn't
+        its to eject.
 
         rmtree on Linux is safe even if makemkvcon still has file handles
         open: the directory entries are removed, existing fds keep working
@@ -401,14 +404,9 @@ class JobController:
             logger.info("job.abandoned: cancelling the remux for job_id=%s", job_id)
             remux.cancel()
         if delete_raw:
-            target = RAW_ROOT / job_id
-            try:
-                shutil.rmtree(target)
-                logger.info("wiped raw dir job_id=%s path=%s", job_id, target)
-            except FileNotFoundError:
-                logger.info("raw dir already absent job_id=%s path=%s", job_id, target)
-            except OSError as exc:
-                logger.warning("raw-dir cleanup failed job_id=%s path=%s: %s", job_id, target, exc)
+            task = asyncio.create_task(self._wipe_raw(job_id))
+            self._wipe_tasks.add(task)
+            task.add_done_callback(self._wipe_tasks.discard)
         # Abandon means "done with this disc — give it back". The lifecycle's
         # post-rip eject (end of _run_rip) never runs on an abandon exit, so
         # eject here: when this job owns the drive's pipeline (ripping or
@@ -424,6 +422,17 @@ class JobController:
             return
         if (owns and not self.drive_released) or (idle and self._disc_seated()):
             self._spawn_eject()
+
+    async def _wipe_raw(self, job_id: str) -> None:
+        """Delete `/raw/<job_id>/` off the event loop."""
+        target = RAW_ROOT / job_id
+        try:
+            await asyncio.to_thread(shutil.rmtree, target)
+            logger.info("wiped raw dir job_id=%s path=%s", job_id, target)
+        except FileNotFoundError:
+            logger.info("raw dir already absent job_id=%s path=%s", job_id, target)
+        except OSError as exc:
+            logger.warning("raw-dir cleanup failed job_id=%s path=%s: %s", job_id, target, exc)
 
     def _disc_seated(self) -> bool:
         """True when the drive currently reports a seated disc (DISC_OK) —

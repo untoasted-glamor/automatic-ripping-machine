@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import col, select
 
 from arm_backend.config import Settings, settings
+from arm_backend.container_logging import log_config
 from arm_backend.choose_titles import sweep_choose_titles
 from arm_backend.disc_menus.packs import menu_pack_inputs, sweep_menu_packs
 from arm_backend.disc_menus.preview_tasks import menu_preview_inputs, sweep_menu_previews
@@ -1520,6 +1521,7 @@ class TranscodeDispatcher:
             network=(None if remote else self._settings.ARM_DOCKER_NETWORK),
             detach=True,
             auto_remove=True,
+            log_config=log_config(),
             **extra_run_kwargs,
         )
         container = self._docker_call(task.id, "spawn", lambda docker: docker.containers.run(**run_kwargs))

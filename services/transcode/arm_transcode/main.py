@@ -158,10 +158,14 @@ async def _run_encoder(
     """Dispatch on `tool`. Returns the size of the video we wrote and the
     subtitle sidecars written next to it."""
 
-    async def _on_progress(pct: int, eta: int | None, current: str | None) -> None:
+    async def _on_progress(
+        pct: int, eta: int | None, current: str | None, fps: float | None, avg_fps: float | None
+    ) -> None:
         state.pct = pct
         state.eta_seconds = eta
         state.current_pass = current
+        state.fps = fps
+        state.avg_fps = avg_fps
 
     if tool == TranscodeTool.NONE:
         size = transcode_none(raw_input, final_output)

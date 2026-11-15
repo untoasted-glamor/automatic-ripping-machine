@@ -42,7 +42,7 @@ export function isRemuxing(d: DriveView): boolean {
 }
 
 export function isRipping(d: DriveView): boolean {
-	return d.status === 'ripping' || d.current_job?.status === 'ripping';
+	return d.current_job?.status === 'ripping';
 }
 
 // The drive's newest job has left the drive (fork only): parked at stop 2, or remuxing from its kept backup.
@@ -63,7 +63,7 @@ export function scanRetryLabel(d: DriveView): string | null {
 
 /** The drive's ripper still owns a job (scan, identify, review or rip): the backend refuses Unenroll. */
 export function hasLiveJob(d: DriveView): boolean {
-	return isRipping(d) || d.current_job != null;
+	return d.current_job != null;
 }
 
 export function driveStatusLabel(d: DriveView): string {

@@ -243,7 +243,8 @@ async def rip_backup(
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     # A backup left by an earlier run must never pass this run's success check.
-    _clear(target)
+    # Off the event loop (D-175): an old Blu-ray backup is tens of GB.
+    await asyncio.to_thread(_clear, target)
     cmd = ["makemkvcon", "backup"]
     if decrypt:
         cmd.append("--decrypt")
