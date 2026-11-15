@@ -4,6 +4,8 @@
 	import PosterImage from './PosterImage.svelte';
 	import { driveLabel } from '$lib/utils/drive-name';
 	import { isAwaitingIdentity } from '$lib/utils/job-status-groups';
+	import { changedPosition } from '$lib/utils/identity-position';
+	import IdentityFields from './identity/IdentityFields.svelte';
 
 	let {
 		job,
@@ -55,28 +57,10 @@
 	let artist = $state('');
 	let trackTitles = $state<string[]>(Array.from({ length: scanTrackCount }, () => ''));
 
-	// Disc position (all discs) and season (video only). Nothing on a disc
-	// records a season, and a box set's disc number often isn't in the label,
-	// so these are the operator's way to fill the `{season}` / `{disc}` naming
-	// tokens. Resolve keeps an omitted field as-is, so only a changed value is
-	// sent (an emptied field goes as null, clearing it).
+	// Disc position (all discs) and season (video only); only a changed value is sent.
 	let season = $state<number | null>(job.season ?? null);
 	let discNumber = $state<number | null>(job.disc_number ?? null);
 	let discTotal = $state<number | null>(job.disc_total ?? null);
-
-	function numOrNull(v: number | string | null | undefined): number | null {
-		if (v == null || v === '') return null;
-		const n = Number(v);
-		return Number.isFinite(n) ? n : null;
-	}
-
-	function changedPosition(): { season?: number | null; disc_number?: number | null; disc_total?: number | null } {
-		const out: { season?: number | null; disc_number?: number | null; disc_total?: number | null } = {};
-		if (!isCd && numOrNull(season) !== (job.season ?? null)) out.season = numOrNull(season);
-		if (numOrNull(discNumber) !== (job.disc_number ?? null)) out.disc_number = numOrNull(discNumber);
-		if (numOrNull(discTotal) !== (job.disc_total ?? null)) out.disc_total = numOrNull(discTotal);
-		return out;
-	}
 
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
@@ -167,7 +151,7 @@
 				year: year ?? null,
 				music,
 				...pickedIdentity(chosen),
-				...changedPosition()
+				...changedPosition(job, { season, discNumber, discTotal }, { isCd })
 			});
 			if (chosen?.poster_url && chosen.poster_url !== (job.poster_url_manual ?? null)) {
 				try {
@@ -184,54 +168,6 @@
 		}
 	}
 </script>
-
-{#snippet positionFields()}
-	<div class="mb-1 flex gap-3">
-		{#if !isCd}
-			<label class="field flex-1">
-				<span class="field-label">Season</span>
-				<input
-					bind:value={season}
-					type="number"
-					min="0"
-					max="999"
-					data-testid="identify-season"
-					disabled={submitting}
-				/>
-			</label>
-		{/if}
-		<label class="field flex-1">
-			<span class="field-label">Disc #</span>
-			<input
-				bind:value={discNumber}
-				type="number"
-				min="1"
-				max="999"
-				data-testid="identify-disc-number"
-				disabled={submitting}
-			/>
-		</label>
-		<label class="field flex-1">
-			<span class="field-label">Disc total</span>
-			<input
-				bind:value={discTotal}
-				type="number"
-				min="1"
-				max="999"
-				data-testid="identify-disc-total"
-				disabled={submitting}
-			/>
-		</label>
-	</div>
-	<p class="field-help mb-3">
-		{#if isCd}
-			Multi-disc sets only: fills the <code class="mono">{'{disc}'}</code> naming token. Leave blank for a single disc.
-		{:else}
-			TV box sets and multi-disc releases: fills the <code class="mono">{'{season}'}</code> and
-			<code class="mono">{'{disc}'}</code> naming tokens. Leave blank for a single disc.
-		{/if}
-	</p>
-{/snippet}
 
 <div class="modal">
 	<button type="button" class="identify-dialog-backdrop" aria-label="Close dialog" onclick={onclose}></button>
@@ -381,7 +317,7 @@
 						Track count couldn't be determined from the scan; transcoded filenames will fall back to generic names.
 					</p>
 				{/if}
-				{@render positionFields()}
+				<IdentityFields bind:season bind:discNumber bind:discTotal {isCd} disabled={submitting} />
 			{:else}
 				<div class="mb-3 flex gap-3">
 					<label class="field identify-dialog-field-wide">
@@ -400,7 +336,7 @@
 						/>
 					</label>
 				</div>
-				{@render positionFields()}
+				<IdentityFields bind:season bind:discNumber bind:discTotal {isCd} disabled={submitting} />
 			{/if}
 
 			<div class="modal-actions">

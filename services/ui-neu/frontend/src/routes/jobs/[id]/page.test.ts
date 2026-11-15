@@ -521,14 +521,26 @@ describe('Job detail page (v3)', () => {
 		});
 	});
 
-	it('opens the IdentifyDialog when the Identify button is clicked', async () => {
+	it('the Identity button opens the panel, and Edit by hand opens the IdentifyDialog', async () => {
 		renderComponent(Page);
 		const btn = await screen.findByTestId('identify-open');
+		expect(btn).toHaveTextContent('Identity');
+		expect(screen.getByTestId('identity-toggle')).toHaveAttribute('aria-expanded', 'false');
 		await fireEvent.click(btn);
+		expect(screen.getByTestId('identity-toggle')).toHaveAttribute('aria-expanded', 'true');
+		expect(screen.getByTestId('identity-step-search')).toBeInTheDocument();
+		await fireEvent.click(screen.getByTestId('identify-manual'));
 		await waitFor(() => {
 			expect(screen.getByRole('dialog')).toBeInTheDocument();
 			expect(screen.getByTestId('identify-submit')).toBeInTheDocument();
 		});
+	});
+
+	it('Change poster on the poster opens the Identity panel at its search', async () => {
+		renderComponent(Page);
+		await fireEvent.click(await screen.findByTestId('poster-change'));
+		await waitFor(() => expect(screen.getByTestId('identity-toggle')).toHaveAttribute('aria-expanded', 'true'));
+		expect(screen.getByTestId('identity-step-search')).toBeInTheDocument();
 	});
 
 	it('shows the Apply session button and opens the ApplySessionDialog', async () => {
@@ -540,22 +552,24 @@ describe('Job detail page (v3)', () => {
 		});
 	});
 
-	it('shows the Match CD tab only for cd jobs', async () => {
+	it("a CD's Identity panel is the music match", async () => {
 		mockFetchJob.mockResolvedValueOnce({
 			job: createJob({ id: 'job_cd', disc_type: 'cd', status: 'ripped', title: 'Abbey Road' }),
 			tracks: [],
 			fingerprints: []
 		});
 		renderComponent(Page);
-		await waitFor(() => expect(screen.getByRole('button', { name: 'Match CD' })).toBeInTheDocument());
+		await fireEvent.click(await screen.findByTestId('identity-toggle'));
+		expect(screen.getByTestId('identity-step-music')).toBeInTheDocument();
+		expect(screen.queryByTestId('identity-step-search')).not.toBeInTheDocument();
+		expect(screen.queryByRole('radiogroup', { name: 'Media type' })).not.toBeInTheDocument();
 	});
 
-	it('does not show the Match CD tab for video jobs', async () => {
+	it("a video disc's Identity panel has no music match", async () => {
 		renderComponent(Page);
-		await waitFor(() => {
-			expect(screen.getByRole('heading', { name: 'Test Movie' })).toBeInTheDocument();
-		});
-		expect(screen.queryByRole('button', { name: 'Match CD' })).not.toBeInTheDocument();
+		await fireEvent.click(await screen.findByTestId('identity-toggle'));
+		expect(screen.getByTestId('identity-step-search')).toBeInTheDocument();
+		expect(screen.queryByTestId('identity-step-music')).not.toBeInTheDocument();
 	});
 
 	it('excludes a track via the Rip checkbox', async () => {
@@ -980,29 +994,30 @@ describe('Job detail page (v3)', () => {
 			})
 		});
 
-		it('shows Match Episodes only for TV jobs', async () => {
+		it("shows the episode step in a TV job's Identity panel", async () => {
 			mockFetchJob.mockResolvedValue(tvJob());
 			renderComponent(Page);
-			expect(await screen.findByRole('button', { name: 'Match Episodes' })).toBeInTheDocument();
+			await fireEvent.click(await screen.findByTestId('identity-toggle'));
+			expect(screen.getByTestId('identity-step-episodes')).toBeInTheDocument();
+			expect(screen.getByTestId('identity-step-position')).toHaveTextContent('Season and disc');
 		});
 
-		it('puts the Movie | TV switch, as one control, right before Edit identity', async () => {
+		it('puts the Movie | TV switch, as one control, in the Identity panel bar', async () => {
 			mockFetchJob.mockResolvedValue(tvJob());
 			renderComponent(Page);
-			const editIdentity = await screen.findByTestId('identify-open');
+			const toggle = await screen.findByTestId('identity-toggle');
 			const group = screen.getByRole('radiogroup', { name: 'Media type' });
 			expect(group).toContainElement(screen.getByRole('radio', { name: 'Movie' }));
 			expect(group).toContainElement(screen.getByRole('radio', { name: 'TV' }));
-			const switchRoot = group.parentElement!;
-			expect(switchRoot.parentElement).toBe(editIdentity.parentElement);
-			expect(switchRoot.nextElementSibling).toBe(editIdentity);
+			expect(toggle.parentElement).toContainElement(group);
 		});
 
-		it('hides Match Episodes for a movie job', async () => {
+		it('has no episode step for a movie job', async () => {
 			mockFetchJob.mockResolvedValue(tvJob({ media_type: 'movie', has_series: false }));
 			renderComponent(Page);
-			await screen.findByRole('button', { name: /Poster/ });
-			expect(screen.queryByRole('button', { name: 'Match Episodes' })).not.toBeInTheDocument();
+			await fireEvent.click(await screen.findByTestId('identity-toggle'));
+			expect(screen.getByTestId('identity-step-position')).toHaveTextContent('Disc');
+			expect(screen.queryByTestId('identity-step-episodes')).not.toBeInTheDocument();
 		});
 
 		it('the header switch flips a movie to TV and opens episode matching', async () => {
@@ -1013,9 +1028,7 @@ describe('Job detail page (v3)', () => {
 			renderComponent(Page);
 			await fireEvent.click(await screen.findByRole('radio', { name: 'TV' }));
 			expect(setJobMediaType).toHaveBeenCalledWith('job_42', 'tv');
-			await waitFor(() =>
-				expect(screen.getByRole('button', { name: 'Match Episodes' })).toHaveAttribute('aria-pressed', 'true')
-			);
+			await waitFor(() => expect(screen.getByTestId('identity-step-episodes')).toBeInTheDocument());
 		});
 
 		it('shows matching after the flip until job.identity_updated arrives for the job', async () => {
@@ -1066,7 +1079,7 @@ describe('Job detail page (v3)', () => {
 			expect(await screen.findByRole('alert')).toHaveTextContent('409 Conflict');
 			expect(screen.getByRole('radio', { name: 'TV' })).toHaveAttribute('aria-checked', 'false');
 			expect(screen.getByRole('radio', { name: 'Movie' })).toHaveAttribute('aria-checked', 'true');
-			expect(screen.queryByRole('button', { name: 'Match Episodes' })).not.toBeInTheDocument();
+			expect(screen.queryByTestId('identity-step-episodes')).not.toBeInTheDocument();
 		});
 
 		it('asks before switching a job with hand-set episodes to Movie', async () => {
@@ -1099,11 +1112,14 @@ describe('Job detail page (v3)', () => {
 			await waitFor(() => expect(setJobMediaType).toHaveBeenCalledWith('job_42', 'movie'));
 		});
 
-		it('guests see the type as text, not a switch, and can still open Match Episodes', async () => {
+		it('guests see the type as text, not a switch, and can still open the episode step', async () => {
 			(authStore as unknown as { __setRole: (r: string | null) => void }).__setRole('guest');
 			mockFetchJob.mockResolvedValue(tvJob());
 			renderComponent(Page);
-			expect(await screen.findByRole('button', { name: 'Match Episodes' })).toBeInTheDocument();
+			await fireEvent.click(await screen.findByTestId('identity-toggle'));
+			expect(screen.getByTestId('identity-step-episodes')).toBeInTheDocument();
+			expect(screen.queryByTestId('identity-step-position')).not.toBeInTheDocument();
+			expect(screen.queryByTestId('identify-manual')).not.toBeInTheDocument();
 			expect(screen.queryByRole('radiogroup', { name: 'Media type' })).not.toBeInTheDocument();
 			expect(screen.getByTestId('media-type-text')).toHaveTextContent('TV');
 			expect(screen.getByTestId('media-type-text')).toHaveClass('badge');

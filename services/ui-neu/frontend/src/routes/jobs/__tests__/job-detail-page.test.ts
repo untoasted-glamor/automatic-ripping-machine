@@ -117,14 +117,14 @@ describe('Job Detail Page', () => {
 			expect(container).toBeInTheDocument();
 		});
 
-		it('shows the poster/metadata-search tab for video discs', async () => {
+		it('shows the Identity panel for video discs', async () => {
 			renderComponent(JobDetailPage);
 			await waitFor(() => {
-				expect(screen.getByRole('button', { name: /Poster & metadata search/ })).toBeInTheDocument();
+				expect(screen.getByTestId('identity-panel')).toBeInTheDocument();
 			});
 		});
 
-		it('hides the poster/metadata-search tab for non-video discs', async () => {
+		it('has no Identity panel for a data disc', async () => {
 			const { fetchJob } = await import('$lib/api/jobs');
 			const detail = buildDetail({ id: 'job_2', title: 'Data Disc', disc_type: 'data' });
 			detail.tracks = [];
@@ -134,14 +134,15 @@ describe('Job Detail Page', () => {
 			await waitFor(() => {
 				expect(screen.getByRole('heading', { name: 'Data Disc' })).toBeInTheDocument();
 			});
-			expect(screen.queryByRole('button', { name: /Poster & metadata search/ })).not.toBeInTheDocument();
+			expect(screen.queryByTestId('identity-panel')).not.toBeInTheDocument();
 		});
 
-		it('shows Edit identity on a held review disc', async () => {
+		it('opens the Identity panel by itself on a held review disc', async () => {
 			const { fetchJob } = await import('$lib/api/jobs');
 			vi.mocked(fetchJob).mockResolvedValueOnce(buildDetail({ status: 'awaiting_review' }));
 			renderComponent(JobDetailPage);
-			await waitFor(() => expect(screen.getByTestId('identify-open')).toHaveTextContent('Edit identity'));
+			await waitFor(() => expect(screen.getByTestId('identity-toggle')).toHaveAttribute('aria-expanded', 'true'));
+			expect(screen.getByTestId('identify-manual')).toHaveTextContent('Edit by hand');
 		});
 
 		it('shows Apply session for a ripped disc awaiting identification', async () => {

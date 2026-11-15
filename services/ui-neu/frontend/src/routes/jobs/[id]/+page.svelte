@@ -16,11 +16,8 @@
 	} from '$lib/types/api.gen';
 	import JobActions from '$lib/components/JobActions.svelte';
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
-	import TitleSearch from '$lib/components/TitleSearch.svelte';
 	import TrackTitleSearch from '$lib/components/TrackTitleSearch.svelte';
-	import MusicSearch from '$lib/components/MusicSearch.svelte';
-	import EpisodeMatchPanel from '$lib/components/episodes/EpisodeMatchPanel.svelte';
-	import MediaTypeSwitch from '$lib/components/episodes/MediaTypeSwitch.svelte';
+	import IdentityPanel from '$lib/components/identity/IdentityPanel.svelte';
 	import IdentifyDialog from '$lib/components/IdentifyDialog.svelte';
 	import ApplySessionDialog from '$lib/components/ApplySessionDialog.svelte';
 	import JobLifecycle from '$lib/components/JobLifecycle.svelte';
@@ -71,10 +68,11 @@
 	let detail = $state<JobDetailView | null>(null);
 	let jobLoading = $state(true);
 	let jobError = $state<Error | null>(null);
-	let activePanel = $state<'title' | 'music' | 'episodes' | null>(null);
-	// Search type TitleSearch opens with; set when the episode panel asks for a series search.
-	let titleInitialType = $state<'movie' | 'tv' | undefined>(undefined);
-	let episodePanel = $state<{ reload: () => Promise<void> } | undefined>(undefined);
+	// The Identity panel (search, season and disc, episodes; MusicSearch on a CD).
+	let identityOpen = $state(false);
+	let identityPanel = $state<
+		{ reloadEpisodes: () => Promise<void>; showSearch: (type?: 'movie' | 'tv') => void } | undefined
+	>(undefined);
 
 	// True while the Backend re-matches episodes after a type flip or a series
 	// apply. Cleared when job.identity_updated arrives for this job (the stage
@@ -116,8 +114,20 @@
 	let canApply = $derived(!!detail && detail.job.actions.can_apply);
 
 	// Identify is "Edit identity" once an identity already exists (post-rip /
-	// identified), otherwise "Identify disc" for the auto-id-failed case.
+	// identified), otherwise "Identify disc" for the auto-id-failed case. A disc
+	// with an Identity panel (video, CD) opens that instead of the dialog.
 	let identifyLabel = $derived(detail && isAwaitingIdentity(detail.job.status) ? 'Identify disc' : 'Edit identity');
+
+	function openIdentity() {
+		if (!hasIdentityPanel) {
+			showIdentify = true;
+			return;
+		}
+		identityOpen = true;
+		requestAnimationFrame(() =>
+			document.getElementById('identity-panel')?.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
+		);
+	}
 
 	function flashNote(message: string) {
 		actionNote = message;
@@ -165,6 +175,7 @@
 	let isVideoDisc = $derived(detail?.job.disc_type === 'dvd' || detail?.job.disc_type === 'bluray');
 
 	let isCdDisc = $derived(detail?.job.disc_type === 'cd');
+	let hasIdentityPanel = $derived(isVideoDisc || isCdDisc);
 
 	let sessionNames = $state(new Map<string, string>());
 	let metadataFields = $derived(detail ? buildMetadataFields(detail.job, $dashboard.drive_names, sessionNames) : []);
@@ -304,31 +315,17 @@
 		}
 	}
 
-	function handleTitleApply() {
-		activePanel = null;
-		loadJob();
-	}
-
 	function handleSeriesApplied() {
-		activePanel = 'episodes';
 		startMatching();
 		loadJob();
 	}
 
 	function handleMediaTypeChanged(type: 'movie' | 'tv') {
-		if (type === 'tv') startMatching();
-		else stopMatching();
-		activePanel = type === 'tv' ? 'episodes' : null;
-		loadJob();
-	}
-
-	function togglePanel(panel: 'title' | 'music' | 'episodes') {
-		if (panel === 'title') titleInitialType = undefined;
-		activePanel = activePanel === panel ? null : panel;
-	}
-
-	function handleMusicApply() {
-		activePanel = null;
+		if (type === 'tv') {
+			// Episode matching starts: show its step.
+			startMatching();
+			identityOpen = true;
+		} else stopMatching();
 		loadJob();
 	}
 
@@ -372,7 +369,7 @@
 			// (rip.identify_resolved fires before the episode stage has run).
 			const identityUpdated = eventTypes.get(id)?.has('job.identity_updated') ?? false;
 			loadJob().then(async () => {
-				await episodePanel?.reload();
+				await identityPanel?.reloadEpisodes();
 				if (identityUpdated) stopMatching();
 			});
 		});
@@ -462,18 +459,14 @@
 
 					<!-- Action buttons pushed right -->
 					<div class="flex flex-wrap items-center gap-2 ml-auto">
-						<!-- The type is part of the identity, so its switch sits beside Edit identity. -->
-						{#if isVideoDisc && $isAdmin}
-							<MediaTypeSwitch {job} {handSetCount} onchanged={handleMediaTypeChanged} />
-						{/if}
-						{#if canResolve && $isAdmin}
+						{#if (hasIdentityPanel || canResolve) && $isAdmin}
 							<button
 								type="button"
 								data-testid="identify-open"
-								onclick={() => (showIdentify = true)}
+								onclick={openIdentity}
 								class="btn job-detail-header-btn"
 							>
-								{identifyLabel}
+								{hasIdentityPanel ? 'Identity' : identifyLabel}
 							</button>
 						{/if}
 						{#if canApply && $isAdmin}
@@ -500,6 +493,14 @@
 					<!-- Poster -->
 					<div class="shrink-0 job-detail-poster-cell" data-disc-type={job.disc_type}>
 						<PosterImage url={jobPoster(job)} alt={job.title ?? 'Poster'} class="job-detail-poster" />
+						{#if isVideoDisc && $isAdmin}
+							<button
+								type="button"
+								class="job-detail-poster-change"
+								data-testid="poster-change"
+								onclick={() => identityPanel?.showSearch()}>Change poster</button
+							>
+						{/if}
 					</div>
 
 					<!-- Metadata grid -->
@@ -533,65 +534,19 @@
 					</div>
 				</div>
 
-				<!-- Panel toggle bar: poster override (manual poster_url_manual quick-edit).
-			     Disc identity now commits through the IdentifyDialog (resolve), not here. -->
-				{#if isVideoDisc}
-					<div class="flex job-detail-panel-toggle-bar">
-						<button
-							type="button"
-							onclick={() => togglePanel('title')}
-							class="job-detail-panel-tab"
-							aria-pressed={activePanel === 'title'}>Poster &amp; metadata search</button
-						>
-						{#if job.media_type === 'tv'}
-							<button
-								type="button"
-								onclick={() => togglePanel('episodes')}
-								class="job-detail-panel-tab"
-								aria-pressed={activePanel === 'episodes'}>Match Episodes</button
-							>
-						{/if}
-					</div>
-				{:else if isCdDisc}
-					<div class="flex job-detail-panel-toggle-bar">
-						<button
-							type="button"
-							onclick={() => togglePanel('music')}
-							class="job-detail-panel-tab"
-							aria-pressed={activePanel === 'music'}>Match CD</button
-						>
-					</div>
-				{/if}
-
-				<!-- Active panel content -->
-				{#if activePanel === 'title'}
-					<div class="job-detail-panel-content">
-						<TitleSearch
-							{job}
-							onapply={handleTitleApply}
-							onseries={handleSeriesApplied}
-							initialType={titleInitialType}
-						/>
-					</div>
-				{/if}
-				{#if activePanel === 'episodes' && isVideoDisc && job.media_type === 'tv'}
-					<div class="job-detail-panel-content">
-						<EpisodeMatchPanel
-							bind:this={episodePanel}
-							{job}
-							{tracks}
-							{matching}
-							onsearchseries={() => {
-								titleInitialType = 'tv';
-								activePanel = 'title';
-							}}
-						/>
-					</div>
-				{/if}
-				{#if activePanel === 'music'}
-					<div class="job-detail-panel-content">
-						<MusicSearch {job} discTracks={tracks} onapply={handleMusicApply} />
-					</div>
+				{#if hasIdentityPanel}
+					<IdentityPanel
+						bind:this={identityPanel}
+						bind:open={identityOpen}
+						{job}
+						{tracks}
+						{matching}
+						{handSetCount}
+						onchanged={() => loadJob()}
+						onseries={handleSeriesApplied}
+						ontypechanged={handleMediaTypeChanged}
+						onmanual={() => (showIdentify = true)}
+					/>
 				{/if}
 			</div>
 
@@ -1179,31 +1134,14 @@
 		font-size: 0.75rem;
 		line-height: 1rem;
 	}
-	.job-detail-panel-toggle-bar {
-		border-top: 1px solid var(--color-border);
-		background: color-mix(in srgb, var(--color-surface) 50%, transparent);
-	}
-	.job-detail-panel-tab {
-		flex: 1 1 0%;
-		padding: 0.625rem 1rem;
-		text-align: center;
-		font-size: 0.875rem;
-		line-height: 1.25rem;
-		font-weight: 500;
-		color: var(--color-text-muted);
-		transition: color var(--motion-fast) var(--ease);
-	}
-	.job-detail-panel-tab:hover {
-		color: var(--color-text-secondary);
-	}
-	.job-detail-panel-tab[aria-pressed='true'] {
+	.job-detail-poster-change {
+		display: block;
+		margin-top: 0.375rem;
+		font-size: 0.75rem;
 		color: var(--color-primary);
-		border-bottom: 2px solid var(--color-primary);
-		background: var(--color-primary-tint-1);
 	}
-	.job-detail-panel-content {
-		border-top: 1px solid var(--color-border);
-		padding: 1.25rem;
+	.job-detail-poster-change:hover {
+		text-decoration: underline;
 	}
 	.job-detail-rip-meta {
 		font-size: 0.8125rem;
