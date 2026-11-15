@@ -20,6 +20,7 @@ from arm_common.schemas import (
     TrackView,
     WSEnvelope,
 )
+from arm_common.review_gate import stop_may_start
 from arm_ripper.backend_client import BackendClient
 from arm_ripper.community_keydb import refresh_community_keydb
 from arm_ripper.drive_handle import DriveHandle
@@ -805,23 +806,20 @@ class JobController:
         return None
 
     async def _review_countdown_expired(self, view: JobView) -> bool:
-        """True when a held disc's auto-start countdown has elapsed AND it is not
-        paused. Paused — global `ripping_paused` OR this disc's per-job
-        `manual_pause` — keeps the countdown suspended, so it returns False and the
-        wait continues. Mandatory-confirm mode (`review_requires_confirm`) has no
-        countdown at all: always False, only the operator's Start proceeds. The
-        job view + config are re-read each poll so a mid-wait pause / resume /
-        duration / mode change applies on the next cycle.
+        """True when a held disc may start by itself (`stop_may_start`, the rule
+        stop 2 shares): its countdown has elapsed and it isn't paused (global
+        `ripping_paused` or this disc's `manual_pause`), and mandatory-confirm
+        mode (`review_requires_confirm`) isn't on; or `hold_for_review` was
+        turned off. The job view + config are re-read each poll so a mid-wait
+        pause / resume / duration / mode change applies on the next cycle. No
+        config (a transport blip) keeps it waiting.
         """
         if view.manual_pause:
             return False
         cfg = await self._safe_get_ripper_config()
-        if cfg is None or cfg.ripping_paused or cfg.review_requires_confirm:
+        if cfg is None:
             return False
-        if view.wait_start_time is None:
-            return False
-        elapsed = (datetime.now(timezone.utc) - view.wait_start_time).total_seconds()
-        return elapsed >= cfg.manual_wait_seconds
+        return stop_may_start(cfg, view, datetime.now(timezone.utc))
 
     async def _safe_get_job(self, job_id: str) -> JobView | None:
         try:
@@ -1136,10 +1134,11 @@ class JobController:
             logger.info("disc backup finished; ejecting before the remuxes")
             await self._eject_with_retry(self._device_path or rip_path)
 
+        parked = False
         while True:
             watcher = asyncio.create_task(self._watch_drive(rip_path, lost)) if resumable else None
             try:
-                await rip_all(
+                parked = await rip_all(
                     disc_type=disc_type,
                     device_path=rip_path,
                     tracks=tracks,
@@ -1161,6 +1160,7 @@ class JobController:
                     # dropped during the backup copies it then.
                     menu=menu if menu is not None and not menu.settled else None,
                     drive_free=drive_free,
+                    park_after_backup=rip_start.park_after_backup and not drive_free,
                 )
             finally:
                 if watcher is not None:
@@ -1197,6 +1197,15 @@ class JobController:
 
         if menu is not None and not menu.settled:
             await menu.finish(menu_failed(MENU_NOT_COPIED))
+        if parked:
+            # Stop 2: the disc went back after its backup; its titles are chosen, then remuxed in the remux lane.
+            if not run.drive_released:
+                # A backup an earlier pass finished was reused, so nothing gave the disc back yet.
+                run.drive_released = True
+                await self._eject_with_retry(self._device_path or device_path)
+            await self._end_rip_with_retry("rip-parked", self._client.rip_parked, job_id)
+            logger.info("rip-parked job_id=%s: backed up; its titles wait to be chosen", job_id)
+            return
         completed = await self._rip_complete_with_retry(job_id)
         logger.info("rip-complete job_id=%s status=%s", job_id, completed.status.value)
 
@@ -1366,15 +1375,19 @@ class JobController:
                 delay = min(delay * 2, PATCH_RETRY_MAX_SECONDS)
 
     async def _rip_complete_with_retry(self, job_id: str) -> JobView:
+        return await self._end_rip_with_retry("rip-complete", self._client.rip_complete, job_id)
+
+    async def _end_rip_with_retry(self, name: str, call: Callable[[str], Awaitable[JobView]], job_id: str) -> JobView:
+        """`call(job_id)` (rip-complete or rip-parked), retried with backoff while the backend can't be reached."""
         delay = PATCH_RETRY_INITIAL_SECONDS
         while True:
             try:
-                return await self._client.rip_complete(job_id)
+                return await call(job_id)
             except httpx.HTTPError as e:
                 if not self._is_retryable(e):
-                    logger.error("rip-complete %s rejected by backend (%s); giving up", job_id, e)
+                    logger.error("%s %s rejected by backend (%s); giving up", name, job_id, e)
                     raise
-                logger.warning("rip-complete %s failed (%s); retrying in %.1fs", job_id, e, delay)
+                logger.warning("%s %s failed (%s); retrying in %.1fs", name, job_id, e, delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, PATCH_RETRY_MAX_SECONDS)
 

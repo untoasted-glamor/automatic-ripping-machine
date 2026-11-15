@@ -667,7 +667,10 @@ async def retry_failed(
     tracks = list((await db.execute(select(Track).where(col(Track.job_id) == job.id))).scalars().all())
     remaining = remaining_tracks(tracks)
     if not remaining:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="every kept title is ripped")
+        detail = (
+            "no title is ticked to rip" if job.status == JobStatus.AWAITING_TITLES else "every kept title is ripped"
+        )
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
     from_backup = await arm_retry(db, job, hub, remaining)
     await db.commit()
     await db.refresh(job)
@@ -755,24 +758,25 @@ async def review_pause(
     `?paused=true` freezes this disc's auto-start countdown (waits indefinitely
     for Start) while other discs keep counting; `?paused=false` resumes with a
     FRESH countdown (new wait_start_time) so it doesn't auto-rip instantly on a
-    long-paused disc. Only valid for AWAITING_REVIEW. Emits a WS command so the
-    parked ripper re-evaluates the countdown on its next poll.
+    long-paused disc. Valid for AWAITING_REVIEW, and for AWAITING_TITLES (stop 2,
+    fork only; a resume before stop 2 opens leaves it to open as usual). Emits a
+    WS command so the parked ripper re-evaluates the countdown on its next poll.
     """
     job = (await db.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")
-    if job.status != JobStatus.AWAITING_REVIEW:
+    if job.status not in (JobStatus.AWAITING_REVIEW, JobStatus.AWAITING_TITLES):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"review-pause only valid for awaiting_review, got {enum_value_str(job.status)}",
+            detail=f"review-pause only valid for awaiting_review or awaiting_titles, got {enum_value_str(job.status)}",
         )
-    if previously_ripped_job_id(job.metadata_json) is not None:
+    if job.status == JobStatus.AWAITING_REVIEW and previously_ripped_job_id(job.metadata_json) is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="this disc was ripped before; it has no countdown to pause",
         )
     job.manual_pause = paused
-    if not paused:
+    if not paused and (job.status == JobStatus.AWAITING_REVIEW or job.wait_start_time is not None):
         job.wait_start_time = datetime.now(timezone.utc)  # fresh countdown on resume
     db.add(job)
     await db.flush()

@@ -6,6 +6,7 @@ import {
 	driveStatusLabel,
 	isRemuxing,
 	isRipping,
+	isScanning,
 	opticalOnly,
 	partitionDrives,
 	serialLabel
@@ -90,4 +91,14 @@ describe('utils/drives', () => {
 		expect(isRemuxing(drive())).toBe(false);
 		expect(isRipping(drive())).toBe(false);
 	});
+	it.each(['awaiting_titles', 'remuxing'] as const)(
+		'a scan beside a %s job (off the drive) reads as scanning',
+		(status) => {
+			const scanning = { scan_started_at: '2026-11-15T00:00:00Z' };
+			expect(isScanning(drive({ ...scanning, current_job: { id: 'job_1', title: null, status } }))).toBe(true);
+			expect(isScanning(drive({ ...scanning, current_job: { id: 'job_1', title: null, status: 'ripping' } }))).toBe(
+				false
+			);
+		}
+	);
 });

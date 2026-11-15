@@ -254,3 +254,7 @@ class RipperConfigView(BaseModel):
     ripping_paused: bool = False
     manual_wait_seconds: int = 60
     review_requires_confirm: bool = False
+    # Whether the review stops pause at all (`arm_common.review_gate`): turned
+    # off while a disc waits, the stop goes on. Defaulted True so an older
+    # backend omitting it keeps a held disc waiting, as before.
+    hold_for_review: bool = True

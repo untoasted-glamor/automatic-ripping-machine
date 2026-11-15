@@ -146,6 +146,12 @@ class BackendClient:
         r.raise_for_status()
         return TrackView.model_validate(r.json())
 
+    async def rip_parked(self, job_id: str) -> JobView:
+        """Stop 2 (fork only): the disc is backed up and its menu copied; the titles wait to be chosen."""
+        r = await self._client.post(f"/api/ripper/jobs/{job_id}/rip-parked")
+        r.raise_for_status()
+        return JobView.model_validate(r.json())
+
     async def rip_complete(self, job_id: str) -> JobView:
         req = JobCompleteRequest()
         r = await self._client.post(

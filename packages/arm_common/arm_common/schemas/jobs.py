@@ -429,6 +429,10 @@ class RipStartResponse(BaseModel):
     # The disc menu to copy (fork only), when the job's menu row is ticked and
     # still queued; None otherwise. Older rippers ignore it.
     extract_menu: MenuExtract | None = None
+    # Stop 2 (fork only): back the whole disc up (and copy its menu), then
+    # stop before the remux and call `rip-parked`; the titles are chosen and
+    # remuxed from the backup later. Older rippers ignore it and rip as today.
+    park_after_backup: bool = False
 
 
 # The one definition of apply/fan-out skip reasons — the backend engine

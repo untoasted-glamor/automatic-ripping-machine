@@ -45,11 +45,14 @@ export function isRipping(d: DriveView): boolean {
 	return d.status === 'ripping' || d.current_job?.status === 'ripping';
 }
 
+// The drive's newest job has left the drive (fork only): parked at stop 2, or remuxing from its kept backup.
+const OFF_DRIVE = new Set<string>(['awaiting_titles', 'remuxing']);
+
 /** The ripper is scanning a disc before identify creates a job (the backend
- *  hides a report whose heartbeat went stale). A live job wins: its own status
- *  says more than "scanning". */
+ *  hides a report whose heartbeat went stale). A job still on the drive wins:
+ *  its own status says more than "scanning". */
 export function isScanning(d: DriveView): boolean {
-	return d.scan_started_at != null && (d.current_job == null || isRemuxing(d));
+	return d.scan_started_at != null && (d.current_job == null || OFF_DRIVE.has(d.current_job.status));
 }
 
 /** "retry, attempt 2/5" once the scan is past its first attempt, else null. */

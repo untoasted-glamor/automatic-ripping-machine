@@ -11,8 +11,9 @@ backend reads `preview.json` and makes the job's name proposals
 
 Queued by the dispatcher's sweep (`sweep_menu_previews`), never from a rip
 event: for a job whose menu track is `done`, whose rip is complete
-(`ripped_at` set) and which has a session application (a task row needs one),
-once, when no preview task exists for that track. A failed preview stays
+(`ripped_at` set) or which waits at stop 2 (`awaiting_titles`, fork only: its
+titles are named before they're chosen), and which has a session application
+(a task row needs one), once, when no preview task exists for that track. A failed preview stays
 failed until the job page asks for another (`queue_menu_preview`).
 """
 
@@ -27,6 +28,7 @@ from sqlmodel import col, select
 from arm_backend.ws import WSHub
 from arm_common import (
     Job,
+    JobStatus,
     SessionApplication,
     Track,
     TrackKind,
@@ -128,10 +130,28 @@ async def sweep_menu_previews(db: AsyncSession, hub: WSHub | None = None) -> int
         if not track.output_path or await preview_tasks_of(db, track.id):
             continue
         job = (await db.execute(select(Job).where(col(Job.id) == track.job_id))).scalar_one_or_none()
-        if job is None or job.ripped_at is None:
+        if job is None or not _preview_due(job):
             continue
         queued += await _queue(db, job, track, hub) is not None
     return queued
+
+
+def _preview_due(job: Job) -> bool:
+    return job.ripped_at is not None or job.status == JobStatus.AWAITING_TITLES
+
+
+async def preview_settled(db: AsyncSession, job: Job) -> bool:
+    """Whether stop 2 has no menu preview to wait for (`arm_backend.choose_titles`): the preview ran and ended,
+    or the sweep will never queue one (no copied menu, or no session application)."""
+    track = (
+        await db.execute(select(Track).where(col(Track.job_id) == job.id).where(col(Track.kind) == TrackKind.DISC_MENU))
+    ).scalar_one_or_none()
+    if track is None or menu_dir_of(track) is None:
+        return True
+    tasks = await preview_tasks_of(db, track.id)
+    if tasks:
+        return not any(t.status in _LIVE for t in tasks)
+    return await _newest_application(db, job.id) is None
 
 
 class PreviewRefused(Exception):

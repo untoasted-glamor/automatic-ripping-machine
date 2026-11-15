@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import col, select
 
 from arm_backend.config import Settings, settings
+from arm_backend.choose_titles import sweep_choose_titles
 from arm_backend.disc_menus.packs import menu_pack_inputs, sweep_menu_packs
 from arm_backend.disc_menus.preview_tasks import menu_preview_inputs, sweep_menu_previews
 from arm_backend.docker_probe import TtlProbe, probe_backend_url, probe_docker
@@ -369,6 +370,8 @@ class TranscodeDispatcher:
             await self.sweep_stale_claims(db)
             await self.sweep_orphaned_applications(db)
             await sweep_menu_previews(db, self._hub)
+            # After the previews: a stop 2 whose preview was just queued waits for it.
+            await sweep_choose_titles(db, self._hub)
             await sweep_menu_packs(db, self._hub)
             await db.commit()
             await self.spawn_pending(db)

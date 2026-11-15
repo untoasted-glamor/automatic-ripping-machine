@@ -99,6 +99,7 @@ export function statusAccentVar(status: string | null | undefined): string {
 			return 'var(--color-status-error)';
 		case 'awaiting_user_id':
 		case 'awaiting_review': // held for the timed review gate
+		case 'awaiting_titles': // backed up, held to choose the titles (stop 2)
 		case 'ripped_partial':
 		case 'ripped_awaiting_identify':
 		case 'waiting_identify':
@@ -123,6 +124,7 @@ export function statusColor(status: string | null | undefined): string {
 			return 'status-scanning';
 		case 'awaiting_user_id': // needs manual identification
 		case 'awaiting_review': // held for the timed review gate
+		case 'awaiting_titles': // backed up, held to choose the titles (stop 2)
 		case 'ripped_awaiting_identify': // ripped, still needs ID
 		case 'waiting_identify':
 		case 'ripped_partial': // rip finished with some titles failed
@@ -153,6 +155,7 @@ const STATUS_LABELS: Record<string, string> = {
 	awaiting_review: 'Ready: review',
 	identified: 'Identified',
 	ripping: 'Ripping',
+	awaiting_titles: 'Ready: titles',
 	remuxing: 'Remuxing',
 	ripped: 'Ripped',
 	ripped_partial: 'Ripped (partial)',

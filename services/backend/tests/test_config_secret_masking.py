@@ -231,3 +231,22 @@ def test_pause_does_not_touch_countdowns(signing_key):
         r = c.patch("/api/config", json={"ripping_paused": True}, headers=_auth(token))
     assert r.status_code == 200, r.text
     assert held.wait_start_time == original  # unchanged on pause
+
+
+def test_unpause_restarts_an_open_stop_2_countdown_only(signing_key):
+    """Stop 2 (fork only): an open stop (wait_start_time set) gets a fresh countdown;
+    an unopened one stays unopened, for the menu sweep to open."""
+    db = FakeSession()
+    _seed(db, ripping_paused=True, hold_for_review=True)
+    opened = _held_job("job_01JZXR7K3M5Q8N4VWA0000U05")
+    opened.status = JobStatus.AWAITING_TITLES
+    unopened = _held_job("job_01JZXR7K3M5Q8N4VWA0000U06")
+    unopened.status = JobStatus.AWAITING_TITLES
+    unopened.wait_start_time = None
+    db.rows["jobs"] = [opened, unopened]
+    app, token = _make_app(signing_key, db)
+    with TestClient(app) as c:
+        r = c.patch("/api/config", json={"ripping_paused": False}, headers=_auth(token))
+    assert r.status_code == 200, r.text
+    assert opened.wait_start_time > datetime(2025, 1, 1, tzinfo=timezone.utc)
+    assert unopened.wait_start_time is None

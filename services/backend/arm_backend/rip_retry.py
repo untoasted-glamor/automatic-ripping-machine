@@ -24,7 +24,10 @@ from arm_common.models import Track
 from arm_common.models._columns import enum_value_str
 from arm_common.schemas.job_metadata import with_flags
 
-RETRYABLE_JOB_STATUSES = frozenset({JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL, JobStatus.FAILED})
+# Stop 2 (`awaiting_titles`, fork only) starts here too: its ticked titles are remuxed from the backup.
+RETRYABLE_JOB_STATUSES = frozenset(
+    {JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL, JobStatus.FAILED, JobStatus.AWAITING_TITLES}
+)
 
 
 class RetryRefused(Exception):
@@ -40,9 +43,9 @@ def _has_complete_backup(job: Job) -> bool:
 
 
 async def check_retryable(db: AsyncSession, job: Job) -> None:
-    """Raise RetryRefused (409) unless the job is ripped, ripped_partial or failed with a stored scan, ripped on a
-    physical drive that is still enrolled. A retry that needs the disc (no finished backup kept) also needs the drive
-    free of another disc; a remux from the backup runs beside one."""
+    """Raise RetryRefused (409) unless the job is ripped, ripped_partial or failed (or waits at stop 2) with a stored
+    scan, ripped on a physical drive that is still enrolled. A retry that needs the disc (no finished backup kept)
+    also needs the drive free of another disc; a remux from the backup runs beside one. Stop 2 only remuxes."""
     if job.status not in RETRYABLE_JOB_STATUSES:
         raise RetryRefused(
             status.HTTP_409_CONFLICT,
@@ -58,6 +61,11 @@ async def check_retryable(db: AsyncSession, job: Job) -> None:
         )
     if _has_complete_backup(job):
         return
+    if job.status == JobStatus.AWAITING_TITLES:
+        raise RetryRefused(
+            status.HTTP_409_CONFLICT,
+            "the job's disc backup is gone; abandon it and rip the disc again",
+        )
     active = (
         (
             await db.execute(
@@ -90,12 +98,16 @@ def remaining_tracks(tracks: Sequence[Track]) -> list[Track]:
 async def arm_retry(db: AsyncSession, job: Job, hub: WSHub, remaining: Sequence[Track]) -> bool:
     """Queue `remaining` again (errors cleared), arm the job (`retry_armed`) and, with a finished disc backup
     kept, set it `remuxing` and tell the drive's ripper to remux them from it. Doesn't commit. Returns whether it
-    rips from the backup."""
+    rips from the backup.
+
+    Stop 2's start isn't armed as a retry: its titles have had no pass yet, so rip-start answers `retry=false`
+    and the files land in the job's rip folder, not in `retry-N/`."""
     for track in remaining:
         track.status = TrackStatus.QUEUED
         track.last_error = None
         db.add(track)
-    job.metadata_json = with_flags(job.metadata_json, retry_armed=True)
+    if job.status != JobStatus.AWAITING_TITLES:
+        job.metadata_json = with_flags(job.metadata_json, retry_armed=True)
     from_backup = _has_complete_backup(job)
     if from_backup:
         # Off the drive: the drive's next disc gets its own job meanwhile.

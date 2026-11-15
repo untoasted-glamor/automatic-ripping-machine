@@ -284,10 +284,22 @@ async def update_config(
 
     if unpausing or leaving_confirm:
         now = datetime.now(timezone.utc)
-        held = (await session.execute(select(Job).where(col(Job.status) == JobStatus.AWAITING_REVIEW))).scalars().all()
+        held = (
+            (
+                await session.execute(
+                    select(Job).where(col(Job.status).in_((JobStatus.AWAITING_REVIEW, JobStatus.AWAITING_TITLES)))
+                )
+            )
+            .scalars()
+            .all()
+        )
         for job in held:
+            if job.status == JobStatus.AWAITING_TITLES:
+                # Stop 2 (fork only) restarts only once open: a set wait_start_time is what opens it.
+                if job.wait_start_time is None:
+                    continue
             # A previously-ripped hold has no countdown to restart.
-            if previously_ripped_job_id(job.metadata_json) is not None:
+            elif previously_ripped_job_id(job.metadata_json) is not None:
                 continue
             job.wait_start_time = now
             session.add(job)

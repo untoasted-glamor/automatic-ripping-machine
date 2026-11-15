@@ -11,6 +11,7 @@ EXPECTED = {
     JobStatus.AWAITING_REVIEW: (True, True, True, False),
     JobStatus.RIPPING: (False, False, True, False),
     JobStatus.REMUXING: (False, False, True, False),
+    JobStatus.AWAITING_TITLES: (True, True, True, False),
     JobStatus.RIPPED: (True, True, False, True),
     JobStatus.RIPPED_PARTIAL: (True, True, False, True),
     JobStatus.RIPPED_AWAITING_IDENTIFY: (True, True, False, True),

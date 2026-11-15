@@ -1312,6 +1312,81 @@
         }
       }
     },
+    "/api/ripper/jobs/{job_id}/rip-parked": {
+      "post": {
+        "tags": [
+          "ripper"
+        ],
+        "summary": "Rip Parked",
+        "description": "The ripper backed the disc up whole, copied its menu and stopped before the remux (`park_after_backup`,\nfork only). The job waits at stop 2 (`awaiting_titles`) off the drive, and `sweep_choose_titles` opens it once\nthe menu has named the titles. Idempotent: a repeat (the ripper retrying the call) returns the parked job.",
+        "operationId": "rip_parked_api_ripper_jobs__job_id__rip_parked_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "x-arm-hostname",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Arm-Hostname"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/ripper/jobs/{job_id}/rip-complete": {
       "post": {
         "tags": [
@@ -2080,7 +2155,7 @@
           "jobs"
         ],
         "summary": "Review Pause",
-        "description": "Pause/resume ONE held disc's review countdown (per-job pause, spec \u00a711).\n\n`?paused=true` freezes this disc's auto-start countdown (waits indefinitely\nfor Start) while other discs keep counting; `?paused=false` resumes with a\nFRESH countdown (new wait_start_time) so it doesn't auto-rip instantly on a\nlong-paused disc. Only valid for AWAITING_REVIEW. Emits a WS command so the\nparked ripper re-evaluates the countdown on its next poll.",
+        "description": "Pause/resume ONE held disc's review countdown (per-job pause, spec \u00a711).\n\n`?paused=true` freezes this disc's auto-start countdown (waits indefinitely\nfor Start) while other discs keep counting; `?paused=false` resumes with a\nFRESH countdown (new wait_start_time) so it doesn't auto-rip instantly on a\nlong-paused disc. Valid for AWAITING_REVIEW, and for AWAITING_TITLES (stop 2,\nfork only; a resume before stop 2 opens leaves it to open as usual). Emits a\nWS command so the parked ripper re-evaluates the countdown on its next poll.",
         "operationId": "review_pause_api_jobs__job_id__review_pause_post",
         "parameters": [
           {
@@ -15110,6 +15185,11 @@
             "type": "boolean",
             "title": "Rerip Allowed",
             "default": false
+          },
+          "parked": {
+            "type": "boolean",
+            "title": "Parked",
+            "default": false
           }
         },
         "additionalProperties": true,
@@ -15305,6 +15385,7 @@
           "awaiting_review",
           "ripped_awaiting_identify",
           "remuxing",
+          "awaiting_titles",
           "abandoned",
           "failed"
         ],
@@ -19201,6 +19282,11 @@
                 "type": "null"
               }
             ]
+          },
+          "park_after_backup": {
+            "type": "boolean",
+            "title": "Park After Backup",
+            "default": false
           }
         },
         "type": "object",
@@ -19252,6 +19338,11 @@
             "type": "boolean",
             "title": "Review Requires Confirm",
             "default": false
+          },
+          "hold_for_review": {
+            "type": "boolean",
+            "title": "Hold For Review",
+            "default": true
           }
         },
         "type": "object",

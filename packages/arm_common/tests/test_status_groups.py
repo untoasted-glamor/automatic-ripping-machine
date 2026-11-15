@@ -52,7 +52,7 @@ def test_groups_partition_all_statuses():
 
 
 def test_live_and_ripper_busy_groups():
-    assert OFF_DRIVE_JOB_STATUSES == {JobStatus.REMUXING}
+    assert OFF_DRIVE_JOB_STATUSES == {JobStatus.AWAITING_TITLES, JobStatus.REMUXING}
     assert LIVE_JOB_STATUSES == NON_TERMINAL_JOB_STATUSES | OFF_DRIVE_JOB_STATUSES
     assert RIPPER_BUSY_JOB_STATUSES == {JobStatus.RIPPING, JobStatus.REMUXING}
     assert RIP_STARTED_JOB_STATUSES == POST_RIP_JOB_STATUSES | RIPPER_BUSY_JOB_STATUSES
@@ -65,6 +65,7 @@ def test_resolvable_groups() -> None:
         JobStatus.RIPPED,
         JobStatus.RIPPED_PARTIAL,
         JobStatus.AWAITING_REVIEW,
+        JobStatus.AWAITING_TITLES,
     }
     assert RESOLVABLE_JOB_STATUSES == RESOLVABLE_PROMOTE_JOB_STATUSES | RESOLVABLE_PRESERVE_JOB_STATUSES
     assert RESOLVABLE_PROMOTE_JOB_STATUSES & RESOLVABLE_PRESERVE_JOB_STATUSES == frozenset()
@@ -74,6 +75,7 @@ def test_apply_groups() -> None:
     assert APPLY_OK_JOB_STATUSES == {
         JobStatus.IDENTIFIED,
         JobStatus.AWAITING_REVIEW,
+        JobStatus.AWAITING_TITLES,
         JobStatus.RIPPED,
         JobStatus.RIPPED_PARTIAL,
     }

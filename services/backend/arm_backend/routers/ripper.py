@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
 from arm_backend import iso_prepare
+from arm_backend.choose_titles import delete_parked_backup, mark_parked, parks_after_backup
 from arm_backend.disc_dedupe import find_previous_rips, find_reusable_job_for_disc
 from arm_backend.auth import (
     require_drive_owner_by_job,
@@ -372,6 +373,7 @@ async def get_ripper_config(
         ripping_paused=bool(cfg.ripping_paused),
         manual_wait_seconds=int(cfg.manual_wait_seconds) if cfg.manual_wait_seconds is not None else 60,
         review_requires_confirm=bool(cfg.review_requires_confirm),
+        hold_for_review=bool(cfg.hold_for_review),
     )
 
 
@@ -1007,6 +1009,7 @@ async def rip_start(
             scan_titles=_stored_scan_titles(job),
             retry=retry,
             extract_menu=extract_menu,
+            park_after_backup=parks_after_backup(job, await _drive_of(session, job), existing, retry=retry),
         )
 
     # IDENTIFIED is the normal pre-rip state; AWAITING_REVIEW reaches here only
@@ -1106,7 +1109,12 @@ async def rip_start(
         min_length_seconds=min_length_seconds,
         scan_titles=scan.titles,
         extract_menu=extract_menu,
+        park_after_backup=parks_after_backup(job, await _drive_of(session, job), refreshed, retry=False),
     )
+
+
+async def _drive_of(session: AsyncSession, job: Job) -> Drive | None:
+    return (await session.execute(select(Drive).where(col(Drive.id) == job.drive_id))).scalar_one_or_none()
 
 
 @router.post("/jobs/{job_id}/resume", response_model=RipStartResponse)
@@ -1446,6 +1454,38 @@ async def update_track(
     return TrackView.model_validate(track)
 
 
+@router.post("/jobs/{job_id}/rip-parked", response_model=JobView)
+async def rip_parked(
+    job: Job = Depends(require_drive_owner_by_job),
+    session: AsyncSession = Depends(get_session),
+    hub: WSHub = Depends(_get_hub),
+) -> Job:
+    """The ripper backed the disc up whole, copied its menu and stopped before the remux (`park_after_backup`,
+    fork only). The job waits at stop 2 (`awaiting_titles`) off the drive, and `sweep_choose_titles` opens it once
+    the menu has named the titles. Idempotent: a repeat (the ripper retrying the call) returns the parked job."""
+    if job.status == JobStatus.AWAITING_TITLES:
+        return job
+    if job.status != JobStatus.RIPPING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"job not in ripping state: status={job.status.value}",
+        )
+    mark_parked(job)
+    session.add(job)
+    await session.flush()
+    await hub.emit(
+        topic="ripper.events",
+        event_type="rip.parked",
+        payload={"job_id": job.id, "drive_id": job.drive_id, "status": job.status.value},
+        job_id=job.id,
+        session=session,
+    )
+    await session.commit()
+    await session.refresh(job)
+    logger.info("rip-parked job_id=%s: backed up, waiting for its titles to be chosen", job.id)
+    return job
+
+
 @router.post("/jobs/{job_id}/rip-complete", response_model=JobView)
 async def rip_complete(
     _: JobCompleteRequest,
@@ -1501,6 +1541,7 @@ async def rip_complete(
         job.metadata_json = with_flags(job.metadata_json, retrying=False)
     job.ripped_at = datetime.now(timezone.utc)
     await session.commit()
+    await delete_parked_backup(job, all_tracks)
     await session.refresh(job)
     logger.info(
         "rip-complete job_id=%s status=%s done=%d failed=%d total=%d skipped=%d",

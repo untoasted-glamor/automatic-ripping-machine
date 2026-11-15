@@ -2490,6 +2490,10 @@ export type JobFlags = {
      * Rerip Allowed
      */
     rerip_allowed?: boolean;
+    /**
+     * Parked
+     */
+    parked?: boolean;
     [key: string]: unknown;
 };
 
@@ -2593,7 +2597,7 @@ export type JobStatsResponse = {
 /**
  * JobStatus
  */
-export type JobStatus = 'created' | 'awaiting_user_id' | 'identified' | 'ripping' | 'ripped' | 'ripped_partial' | 'awaiting_review' | 'ripped_awaiting_identify' | 'remuxing' | 'abandoned' | 'failed';
+export type JobStatus = 'created' | 'awaiting_user_id' | 'identified' | 'ripping' | 'ripped' | 'ripped_partial' | 'awaiting_review' | 'ripped_awaiting_identify' | 'remuxing' | 'awaiting_titles' | 'abandoned' | 'failed';
 
 /**
  * JobSubtitleOcrChoice
@@ -4711,6 +4715,10 @@ export type RipStartResponse = {
      */
     retry?: boolean;
     extract_menu?: MenuExtract | null;
+    /**
+     * Park After Backup
+     */
+    park_after_backup?: boolean;
 };
 
 /**
@@ -4750,6 +4758,10 @@ export type RipperConfigView = {
      * Review Requires Confirm
      */
     review_requires_confirm?: boolean;
+    /**
+     * Hold For Review
+     */
+    hold_for_review?: boolean;
 };
 
 /**
@@ -7331,6 +7343,46 @@ export type UpdateTrackApiRipperTracksTrackIdPatchResponses = {
 };
 
 export type UpdateTrackApiRipperTracksTrackIdPatchResponse = UpdateTrackApiRipperTracksTrackIdPatchResponses[keyof UpdateTrackApiRipperTracksTrackIdPatchResponses];
+
+export type RipParkedApiRipperJobsJobIdRipParkedPostData = {
+    body?: never;
+    headers?: {
+        /**
+         * X-Arm-Hostname
+         */
+        'x-arm-hostname'?: string | null;
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Job Id
+         */
+        job_id: string;
+    };
+    query?: never;
+    url: '/api/ripper/jobs/{job_id}/rip-parked';
+};
+
+export type RipParkedApiRipperJobsJobIdRipParkedPostErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type RipParkedApiRipperJobsJobIdRipParkedPostError = RipParkedApiRipperJobsJobIdRipParkedPostErrors[keyof RipParkedApiRipperJobsJobIdRipParkedPostErrors];
+
+export type RipParkedApiRipperJobsJobIdRipParkedPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: JobView;
+};
+
+export type RipParkedApiRipperJobsJobIdRipParkedPostResponse = RipParkedApiRipperJobsJobIdRipParkedPostResponses[keyof RipParkedApiRipperJobsJobIdRipParkedPostResponses];
 
 export type RipCompleteApiRipperJobsJobIdRipCompletePostData = {
     body: JobCompleteRequestWritable;

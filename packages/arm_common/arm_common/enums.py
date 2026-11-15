@@ -114,6 +114,11 @@ class JobStatus(StrEnum):
     # doesn't hold it (not in NON_TERMINAL_JOB_STATUSES): the drive's ripper
     # runs the remux in its own lane, beside a rip of the next disc.
     REMUXING = "remuxing"
+    # Stop 2 (fork only): the whole disc is backed up and ejected, and its
+    # titles wait to be chosen before they're remuxed from the backup. Off
+    # the drive like `remuxing`; opened (the default ticks applied) once
+    # `wait_start_time` is set, then started like stop 1 (`review_gate`).
+    AWAITING_TITLES = "awaiting_titles"
     ABANDONED = "abandoned"
     FAILED = "failed"
 
@@ -142,7 +147,7 @@ PRE_RIP_JOB_STATUSES: frozenset[JobStatus] = frozenset(
 NON_TERMINAL_JOB_STATUSES: frozenset[JobStatus] = PRE_RIP_JOB_STATUSES | frozenset({JobStatus.RIPPING})
 # Live, but the disc has left the drive (fork only): the drive's next disc gets
 # its own job while this one finishes from the kept disc backup.
-OFF_DRIVE_JOB_STATUSES: frozenset[JobStatus] = frozenset({JobStatus.REMUXING})
+OFF_DRIVE_JOB_STATUSES: frozenset[JobStatus] = frozenset({JobStatus.AWAITING_TITLES, JobStatus.REMUXING})
 # Every job that isn't finished: abandonable, and its drive's ripper still works for it.
 LIVE_JOB_STATUSES: frozenset[JobStatus] = NON_TERMINAL_JOB_STATUSES | OFF_DRIVE_JOB_STATUSES
 # The ripper is ripping or remuxing for the job (a ripper doing so is busy).
@@ -162,13 +167,21 @@ RESOLVABLE_PRESERVE_JOB_STATUSES: frozenset[JobStatus] = frozenset(
         # resolve = "I've identified it"; the separate Start = "begin ripping".
         # PRESERVE (not PROMOTE) keeps it in AWAITING_REVIEW after an edit.
         JobStatus.AWAITING_REVIEW,
+        # Stop 2 the same way: identity can still be fixed before the remux.
+        JobStatus.AWAITING_TITLES,
     }
 )
 RESOLVABLE_JOB_STATUSES: frozenset[JobStatus] = RESOLVABLE_PROMOTE_JOB_STATUSES | RESOLVABLE_PRESERVE_JOB_STATUSES
 # Session apply (POST /jobs/{id}/transcode). OK = resolve outputs now (or park
 # as no_tracks pre-rip); PARK = park as waiting_identify until identity lands.
 APPLY_OK_JOB_STATUSES: frozenset[JobStatus] = frozenset(
-    {JobStatus.IDENTIFIED, JobStatus.AWAITING_REVIEW, JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL}
+    {
+        JobStatus.IDENTIFIED,
+        JobStatus.AWAITING_REVIEW,
+        JobStatus.AWAITING_TITLES,
+        JobStatus.RIPPED,
+        JobStatus.RIPPED_PARTIAL,
+    }
 )
 APPLY_PARK_JOB_STATUSES: frozenset[JobStatus] = frozenset(
     {JobStatus.AWAITING_USER_ID, JobStatus.RIPPED_AWAITING_IDENTIFY}

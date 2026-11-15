@@ -85,8 +85,15 @@ MAX_CONCURRENT_RUNS = 2
 # RIPPING covers a restart mid-rip: the run rip-start scheduled is lost, and
 # crash recovery keeps the job RIPPING. RIPPED is left out on purpose: it is
 # terminal, so including it would match every pre-PR-3b TV job on upgrade.
+# AWAITING_TITLES (stop 2, fork only): its titles are still being chosen.
 _SWEEP_STATUSES: frozenset[JobStatus] = frozenset(
-    {JobStatus.IDENTIFIED, JobStatus.AWAITING_REVIEW, JobStatus.AWAITING_USER_ID, JobStatus.RIPPING}
+    {
+        JobStatus.IDENTIFIED,
+        JobStatus.AWAITING_REVIEW,
+        JobStatus.AWAITING_USER_ID,
+        JobStatus.RIPPING,
+        JobStatus.AWAITING_TITLES,
+    }
 )
 
 

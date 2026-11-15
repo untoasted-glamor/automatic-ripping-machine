@@ -239,6 +239,7 @@ def test_get_config_returns_flag() -> None:
         "ripping_paused": False,
         "manual_wait_seconds": 60,
         "review_requires_confirm": False,
+        "hold_for_review": False,
     }
 
 

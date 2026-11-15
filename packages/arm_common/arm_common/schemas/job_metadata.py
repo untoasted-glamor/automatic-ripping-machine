@@ -89,6 +89,9 @@ class JobFlags(BaseModel):
     # On a ripped job: the operator chose "Rip again", so the next identify of
     # this disc skips the previously-ripped check once (and clears the flag).
     rerip_allowed: bool = False
+    # Backed up whole and stopped before the remux (stop 2, fork only;
+    # `rip-parked`). Its backup goes at rip-complete once no title failed.
+    parked: bool = False
 
 
 class PreviouslyRipped(BaseModel):

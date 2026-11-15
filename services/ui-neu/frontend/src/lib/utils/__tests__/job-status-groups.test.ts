@@ -17,6 +17,7 @@ const ALL: JobStatus[] = [
 	'identified',
 	'awaiting_review',
 	'ripping',
+	'awaiting_titles',
 	'remuxing',
 	'ripped',
 	'ripped_partial',
@@ -26,7 +27,15 @@ const ALL: JobStatus[] = [
 ];
 
 describe('isInProgress', () => {
-	const IN_PROGRESS = ['created', 'awaiting_user_id', 'identified', 'awaiting_review', 'ripping', 'remuxing'];
+	const IN_PROGRESS = [
+		'created',
+		'awaiting_user_id',
+		'identified',
+		'awaiting_review',
+		'ripping',
+		'awaiting_titles',
+		'remuxing'
+	];
 	it.each(ALL)('raw status %s with no transcode', (s) => {
 		expect(isInProgress({ status: s, transcode_progress: null })).toBe(IN_PROGRESS.includes(s));
 	});
@@ -86,6 +95,7 @@ describe('lifecycleStageFor', () => {
 		['identified', 'identifying'],
 		['awaiting_review', 'identifying'],
 		['ripping', 'ripping'],
+		['awaiting_titles', 'ripping'],
 		['remuxing', 'ripping'],
 		['ripped', 'ripping'],
 		['ripped_partial', 'ripping'],
