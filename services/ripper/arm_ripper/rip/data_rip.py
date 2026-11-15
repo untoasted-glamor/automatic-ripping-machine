@@ -43,6 +43,71 @@ async def _report_progress(output_path: Path, total: int | None, on_progress: On
             logger.debug("data progress callback failed", exc_info=True)
 
 
+def _dd_command(device_path: str, output_path: Path) -> list[str]:
+    """The dd argv: 4 MB blocks for an image file; 2 KB blocks with noerror,sync for a disc."""
+    if is_iso_source(device_path):
+        return ["dd", f"if={device_path}", f"of={output_path}", "bs=4M"]
+    return ["dd", f"if={device_path}", f"of={output_path}", "bs=2048", "conv=noerror,sync"]
+
+
+async def _stop_reporter(reporter: asyncio.Task[None] | None) -> None:
+    """Cancel the progress reporter, if any, and wait for it to finish."""
+    if reporter is None:
+        return
+    reporter.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await reporter
+
+
+async def _kill_if_running(proc: asyncio.subprocess.Process) -> None:
+    """Kill dd and reap it if it is still running."""
+    # Cancel-safe: if the parent task was cancelled (abandon flow),
+    # dd is still running. Kill it before letting CancelledError
+    # propagate so /raw/<id>/ rmtree finishes clean.
+    if proc.returncode is not None:
+        return
+    proc.kill()
+    try:
+        await proc.wait()
+    except BaseException:
+        pass
+
+
+async def _wait_for_dd(proc: asyncio.subprocess.Process, reporter: asyncio.Task[None] | None) -> RipResult | None:
+    """Wait for dd to exit; return the timeout failure, or None if it exits in time.
+
+    Either way, the progress reporter is stopped and dd is reaped before this returns.
+    """
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=DATA_RIP_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return RipResult(ok=False, error=f"dd timed out after {DATA_RIP_TIMEOUT_SECONDS}s")
+    finally:
+        await _stop_reporter(reporter)
+        await _kill_if_running(proc)
+    return None
+
+
+async def _dd_failure(proc: asyncio.subprocess.Process) -> RipResult | None:
+    """The failure for a dd that exited non-zero, keeping the end of its stderr; None when it exited 0."""
+    if proc.returncode == 0:
+        return None
+    stderr = b""
+    if proc.stderr is not None:
+        stderr = await proc.stderr.read()
+    msg = stderr.decode(errors="replace").strip()[-400:] or f"exit={proc.returncode}"
+    return RipResult(ok=False, error=f"dd failed: {msg}")
+
+
+def _empty_output_failure(output_path: Path) -> RipResult | None:
+    """The failure for a dd that exited 0 without writing anything; None when the image has bytes."""
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        return RipResult(ok=False, error="dd exited 0 but produced empty output")
+    return None
+
+
 async def rip_data(device_path: str, output_dir: Path, on_progress: OnDataProgress | None = None) -> RipResult:
     """Pull a raw image from the disc, or copy an ISO image, via dd.
 
@@ -55,10 +120,7 @@ async def rip_data(device_path: str, output_dir: Path, on_progress: OnDataProgre
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "dump.iso"
 
-    if is_iso_source(device_path):
-        cmd = ["dd", f"if={device_path}", f"of={output_path}", "bs=4M"]
-    else:
-        cmd = ["dd", f"if={device_path}", f"of={output_path}", "bs=2048", "conv=noerror,sync"]
+    cmd = _dd_command(device_path, output_path)
     total = await asyncio.to_thread(source_size, device_path)
     logger.info("dd if=%s of=%s size=%s", device_path, output_path, total)
 
@@ -74,36 +136,17 @@ async def rip_data(device_path: str, output_dir: Path, on_progress: OnDataProgre
     reporter = (
         asyncio.create_task(_report_progress(output_path, total, on_progress)) if on_progress is not None else None
     )
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=DATA_RIP_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return RipResult(ok=False, error=f"dd timed out after {DATA_RIP_TIMEOUT_SECONDS}s")
-    finally:
-        if reporter is not None:
-            reporter.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await reporter
-        # Cancel-safe: if the parent task was cancelled (abandon flow),
-        # dd is still running. Kill it before letting CancelledError
-        # propagate so /raw/<id>/ rmtree finishes clean.
-        if proc.returncode is None:
-            proc.kill()
-            try:
-                await proc.wait()
-            except BaseException:
-                pass
+    timed_out = await _wait_for_dd(proc, reporter)
+    if timed_out is not None:
+        return timed_out
 
-    if proc.returncode != 0:
-        stderr = b""
-        if proc.stderr is not None:
-            stderr = await proc.stderr.read()
-        msg = stderr.decode(errors="replace").strip()[-400:] or f"exit={proc.returncode}"
-        return RipResult(ok=False, error=f"dd failed: {msg}")
+    failed = await _dd_failure(proc)
+    if failed is not None:
+        return failed
 
-    if not output_path.exists() or output_path.stat().st_size == 0:
-        return RipResult(ok=False, error="dd exited 0 but produced empty output")
+    empty = _empty_output_failure(output_path)
+    if empty is not None:
+        return empty
 
     size = output_path.stat().st_size
     if on_progress is not None:

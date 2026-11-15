@@ -25,6 +25,34 @@ function decode(s) {
 	}
 }
 
+// Resolves an in-page "#fragment" link to an anchor, or an error when its escapes don't decode.
+export function resolveAnchor(target) {
+	const fragment = decode(target.slice(1));
+	return fragment === null ? { kind: 'error', message: `malformed link: ${target}` } : { kind: 'anchor', fragment };
+}
+
+// Maps a github.com wiki or main-branch blob URL on one of `repos` to its repo path and fragment;
+// null for anything else.
+export function upstreamPath(url, repos, wikiDir) {
+	if (url.hostname !== 'github.com') return null;
+	const [owner, name, kind, ...rest] = url.pathname.split('/').filter(Boolean);
+	if (!owner || !name || !repos.has(`${owner}/${name}`.toLowerCase())) return null;
+	const fragment = decode(url.hash.slice(1)) ?? '';
+	if (kind === 'wiki') return { path: `${wikiDir}/${decode(rest[0] ?? 'Home')}.md`, fragment };
+	if (kind === 'blob' && rest[0] === 'main' && rest.length > 1) {
+		return { path: rest.slice(1).map(decode).join('/'), fragment };
+	}
+	return null;
+}
+
+// Splits "path#fragment" at the first # and decodes both halves; null when either has a malformed escape.
+export function splitTarget(target) {
+	const at = target.indexOf('#');
+	const pathPart = decode(at === -1 ? target : target.slice(0, at));
+	const fragment = at === -1 ? '' : decode(target.slice(at + 1));
+	return pathPart === null || fragment === null ? null : { pathPart, fragment };
+}
+
 export function createResolver({ armRoot, pages, manifest }) {
 	const byPath = new Map(pages.map((p) => [p.srcPath, p]));
 	const repos = new Set([manifest.repo, ...(manifest.repoAliases ?? [])].map((r) => r.toLowerCase()));
@@ -43,37 +71,39 @@ export function createResolver({ armRoot, pages, manifest }) {
 		return page ? { kind: 'page', id: page.id, fragment } : { kind: 'repo', path, fragment };
 	}
 
-	function resolve(target, from) {
-		if (target.startsWith('#')) {
-			const fragment = decode(target.slice(1));
-			return fragment === null ? { kind: 'error', message: `malformed link: ${target}` } : { kind: 'anchor', fragment };
-		}
-		if (SCHEME.test(target)) {
-			let url;
-			try {
-				url = new URL(target);
-			} catch {
-				return { kind: 'external', url: target };
-			}
-			if (url.hostname === 'github.com') {
-				const [owner, name, kind, ...rest] = url.pathname.split('/').filter(Boolean);
-				const fragment = decode(url.hash.slice(1)) ?? '';
-				if (owner && name && repos.has(`${owner}/${name}`.toLowerCase())) {
-					if (kind === 'wiki') return repoPath(`${wikiDir}/${decode(rest[0] ?? 'Home')}.md`, fragment);
-					if (kind === 'blob' && rest[0] === 'main' && rest.length > 1) return repoPath(rest.slice(1).map(decode).join('/'), fragment);
-				}
-			}
+	function resolveUrl(target) {
+		let url;
+		try {
+			url = new URL(target);
+		} catch {
 			return { kind: 'external', url: target };
 		}
-		const at = target.indexOf('#');
-		const pathPart = decode(at === -1 ? target : target.slice(0, at));
-		const fragment = at === -1 ? '' : decode(target.slice(at + 1));
-		if (pathPart === null || fragment === null) return { kind: 'error', message: `malformed link: ${target}` };
-		// GitHub wiki links are bare page names ("Getting-Started").
-		if (wikiDir && posix.dirname(from) === wikiDir && /^[A-Za-z0-9_-]+$/.test(pathPart) && existsSync(join(armRoot, wikiDir, `${pathPart}.md`))) {
-			return repoPath(`${wikiDir}/${pathPart}.md`, fragment);
-		}
+		const upstream = upstreamPath(url, repos, wikiDir);
+		return upstream ? repoPath(upstream.path, upstream.fragment) : { kind: 'external', url: target };
+	}
+
+	// GitHub wiki links are bare page names ("Getting-Started").
+	function isWikiPageName(pathPart, from) {
+		return (
+			wikiDir &&
+			posix.dirname(from) === wikiDir &&
+			/^[A-Za-z0-9_-]+$/.test(pathPart) &&
+			existsSync(join(armRoot, wikiDir, `${pathPart}.md`))
+		);
+	}
+
+	function resolveRelative(target, from) {
+		const parts = splitTarget(target);
+		if (!parts) return { kind: 'error', message: `malformed link: ${target}` };
+		const { pathPart, fragment } = parts;
+		if (isWikiPageName(pathPart, from)) return repoPath(`${wikiDir}/${pathPart}.md`, fragment);
 		return repoPath(posix.join(posix.dirname(from), pathPart), fragment);
+	}
+
+	function resolve(target, from) {
+		if (target.startsWith('#')) return resolveAnchor(target);
+		if (SCHEME.test(target)) return resolveUrl(target);
+		return resolveRelative(target, from);
 	}
 
 	function resolveAsset(src, from) {
@@ -119,13 +149,21 @@ export function assetHref(path, { target, fromId }) {
 	return posix.relative(posix.dirname(outPath(fromId)), `assets/${path}`);
 }
 
+// The page whose headings a link's fragment must match: the linking page for an in-page anchor,
+// the target for a page link, null for anything else.
+export function fragmentTarget(resolved, fromId) {
+	if (resolved.kind === 'anchor') return fromId;
+	if (resolved.kind === 'page') return resolved.id;
+	return null;
+}
+
 export function checkFragments(rendered) {
 	const ids = new Map(rendered.map((r) => [r.page.id, r.headingIds]));
 	const errors = [];
 	for (const r of rendered) {
 		for (const { line, resolved } of r.links) {
 			if (!resolved.fragment) continue;
-			const targetId = resolved.kind === 'anchor' ? r.page.id : resolved.kind === 'page' ? resolved.id : null;
+			const targetId = fragmentTarget(resolved, r.page.id);
 			if (targetId && !ids.get(targetId)?.has(resolved.fragment)) {
 				errors.push(`${r.page.srcPath}:${line}: missing anchor #${resolved.fragment} in ${targetId}`);
 			}

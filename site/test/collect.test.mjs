@@ -1,7 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { slugFor, collectPages } from '../src/collect.mjs';
-import { fixtureTree, MANIFEST } from './helpers.mjs';
+import { slugFor, collectPages, linkItem, readPage, unplacedWikiErrors } from '../src/collect.mjs';
+import { fixtureTree, makeTree, MANIFEST } from './helpers.mjs';
+
+test('readPage: reads the file and builds the page record with its heading as title', () => {
+	const root = makeTree({ 'docs/user/Some-Page.md': '# The Heading\n\nbody\n' });
+	const meta = { id: 'guide/some-page', audience: 'user', slug: 'some-page', srcPath: 'docs/user/Some-Page.md' };
+	assert.deepEqual(readPage(root, meta), { ...meta, title: 'The Heading', source: '# The Heading\n\nbody\n' });
+	assert.deepEqual(Object.keys(readPage(root, meta)), ['id', 'audience', 'slug', 'srcPath', 'title', 'source']);
+});
+
+test('readPage: title falls back to the de-slugged file stem without a heading', () => {
+	const root = makeTree({ 'docs/user/no-heading_page.md': 'just text\n' });
+	const srcPath = 'docs/user/no-heading_page.md';
+	const meta = { id: 'guide/no-heading_page', audience: 'user', slug: 'no-heading_page', srcPath };
+	assert.equal(readPage(root, meta).title, 'no heading page');
+});
 
 test('slugFor: lowercased stem; README takes its directory name', () => {
 	assert.equal(slugFor('docs/user/Getting-Started.md'), 'getting-started');
@@ -80,6 +94,17 @@ test('collectPages: a pattern or file matching nothing is an error', () => {
 	]);
 });
 
+test('collectPages: a file an earlier entry already placed is skipped, not placed twice', () => {
+	const manifest = structuredClone(MANIFEST);
+	manifest.sections[1].groups[0].files.push({ file: 'docs/user/Home.md', label: 'Home again' });
+	manifest.sections[2].groups[0].files.push('docs/developers/architecture/*.md');
+	const baseline = collectPages(fixtureTree(), MANIFEST);
+	const { pages, nav, errors } = collectPages(fixtureTree(), manifest);
+	assert.deepEqual(errors, []);
+	assert.deepEqual(pages.map((p) => p.id), baseline.pages.map((p) => p.id));
+	assert.deepEqual(nav, baseline.nav);
+});
+
 test('collectPages: an unknown audience is an error', () => {
 	const manifest = structuredClone(MANIFEST);
 	manifest.sections[2].audience = 'ops';
@@ -102,4 +127,45 @@ test('collectPages: an id with characters outside the app id rule is an error, n
 	const { pages, errors } = collectPages(root, manifest);
 	assert.deepEqual(errors, ['invalid page id guide/foo.bar from docs/user/Foo.Bar.md (slugs may use a-z, 0-9, _ and -)']);
 	assert.ok(!pages.some((p) => p.srcPath === 'docs/user/Foo.Bar.md'));
+});
+
+test('linkItem: nav item for a manifest link entry, with and without a label', () => {
+	const section = { label: 'Guide' };
+	assert.deepEqual(linkItem({ label: 'Chat', link: 'https://example.com/chat' }, section), {
+		label: 'Chat',
+		target: 'https://example.com/chat',
+		from: 'manifest.json',
+		where: 'manifest.json (Guide)'
+	});
+	assert.deepEqual(linkItem({ link: 'https://example.com/x' }, section), {
+		label: undefined,
+		target: 'https://example.com/x',
+		from: 'manifest.json',
+		where: 'manifest.json (Guide)'
+	});
+});
+
+test('unplacedWikiErrors reports a wiki page no section placed', () => {
+	assert.deepEqual(unplacedWikiErrors(['wiki/Home.md'], new Set()), [
+		'manifest: wiki/Home.md is not placed in any section'
+	]);
+});
+
+test('unplacedWikiErrors gives nothing for a placed page', () => {
+	assert.deepEqual(unplacedWikiErrors(['wiki/Home.md'], new Set(['wiki/Home.md'])), []);
+});
+
+test('unplacedWikiErrors exempts the wiki sidebar and footer', () => {
+	assert.deepEqual(unplacedWikiErrors(['wiki/_Footer.md', 'wiki/_Sidebar.md'], new Set()), []);
+});
+
+test('unplacedWikiErrors keeps the input order', () => {
+	assert.deepEqual(unplacedWikiErrors(['wiki/B.md', 'wiki/_Sidebar.md', 'wiki/A.md'], new Set()), [
+		'manifest: wiki/B.md is not placed in any section',
+		'manifest: wiki/A.md is not placed in any section'
+	]);
+});
+
+test('unplacedWikiErrors gives [] for an empty list', () => {
+	assert.deepEqual(unplacedWikiErrors([], new Set()), []);
 });

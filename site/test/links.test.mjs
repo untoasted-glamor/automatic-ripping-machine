@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { collectPages } from '../src/collect.mjs';
-import { createResolver, hrefFor, isOffsite, assetHref, outPath, appRoute, rootPrefix, checkFragments, fillLinks } from '../src/links.mjs';
+import { createResolver, resolveAnchor, upstreamPath, splitTarget, hrefFor, isOffsite, assetHref, outPath, appRoute, rootPrefix, fragmentTarget, checkFragments, fillLinks } from '../src/links.mjs';
 import { fixtureTree, MANIFEST } from './helpers.mjs';
 
 const UP = 'https://github.com/automatic-ripping-machine/automatic-ripping-machine';
@@ -98,6 +98,22 @@ test('checkFragments reports missing anchors on pages and on the same page', () 
 	assert.deepEqual(checkFragments(rendered), ['x.md:3: missing anchor #two in a/x']);
 });
 
+test('fragmentTarget picks the page a fragment must match', () => {
+	assert.equal(fragmentTarget({ kind: 'anchor', fragment: 'f' }, 'a/x'), 'a/x');
+	assert.equal(fragmentTarget({ kind: 'page', id: 'a/y', fragment: 'f' }, 'a/x'), 'a/y');
+	for (const kind of ['repo', 'external', 'error']) assert.equal(fragmentTarget({ kind, fragment: 'f' }, 'a/x'), null);
+});
+
+test('checkFragments skips links without a fragment and repo links with one', () => {
+	const rendered = [
+		{ page: { id: 'a/x', srcPath: 'x.md' }, headingIds: new Set(), links: [
+			{ line: 1, resolved: { kind: 'page', id: 'a/x', fragment: '' } },
+			{ line: 2, resolved: { kind: 'repo', path: 'R', fragment: 'nope' } }
+		] }
+	];
+	assert.deepEqual(checkFragments(rendered), []);
+});
+
 test('fillLinks substitutes placeholders and escapes attribute values', () => {
 	const html = '<a href="@@doclink:0@@">a</a><img src="@@docasset:0@@">';
 	const out = fillLinks(html, { links: [{ resolved: { kind: 'external', url: 'https://x/?a=1&b="2"' } }], assets: ['d/i.png'] }, { target: 'app', fromId: 'guide/home', repo: 'o/r' });
@@ -114,4 +130,151 @@ test('in the app, links to pages outside the app bundle go to the public site in
 	const html = '<a href="@@doclink:0@@">arch</a> <a href="@@doclink:1@@">faq</a>';
 	const out = fillLinks(html, { links: [{ resolved: dev }, { resolved: { kind: 'page', id: 'guide/faq', fragment: '' } }], assets: [] }, ctx);
 	assert.equal(out, '<a href="https://example.test/arm-v3/dev/architecture.html#topology" target="_blank" rel="noopener">arch</a> <a href="/help/guide/faq">faq</a>');
+});
+
+const BAD = 'bad%E0%A4%A';
+const ARCH = 'docs/developers/architecture/README.md';
+const ARM = 'automatic-ripping-machine/automatic-ripping-machine';
+const LICENSE = { kind: 'repo', path: 'LICENSE', fragment: '' };
+
+test('anchors: a malformed escape is an error, an encoded one decodes', () => {
+	const r = setup();
+	assert.deepEqual(r.resolve(`#${BAD}`, 'docs/user/Home.md'), { kind: 'error', message: `malformed link: #${BAD}` });
+	assert.deepEqual(r.resolve('#a%20b', 'docs/user/Home.md'), { kind: 'anchor', fragment: 'a b' });
+});
+
+test('a scheme-shaped target that new URL rejects stays external, verbatim', () => {
+	const r = setup();
+	assert.deepEqual(r.resolve('http://', 'CONTRIBUTING.md'), { kind: 'external', url: 'http://' });
+	assert.deepEqual(r.resolve('https://[bad', 'CONTRIBUTING.md'), { kind: 'external', url: 'https://[bad' });
+});
+
+test('an upstream blob URL with a malformed hash resolves with an empty fragment', () => {
+	const r = setup();
+	assert.deepEqual(r.resolve(`${UP}/blob/main/LICENSE#${BAD}`, 'CONTRIBUTING.md'), LICENSE);
+	assert.deepEqual(r.resolve(`${UP}/blob/main/LICENSE#x`, 'CONTRIBUTING.md'), { ...LICENSE, fragment: 'x' });
+});
+
+test('upstream mapping edges: unknown repo, other host, other branch, bare main stay external', () => {
+	const r = setup();
+	const ext = (url) => assert.deepEqual(r.resolve(url, 'CONTRIBUTING.md'), { kind: 'external', url });
+	ext('https://github.com/someone/else/blob/main/LICENSE');
+	ext(`https://gitlab.com/${ARM}/blob/main/LICENSE`);
+	ext(`${UP}/blob/dev/LICENSE`);
+	ext(`${UP}/blob/main`);
+});
+
+test('upstream repo match ignores case and honours repoAliases', () => {
+	const r = setup();
+	const from = 'CONTRIBUTING.md';
+	const upper = 'https://github.com/AUTOMATIC-Ripping-Machine/Automatic-Ripping-Machine/blob/main/LICENSE';
+	assert.deepEqual(r.resolve(upper, from), LICENSE);
+	assert.deepEqual(r.resolve('https://github.com/uprightbass360/arm-v3/blob/main/LICENSE', from), LICENSE);
+	const home = { kind: 'page', id: 'guide/home', fragment: '' };
+	assert.deepEqual(r.resolve('https://github.com/UprightBass360/ARM-v3/wiki', from), home);
+});
+
+test('bare wiki names only apply from a wiki page; otherwise they are relative paths', () => {
+	const r = setup();
+	const missing = (message) => ({ kind: 'error', message: `link target not found: ${message}` });
+	assert.deepEqual(r.resolve('Getting-Started', 'CONTRIBUTING.md'), missing('Getting-Started'));
+	assert.deepEqual(r.resolve('Getting.Started', 'docs/user/Home.md'), missing('docs/user/Getting.Started'));
+	const page = { kind: 'page', id: 'guide/getting-started', fragment: '' };
+	assert.deepEqual(r.resolve('Getting-Started.md', 'docs/user/Home.md'), page);
+});
+
+test('a malformed fragment on a relative target is an error', () => {
+	const message = `malformed link: LICENSE#${BAD}`;
+	assert.deepEqual(setup().resolve(`LICENSE#${BAD}`, ARCH), { kind: 'error', message });
+});
+
+test('upstream URLs with a malformed path segment: wiki name becomes "null", blob segment becomes empty', () => {
+	const r = setup();
+	const notFound = (path) => ({ kind: 'error', message: `link target not found: ${path}` });
+	assert.deepEqual(r.resolve(`${UP}/wiki/${BAD}`, 'CONTRIBUTING.md'), notFound('docs/user/null.md'));
+	assert.deepEqual(r.resolve(`${UP}/blob/main/docs/${BAD}/LICENSE`, 'CONTRIBUTING.md'), notFound('docs/LICENSE'));
+});
+
+test('resolveAnchor resolves a plain fragment to an anchor', () => {
+	assert.deepEqual(resolveAnchor('#install'), { kind: 'anchor', fragment: 'install' });
+});
+
+test('resolveAnchor decodes percent escapes in the fragment', () => {
+	assert.deepEqual(resolveAnchor('#a%20b'), { kind: 'anchor', fragment: 'a b' });
+});
+
+test('resolveAnchor accepts an empty fragment', () => {
+	assert.deepEqual(resolveAnchor('#'), { kind: 'anchor', fragment: '' });
+});
+
+test('resolveAnchor reports a malformed escape as an error', () => {
+	assert.deepEqual(resolveAnchor('#bad%E0%A4%A'), { kind: 'error', message: 'malformed link: #bad%E0%A4%A' });
+});
+
+test('upstreamPath maps wiki and main-branch blob URLs on a known repo', () => {
+	const repos = new Set(['automatic-ripping-machine/automatic-ripping-machine']);
+	const map = (u) => upstreamPath(new URL(u), repos, 'docs/user');
+	assert.deepEqual(map(`${UP}/wiki/Getting-Started`), { path: 'docs/user/Getting-Started.md', fragment: '' });
+	assert.deepEqual(map(`${UP}/wiki`), { path: 'docs/user/Home.md', fragment: '' });
+	assert.deepEqual(map(`${UP}/blob/main/docs/a%20b/x.md#top`), { path: 'docs/a b/x.md', fragment: 'top' });
+	assert.deepEqual(map(`${UP}/wiki/Home#%E0%A4%A`), { path: 'docs/user/Home.md', fragment: '' });
+	const upper = 'https://github.com/Automatic-Ripping-Machine/Automatic-Ripping-Machine/wiki/Home';
+	assert.deepEqual(map(upper), { path: 'docs/user/Home.md', fragment: '' });
+});
+
+test('upstreamPath is null for anything that is not a known wiki or main blob', () => {
+	const repos = new Set(['automatic-ripping-machine/automatic-ripping-machine']);
+	const map = (u) => upstreamPath(new URL(u), repos, 'docs/user');
+	assert.equal(map('https://example.com/automatic-ripping-machine/automatic-ripping-machine/wiki'), null);
+	assert.equal(map('https://github.com/other/repo/wiki'), null);
+	assert.equal(map('https://github.com/automatic-ripping-machine'), null);
+	assert.equal(map(`${UP}/blob/dev/README.md`), null);
+	assert.equal(map(`${UP}/blob/main`), null);
+	assert.equal(map(`${UP}/issues/1`), null);
+	assert.equal(map('https://github.com/'), null);
+	assert.equal(map(UP), null);
+});
+
+test('upstreamPath keeps malformed escapes in the path as the resolver always has', () => {
+	const repos = new Set(['automatic-ripping-machine/automatic-ripping-machine']);
+	const map = (u) => upstreamPath(new URL(u), repos, 'docs/user');
+	assert.deepEqual(map(`${UP}/wiki/%E0%A4%A`), { path: 'docs/user/null.md', fragment: '' });
+	assert.deepEqual(map(`${UP}/blob/main/a/%E0%A4%A/b.md`), { path: 'a//b.md', fragment: '' });
+});
+
+test('splitTarget returns the path with an empty fragment when there is no #', () => {
+	assert.deepEqual(splitTarget('a.md'), { pathPart: 'a.md', fragment: '' });
+});
+
+test('splitTarget splits path and fragment at the #', () => {
+	assert.deepEqual(splitTarget('a.md#x'), { pathPart: 'a.md', fragment: 'x' });
+});
+
+test('splitTarget decodes both halves', () => {
+	assert.deepEqual(splitTarget('a%20b.md#c%20d'), { pathPart: 'a b.md', fragment: 'c d' });
+});
+
+test('splitTarget splits at the first #', () => {
+	assert.deepEqual(splitTarget('a.md#x#y'), { pathPart: 'a.md', fragment: 'x#y' });
+});
+
+test('splitTarget gives an empty fragment for a trailing #', () => {
+	assert.deepEqual(splitTarget('a.md#'), { pathPart: 'a.md', fragment: '' });
+});
+
+test('splitTarget gives null for a malformed path escape', () => {
+	assert.equal(splitTarget('a%E0%A4%A.md#x'), null);
+});
+
+test('splitTarget gives null for a malformed fragment escape', () => {
+	assert.equal(splitTarget('a.md#%E0%A4%A'), null);
+});
+
+test('createResolver without repoAliases maps only the manifest repo', () => {
+	const armRoot = fixtureTree();
+	const { repoAliases, ...manifest } = MANIFEST;
+	const r = createResolver({ armRoot, pages: collectPages(armRoot, manifest).pages, manifest });
+	assert.deepEqual(r.resolve('https://github.com/uprightbass360/arm-v3/blob/main/LICENSE', 'CONTRIBUTING.md'), LICENSE);
+	const alias = `https://github.com/${repoAliases[0]}/blob/main/LICENSE`;
+	assert.deepEqual(r.resolve(alias, 'CONTRIBUTING.md'), { kind: 'external', url: alias });
 });

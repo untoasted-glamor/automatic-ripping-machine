@@ -53,6 +53,24 @@ function renderToc(toc) {
 	return `<nav class="docs-toc" aria-label="On this page"><p class="eyebrow">On this page</p>${links}</nav>`;
 }
 
+// The tailwind entry sheet: tailwind, ui-neu's base sheets and component blocks, then the site's own sheet, each
+// imported by a path relative to cacheDir.
+export function cssEntry(styles, siteDir, cacheDir) {
+	const rel = (p) => relative(cacheDir, p).split(sep).join('/');
+	return [
+		'@import "tailwindcss" source(none);',
+		...['tokens', 'base', 'layout', 'utilities'].map((n) => `@import "${rel(join(styles, `${n}.css`))}";`),
+		...BLOCKS.map((b) => `@import "${rel(join(styles, 'components', `${b}.css`))}";`),
+		`@import "${rel(join(siteDir, 'src/styles/site.css'))}";`
+	].join('\n');
+}
+
+// ui-neu's base.css declares Rajdhani with root-absolute /fonts/ URLs;
+// site.css sits at the site root, so relative fonts/ resolves the same.
+export function relativeFontUrls(css) {
+	return css.replace(/url\((['"]?)\/fonts\//g, 'url($1fonts/');
+}
+
 function compileCss(armRoot, siteDir, outFile) {
 	const styles = join(armRoot, STYLES);
 	if (!existsSync(join(styles, 'tokens.css'))) throw new Error(`ui-neu tokens not found at ${join(styles, 'tokens.css')} (set ARM_ROOT)`);
@@ -60,18 +78,42 @@ function compileCss(armRoot, siteDir, outFile) {
 	// site/node_modules; ui-neu sheets are imported by relative path.
 	const cacheDir = join(siteDir, '.cache');
 	mkdirSync(cacheDir, { recursive: true });
-	const rel = (p) => relative(cacheDir, p).split(sep).join('/');
-	const entry = [
-		'@import "tailwindcss" source(none);',
-		...['tokens', 'base', 'layout', 'utilities'].map((n) => `@import "${rel(join(styles, `${n}.css`))}";`),
-		...BLOCKS.map((b) => `@import "${rel(join(styles, 'components', `${b}.css`))}";`),
-		`@import "${rel(join(siteDir, 'src/styles/site.css'))}";`
-	].join('\n');
-	writeFileSync(join(cacheDir, 'entry.css'), entry);
+	writeFileSync(join(cacheDir, 'entry.css'), cssEntry(styles, siteDir, cacheDir));
 	execFileSync(join(siteDir, 'node_modules/.bin/tailwindcss'), ['-i', join(cacheDir, 'entry.css'), '-o', outFile, '--minify'], { cwd: siteDir, stdio: ['ignore', 'ignore', 'inherit'] });
-	// ui-neu's base.css declares Rajdhani with root-absolute /fonts/ URLs;
-	// site.css sits at the site root, so relative fonts/ resolves the same.
-	writeFileSync(outFile, readFileSync(outFile, 'utf8').replace(/url\((['"]?)\/fonts\//g, 'url($1fonts/'));
+	writeFileSync(outFile, relativeFontUrls(readFileSync(outFile, 'utf8')));
+}
+
+// One page's HTML: the site template filled with its nav, table of contents, content and footer.
+export function pageHtml(template, r, { nav, manifest, meta }) {
+	const id = r.page.id;
+	const ctx = { target: 'site', fromId: id, repo: manifest.repo };
+	return fillTemplate(template, {
+		root: rootPrefix(id),
+		title: escapeHtml(r.page.title),
+		repo: escapeHtml(manifest.repo),
+		nav: renderNav(navFor(nav, ctx), id),
+		toc: renderToc(r.toc),
+		content: fillLinks(r.html, r, ctx),
+		editUrl: escapeHtml(editUrl(manifest.repo, r.page.srcPath)),
+		version: escapeHtml(meta.version),
+		commit: escapeHtml(meta.commit)
+	});
+}
+
+// The search-index script: the search index plus each page's title and output path, assigned to
+// window.ARM_DOCS_SEARCH.
+export function searchIndexScript(search, rendered) {
+	const pages = Object.fromEntries(rendered.map((r) => [r.page.id, { title: r.page.title, path: outPath(r.page.id) }]));
+	return `window.ARM_DOCS_SEARCH = ${JSON.stringify({ ...search, pages })};\n`;
+}
+
+// Copies the files the site ships as they are: ui-neu's fonts and favicon, the client scripts and minisearch.
+// outDir/js must exist.
+export function copyStaticFiles(armRoot, siteDir, outDir) {
+	cpSync(join(armRoot, 'services/ui-neu/frontend/static/fonts'), join(outDir, 'fonts'), { recursive: true });
+	copyFileSync(join(armRoot, 'services/ui-neu/frontend/static/favicon.ico'), join(outDir, 'favicon.ico'));
+	for (const f of ['theme.js', 'site.js']) copyFileSync(join(siteDir, 'src/client', f), join(outDir, 'js', f));
+	copyFileSync(join(minisearchRoot(), 'dist/umd/index.js'), join(outDir, 'js/minisearch.js'));
 }
 
 export function writeSite({ outDir, armRoot, siteDir, rendered, nav, meta, manifest, search }) {
@@ -80,30 +122,13 @@ export function writeSite({ outDir, armRoot, siteDir, rendered, nav, meta, manif
 	const template = readFileSync(join(siteDir, 'src/template.html'), 'utf8');
 
 	for (const r of rendered) {
-		const id = r.page.id;
-		const ctx = { target: 'site', fromId: id, repo: manifest.repo };
-		const html = fillTemplate(template, {
-			root: rootPrefix(id),
-			title: escapeHtml(r.page.title),
-			repo: escapeHtml(manifest.repo),
-			nav: renderNav(navFor(nav, ctx), id),
-			toc: renderToc(r.toc),
-			content: fillLinks(r.html, r, ctx),
-			editUrl: escapeHtml(editUrl(manifest.repo, r.page.srcPath)),
-			version: escapeHtml(meta.version),
-			commit: escapeHtml(meta.commit)
-		});
-		const file = join(outDir, outPath(id));
+		const file = join(outDir, outPath(r.page.id));
 		mkdirSync(dirname(file), { recursive: true });
-		writeFileSync(file, html);
+		writeFileSync(file, pageHtml(template, r, { nav, manifest, meta }));
 	}
 
 	copyAssets(rendered, armRoot, join(outDir, 'assets'));
 	compileCss(armRoot, siteDir, join(outDir, 'site.css'));
-	cpSync(join(armRoot, 'services/ui-neu/frontend/static/fonts'), join(outDir, 'fonts'), { recursive: true });
-	copyFileSync(join(armRoot, 'services/ui-neu/frontend/static/favicon.ico'), join(outDir, 'favicon.ico'));
-	for (const f of ['theme.js', 'site.js']) copyFileSync(join(siteDir, 'src/client', f), join(outDir, 'js', f));
-	copyFileSync(join(minisearchRoot(), 'dist/umd/index.js'), join(outDir, 'js/minisearch.js'));
-	const pages = Object.fromEntries(rendered.map((r) => [r.page.id, { title: r.page.title, path: outPath(r.page.id) }]));
-	writeFileSync(join(outDir, 'js/search-index.js'), `window.ARM_DOCS_SEARCH = ${JSON.stringify({ ...search, pages })};\n`);
+	copyStaticFiles(armRoot, siteDir, outDir);
+	writeFileSync(join(outDir, 'js/search-index.js'), searchIndexScript(search, rendered));
 }

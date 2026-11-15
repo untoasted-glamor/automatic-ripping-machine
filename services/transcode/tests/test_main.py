@@ -895,3 +895,29 @@ async def test_progress_recorder_records_all_fields() -> None:
         24.5,
         23.0,
     )
+
+
+def test_require_gpu_device_returns_the_configured_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    import arm_transcode.main as m
+
+    monkeypatch.setenv("ARM_GPU_DEVICE", "/dev/dri/renderD128")
+
+    assert m._require_gpu_device() == "/dev/dri/renderD128"
+
+
+def test_require_gpu_device_raises_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    import arm_transcode.main as m
+
+    monkeypatch.delenv("ARM_GPU_DEVICE", raising=False)
+
+    with pytest.raises(RuntimeError, match="ffmpeg_vaapi encoder requires ARM_GPU_DEVICE"):
+        m._require_gpu_device()
+
+
+def test_require_gpu_device_raises_when_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    import arm_transcode.main as m
+
+    monkeypatch.setenv("ARM_GPU_DEVICE", "")
+
+    with pytest.raises(RuntimeError, match="ffmpeg_vaapi encoder requires ARM_GPU_DEVICE"):
+        m._require_gpu_device()
