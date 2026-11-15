@@ -8,6 +8,7 @@
 	import PosterImage from '$lib/components/PosterImage.svelte';
 	import type {
 		JobDetailView,
+		MenuProposalView,
 		ResolveResponse,
 		ApplySessionResponse,
 		NamingPreviewItem,
@@ -52,6 +53,9 @@
 	import JsonTree from '$lib/components/JsonTree.svelte';
 	import JobLogPanel from '$lib/components/JobLogPanel.svelte';
 	import DiscMenuPanel from '$lib/components/DiscMenuPanel.svelte';
+	import MenuProposalEditor from '$lib/components/MenuProposalEditor.svelte';
+	import { acceptAllMenuProposals } from '$lib/api/discMenus';
+	import { acceptableProposals, proposalByTrack } from '$lib/utils/disc-menu';
 	import { startRipperEvents, onRipperEvent } from '$lib/stores/ripperEvents.svelte';
 	import { ripProgress, reconcileSubscriptions, startWS, formatEta, formatTransfer } from '$lib/stores/rips.svelte';
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
@@ -184,6 +188,47 @@
 	// What the last Retry failed titles click started (shown under the Tracks table).
 	let retryNote = $state<string | null>(null);
 	let retrying = $state(false);
+
+	// The disc menu's names, shown on the titles' rows (the Disc menu panel loads them).
+	let menuPanel = $state<{ reload: () => Promise<void> } | undefined>(undefined);
+	let menuProposals = $state<MenuProposalView[]>([]);
+	let menuByTrack = $derived(proposalByTrack(menuProposals));
+	let menuAcceptable = $derived(acceptableProposals(menuProposals));
+	let acceptingAll = $state(false);
+	let menuNote = $state<string | null>(null);
+
+	function menuNameChanged(updated: MenuProposalView) {
+		menuProposals = menuProposals.map((p) => (p.id === updated.id ? updated : p));
+		if (updated.status === 'applied' || updated.status === 'accepted') loadJob();
+		void menuPanel?.reload();
+	}
+
+	function menuProposalsLoaded(list: MenuProposalView[]) {
+		menuProposals = list;
+		// A finished preview adds rows for the short titles the menu plays: load them.
+		const have = new Set((detail?.tracks ?? []).map((t) => t.id));
+		if (list.some((p) => p.track_id && !have.has(p.track_id))) loadJob();
+	}
+
+	function focusMenuName(proposalId: string) {
+		document.querySelector(`[data-proposal-id="${proposalId}"]`)?.scrollIntoView({ block: 'center' });
+	}
+
+	async function acceptAllNames(jobId: string) {
+		acceptingAll = true;
+		menuNote = null;
+		try {
+			const res = await acceptAllMenuProposals(jobId);
+			const refused = Object.keys(res.refused ?? {}).length;
+			menuNote = refused ? `${refused} ${refused === 1 ? 'name was' : 'names were'} not accepted; see the rows.` : null;
+			loadJob();
+		} catch (e) {
+			menuNote = `Could not accept the names: ${e instanceof Error ? e.message : 'unknown error'}`;
+		} finally {
+			acceptingAll = false;
+			void menuPanel?.reload();
+		}
+	}
 
 	async function retryFailed(jobId: string) {
 		retrying = true;
@@ -770,6 +815,20 @@
 											</td>
 										</tr>
 									{/if}
+									{#if menuByTrack.get(track.id)}
+										{@const named = menuByTrack.get(track.id)!}
+										<tr data-testid="track-menu-name">
+											<td colspan="99" class="table-cell" data-label="Menu name">
+												<MenuProposalEditor
+													jobId={job.id}
+													proposal={named}
+													trackStatus={track.status}
+													canEdit={$isAdmin}
+													onchange={menuNameChanged}
+												/>
+											</td>
+										</tr>
+									{/if}
 									{#if editingTrackId === track.id}
 										<tr>
 											<td colspan="99" class="table-cell" data-label="">
@@ -796,6 +855,18 @@
 								Keep all
 							</button>
 						{/if}
+						{#if $isAdmin && menuAcceptable.length > 0}
+							<button
+								type="button"
+								class="btn job-detail-keep-all"
+								data-testid="dm-accept-all"
+								disabled={acceptingAll}
+								title="Give every title the name its menu button proposes"
+								onclick={() => acceptAllNames(job.id)}
+							>
+								{acceptingAll ? 'Working...' : `Accept all menu names (${menuAcceptable.length})`}
+							</button>
+						{/if}
 						{#if $isAdmin && (job.status === 'ripped' || job.status === 'ripped_partial' || job.status === 'failed') && remainingTitles.length > 0 && !retryArmed}
 							<button
 								type="button"
@@ -810,6 +881,9 @@
 							</button>
 						{/if}
 					</div>
+					{#if menuNote}
+						<p class="job-detail-retry-note" data-testid="dm-refused">{menuNote}</p>
+					{/if}
 					{#if retryNote}
 						<p class="job-detail-retry-note" data-testid="retry-note">{retryNote}</p>
 					{:else if retryArmed && job.status !== 'ripping' && !d.raw_backup?.complete}
@@ -831,7 +905,15 @@
 
 			<!-- Disc menu (fork only): its pages, and the names its buttons give the titles -->
 			{#if tracks.some((t) => isDiscMenu(t) && t.status === 'done')}
-				<DiscMenuPanel jobId={job.id} {tracks} canEdit={$isAdmin} onrenamed={() => loadJob()} />
+				<DiscMenuPanel
+					bind:this={menuPanel}
+					jobId={job.id}
+					{tracks}
+					canEdit={$isAdmin}
+					onrenamed={() => loadJob()}
+					onproposals={menuProposalsLoaded}
+					onfocus={focusMenuName}
+				/>
 			{/if}
 
 			<!-- Disc fingerprints (read-only) -->

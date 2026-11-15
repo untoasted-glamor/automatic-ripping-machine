@@ -10,27 +10,21 @@ vi.mock('$lib/api/discMenus', () => ({
 	requestDiscMenuPreview: vi.fn(),
 	updateMenuProposal: vi.fn(),
 	createMenuProposal: vi.fn(),
-	acceptAllMenuProposals: vi.fn(),
-	ripMenuTitle: vi.fn(),
 	buildDiscMenuPack: vi.fn(),
 	deleteDiscMenuPack: vi.fn()
 }));
 
 import {
-	acceptAllMenuProposals,
 	buildDiscMenuPack,
 	createMenuProposal,
 	deleteDiscMenuPack,
 	fetchDiscMenu,
 	fetchDiscMenuImage,
-	requestDiscMenuPreview,
-	ripMenuTitle,
-	updateMenuProposal
+	requestDiscMenuPreview
 } from '$lib/api/discMenus';
 import { ApiError } from '$lib/api/client';
 
 const fetchMock = vi.mocked(fetchDiscMenu);
-const updateMock = vi.mocked(updateMenuProposal);
 
 const proposal = (over: Partial<MenuProposalView> = {}): MenuProposalView => ({
 	id: 'mnp_promo',
@@ -124,9 +118,14 @@ const tracks = [
 
 function render(props: Record<string, unknown> = {}) {
 	const onrenamed = vi.fn();
-	renderComponent(DiscMenuPanel, { props: { jobId: 'job_1', tracks, canEdit: true, onrenamed, ...props } });
+	renderComponent(DiscMenuPanel, {
+		props: { jobId: 'job_1', tracks, canEdit: true, onrenamed, onproposals, onfocus, ...props }
+	});
 	return onrenamed;
 }
+
+const onproposals = vi.fn();
+const onfocus = vi.fn();
 
 beforeEach(() => {
 	vi.mocked(fetchDiscMenuImage).mockImplementation(async (_job, rel) => `blob:${rel}`);
@@ -168,138 +167,20 @@ describe('DiscMenuPanel', () => {
 		expect(play).toHaveAttribute('title', '"Promo Videos": plays 00023.mpls');
 		await fireEvent.click(play);
 		expect(play).toHaveAttribute('data-selected', 'true');
-		expect(screen.getByTestId('dm-proposal')).toHaveAttribute('data-selected', 'true');
+		expect(onfocus).toHaveBeenCalledWith('mnp_promo');
 		const tabs = screen.getAllByTestId('dm-page-tab');
 		await fireEvent.click(tabs[0]);
 		expect(tabs[0]).toHaveAttribute('data-selected', 'true');
 	});
 
-	it('lists the names, and the menu notes apart', async () => {
+	it('lists the menu notes and hands its proposals to the page', async () => {
 		fetchMock.mockResolvedValue(menu());
 		render();
-		const row = await screen.findByTestId('dm-proposal');
-		expect(row).toHaveTextContent('Promo Videos');
-		expect(row).toHaveTextContent('Title 8');
-		expect(row).toHaveTextContent('Proposed');
-		expect(screen.getByTestId('dm-notes')).toHaveTextContent('Textless OP 00024.mpls: not ripped');
-	});
-
-	it('rips a title the menu plays that the job has no track for', async () => {
-		const op = { id: 'mnp_op', track_id: null, label: 'Textless OP', plays: '00024.mpls', role: 'other' as const };
-		const short = { ...op, scan_title: 19, name: 'Textless OP', note: 'not ripped: 92 s', status: 'info' as const };
-		fetchMock.mockResolvedValue(menu({ proposals: [proposal(), proposal(short)] }));
-		vi.mocked(ripMenuTitle).mockResolvedValue(proposal({ ...short, track_id: 'trk_19', status: 'accepted' }));
-		const onrenamed = render({
-			tracks: [...tracks, createTrack({ id: 'trk_19', kind: 'video_title', index: 19, status: 'queued' })]
-		});
-		const rip = await screen.findByTestId('dm-rip');
-		expect(rip).toHaveAttribute('title', 'Rip it from the disc backup as Textless OP');
-		await fireEvent.click(rip);
-		await waitFor(() => expect(ripMenuTitle).toHaveBeenCalledWith('job_1', 'mnp_op'));
-		expect(onrenamed).toHaveBeenCalled();
-		expect(screen.queryByTestId('dm-notes')).toBeNull();
-		await waitFor(() => expect(screen.getAllByTestId('dm-proposal')).toHaveLength(2));
-		expect(screen.getByText('Waiting for the rip')).toBeInTheDocument();
-	});
-
-	it('says why it cannot rip, and shows a rip refusal', async () => {
-		const short = proposal({ id: 'mnp_op', track_id: null, scan_title: 19, role: 'other', status: 'info' });
-		fetchMock.mockResolvedValueOnce(menu({ proposals: [short], rip_refusal: "the job's disc backup isn't kept" }));
-		render();
-		const rip = await screen.findByTestId('dm-rip');
-		expect(rip).toBeDisabled();
-		expect(rip).toHaveAttribute('title', "the job's disc backup isn't kept");
-		cleanup();
-
-		fetchMock.mockResolvedValueOnce(menu({ proposals: [short] }));
-		vi.mocked(ripMenuTitle).mockRejectedValue(new ApiError(409, 'Show/other/Promo Videos.mkv already exists', null));
-		const onrenamed = render();
-		await fireEvent.click(await screen.findByTestId('dm-rip'));
-		expect(await screen.findByTestId('dm-rip-error')).toHaveTextContent('already exists');
-		expect(onrenamed).not.toHaveBeenCalled();
-		expect(screen.getByTestId('dm-rip')).not.toBeDisabled();
-	});
-
-	it('accepts an edited name and tells the page', async () => {
-		fetchMock.mockResolvedValue(menu());
-		updateMock.mockResolvedValue(
-			proposal({ name: 'PV Collection', status: 'applied', applied_path: 'Show/trailers/PV Collection.mkv' })
-		);
-		const onrenamed = render();
-		const name = await screen.findByTestId('dm-name');
-		await fireEvent.input(name, { target: { value: 'PV Collection ' } });
-		await fireEvent.click(screen.getByTestId('dm-accept'));
-		await waitFor(() =>
-			expect(updateMock).toHaveBeenCalledWith('job_1', 'mnp_promo', {
-				role: 'trailer',
-				name: 'PV Collection',
-				episode_number: null,
-				action: 'accept'
-			})
-		);
-		expect(await screen.findByTestId('dm-applied')).toHaveTextContent('Show/trailers/PV Collection.mkv');
-		expect(onrenamed).toHaveBeenCalled();
-		expect(screen.queryByTestId('dm-accept')).toBeNull();
-	});
-
-	it('needs an episode number for a special', async () => {
-		fetchMock.mockResolvedValue(menu());
-		render();
-		const role = await screen.findByTestId('dm-role');
-		await fireEvent.change(role, { target: { value: 'special' } });
-		expect(screen.getByTestId('dm-accept')).toBeDisabled();
-		expect(screen.getByTestId('dm-accept')).toHaveAttribute('title', 'A special needs its season 0 episode number');
-		await fireEvent.input(screen.getByTestId('dm-episode'), { target: { value: '3' } });
-		expect(screen.getByTestId('dm-accept')).not.toBeDisabled();
-	});
-
-	it('rejects and reopens, and shows a refusal on the row', async () => {
-		fetchMock.mockResolvedValue(menu());
-		updateMock.mockResolvedValueOnce(proposal({ status: 'rejected' }));
-		const onrenamed = render();
-		await fireEvent.click(await screen.findByTestId('dm-reject'));
-		await waitFor(() => expect(updateMock).toHaveBeenCalledWith('job_1', 'mnp_promo', { action: 'reject' }));
-		expect(await screen.findByText('Rejected')).toBeInTheDocument();
-		updateMock.mockResolvedValueOnce(proposal());
-		await fireEvent.click(screen.getByTestId('dm-reopen'));
-		await waitFor(() => expect(updateMock).toHaveBeenLastCalledWith('job_1', 'mnp_promo', { action: 'reopen' }));
-		updateMock.mockRejectedValueOnce(new ApiError(409, 'Show/trailers/Promo Videos.mkv already exists', null));
-		await fireEvent.click(await screen.findByTestId('dm-accept'));
-		expect(await screen.findByTestId('dm-row-error')).toHaveTextContent('already exists');
-		expect(onrenamed).not.toHaveBeenCalled();
-	});
-
-	it('accepts all, and counts the refusals', async () => {
-		fetchMock.mockResolvedValue(
-			menu({
-				proposals: [
-					proposal(),
-					proposal({ id: 'mnp_ext', track_id: 'trk_7', label: 'Panel', name: 'Panel', role: 'extra' })
-				]
-			})
-		);
-		vi.mocked(acceptAllMenuProposals).mockResolvedValue({
-			proposals: [
-				proposal({ status: 'applied' }),
-				proposal({ id: 'mnp_ext', track_id: 'trk_7', name: 'Panel', role: 'extra' })
-			],
-			refused: { mnp_ext: 'Show/extras/Panel.mkv already exists' }
-		});
-		const onrenamed = render();
-		const all = await screen.findByTestId('dm-accept-all');
-		expect(all).toHaveTextContent('Accept all (2)');
-		await fireEvent.click(all);
-		expect(await screen.findByTestId('dm-refused')).toHaveTextContent('1 name was not accepted');
-		expect(screen.getByTestId('dm-row-error')).toHaveTextContent('already exists');
-		expect(onrenamed).toHaveBeenCalled();
-	});
-
-	it('shows an accept-all failure', async () => {
-		fetchMock.mockResolvedValue(menu());
-		vi.mocked(acceptAllMenuProposals).mockRejectedValue(new Error('nope'));
-		render();
-		await fireEvent.click(await screen.findByTestId('dm-accept-all'));
-		expect(await screen.findByTestId('dm-error')).toHaveTextContent('nope');
+		expect(await screen.findByTestId('dm-notes')).toHaveTextContent('Textless OP 00024.mpls: not ripped');
+		await waitFor(() => expect(onproposals).toHaveBeenCalledWith(menu().proposals));
+		// The names themselves are on the Tracks table's rows, not here.
+		expect(screen.queryByTestId('dm-proposal')).toBeNull();
+		expect(screen.queryByTestId('dm-accept-all')).toBeNull();
 	});
 
 	it('reads the menu again and polls until it is done', async () => {
@@ -368,7 +249,11 @@ describe('DiscMenuPanel', () => {
 		);
 		expect(onrenamed).toHaveBeenCalled();
 		expect(screen.queryByTestId('dm-by-hand')).toBeNull();
-		expect(screen.getAllByTestId('dm-proposal')).toHaveLength(2);
+		await waitFor(() =>
+			expect(onproposals).toHaveBeenLastCalledWith(
+				expect.arrayContaining([expect.objectContaining({ id: 'mnp_hand' })])
+			)
+		);
 	});
 
 	it('shows a by-hand failure', async () => {
@@ -386,9 +271,7 @@ describe('DiscMenuPanel', () => {
 	it('is read-only for a guest', async () => {
 		fetchMock.mockResolvedValue(menu());
 		render({ canEdit: false });
-		expect(await screen.findByTestId('dm-proposal')).toHaveTextContent('Trailer');
-		expect(screen.queryByTestId('dm-accept')).toBeNull();
-		expect(screen.queryByTestId('dm-accept-all')).toBeNull();
+		expect(await screen.findByTestId('dm-notes')).toBeInTheDocument();
 		expect(screen.queryByTestId('dm-read-again')).toBeNull();
 		expect(screen.queryByTestId('dm-hand-open')).toBeNull();
 	});

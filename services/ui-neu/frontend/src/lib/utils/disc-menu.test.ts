@@ -4,7 +4,6 @@ import {
 	acceptBlocker,
 	boxPercent,
 	buttonHint,
-	canRip,
 	draftOf,
 	isOpen,
 	isPackLive,
@@ -77,19 +76,6 @@ describe('disc menu helpers', () => {
 		expect(statusText(accepted, 'done')).toBe('Waiting for the encode');
 		expect(statusText(accepted, undefined)).toBe('Waiting for the encode');
 		expect(statusText(proposal(), 'queued')).toBe('Proposed');
-	});
-
-	it('knows which menu titles it can rip', () => {
-		const op = proposal({ track_id: null, scan_title: 19, role: 'other', name: 'Textless OP', status: 'info' });
-		expect(canRip(op)).toBe(true);
-		expect(canRip({ ...op, track_id: 'trk_19' })).toBe(false);
-		expect(canRip({ ...op, scan_title: null })).toBe(false);
-		expect(canRip({ ...op, scan_title: undefined })).toBe(false);
-		expect(canRip({ ...op, role: null })).toBe(false);
-		expect(canRip({ ...op, role: 'episode' })).toBe(false);
-		expect(canRip({ ...op, name: ' ' })).toBe(false);
-		expect(canRip({ ...op, role: 'special' })).toBe(false);
-		expect(canRip({ ...op, role: 'special', episode_number: 4 })).toBe(true);
 	});
 
 	it('places a box as percentages of its page', () => {

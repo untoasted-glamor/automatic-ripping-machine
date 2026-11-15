@@ -228,6 +228,13 @@ async def test_refused_before_anything_changes(tmp_path: Path, proposal: MenuPro
     assert db.rows["tracks"][0].custom_filename is None
 
 
+async def test_a_title_not_encoded_yet_takes_the_name(tmp_path: Path) -> None:
+    db = _setup(tmp_path, tasks=[])
+    proposal = await apply_proposal(db, _proposal(), tmp_path)  # type: ignore[arg-type]
+    assert proposal.status == MenuProposalStatus.ACCEPTED
+    assert db.rows["tracks"][0].custom_filename == "Promo Videos"
+
+
 async def test_refused_with_no_finished_encode(tmp_path: Path) -> None:
     db = _setup(tmp_path, tasks=[_encode(TranscodeTaskStatus.FAILED)])
     with pytest.raises(RenameRefused, match="no finished encode"):

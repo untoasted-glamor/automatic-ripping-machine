@@ -60,16 +60,22 @@ export function statusText(p: MenuProposalView, trackStatus: TrackStatus | null 
 	return PROPOSAL_STATUS[p.status].text;
 }
 
-/** A title the menu plays that the job has no track for, with a role and name to rip it under. */
-export function canRip(p: MenuProposalView): boolean {
-	return (
-		p.track_id === null &&
-		p.scan_title !== null &&
-		p.scan_title !== undefined &&
-		MENU_ROLES.some((r) => r.value === p.role) &&
-		!!p.name?.trim() &&
-		(p.role !== 'special' || !!p.episode_number)
-	);
+/** The menu's name for each title, keyed by track id: an open one first, else the newest (notes left out). */
+export function proposalByTrack(proposals: MenuProposalView[]): Map<string, MenuProposalView> {
+	const out = new Map<string, MenuProposalView>();
+	for (const p of proposals) {
+		if (!p.track_id || p.status === 'info') continue;
+		const prior = out.get(p.track_id);
+		if (!prior || (isOpen(p) && !isOpen(prior)) || (isOpen(p) === isOpen(prior) && p.id > prior.id)) {
+			out.set(p.track_id, p);
+		}
+	}
+	return out;
+}
+
+/** The proposed names "Accept all" would accept. */
+export function acceptableProposals(proposals: MenuProposalView[]): MenuProposalView[] {
+	return proposals.filter((p) => p.status === 'proposed' && !acceptBlocker(p, draftOf(p)));
 }
 
 /** A button's box as percentages of its page (the image is scaled to fit). */

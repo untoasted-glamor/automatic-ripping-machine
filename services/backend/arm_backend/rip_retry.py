@@ -1,7 +1,6 @@
 """Ripping a job's remaining titles after the rip (track-select plan S15).
 
-Shared by POST /api/jobs/{id}/retry-failed and the Disc menu panel's "Rip it"
-(fork only, `arm_backend.disc_menus.rip`): which jobs can rip titles again,
+Used by POST /api/jobs/{id}/retry-failed: which jobs can rip titles again,
 which titles are left, and arming the retry. With a finished disc backup kept
 in `/raw/<job_id>/.backup/`, the job's drive's ripper is told (`rip.retry`) to
 remux them from it, with no disc; otherwise the retry starts when the disc

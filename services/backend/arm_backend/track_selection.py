@@ -12,7 +12,7 @@ class TrackSelectionError(ValueError):
     pass
 
 
-def _video_track(job_id: str, title: ScanTitle) -> Track:
+def video_track(job_id: str, title: ScanTitle) -> Track:
     return Track(
         job_id=job_id,
         kind=TrackKind.VIDEO_TITLE,
@@ -150,18 +150,18 @@ def _select_video(scan: ScanResult, rip_preset: RipPreset, job_id: str) -> list[
         # no title on the disc has a duration, and then the first is as good
         # a guess as any (max keeps the first of equal keys).
         chosen = max(eligible or titles, key=lambda t: -1 if t.duration_seconds is None else t.duration_seconds)
-        return [_video_track(job_id, chosen)]
+        return [video_track(job_id, chosen)]
     if rule == TrackSelection.ALL_TRACKS:
         return [
-            _video_track(job_id, t)
+            video_track(job_id, t)
             for t in titles
             if t.duration_seconds is not None and t.duration_seconds >= ALL_TRACKS_MIN_SECONDS
         ]
     if rule == TrackSelection.ARCHIVE:
-        return [_video_track(job_id, t) for t in titles]
+        return [video_track(job_id, t) for t in titles]
     if rule == TrackSelection.CUSTOM:
         filters = _parse_filters(rip_preset)
-        return [_video_track(job_id, t) for t in _apply_custom_filters(titles, filters)]
+        return [video_track(job_id, t) for t in _apply_custom_filters(titles, filters)]
     # Unreachable: TrackSelection enum is exhaustively handled above.
     raise TrackSelectionError(f"unknown track_selection: {rule}")  # pragma: no cover
 
@@ -325,7 +325,7 @@ def select_tracks_for_review(
     play_alls = set() if is_cd else play_all_indexes(scan.disc_type, titles)
     rows: list[Track] = []
     for title in titles:
-        track = _audio_track(job_id, title) if is_cd else _video_track(job_id, title)
+        track = _audio_track(job_id, title) if is_cd else video_track(job_id, title)
         track.excluded = str(title.index) not in kept_refs
         if title.index in play_alls:
             track.excluded = True

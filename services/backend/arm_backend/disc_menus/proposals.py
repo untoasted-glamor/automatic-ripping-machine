@@ -8,7 +8,8 @@ into a `menu_proposals` row:
    playlist's clip list, the one MakeMKV named after it first. A button that starts a playlist of several clips
    anywhere but a "Play All" (an episode button playing the play-all from its mark) matches the title of the one
    clip it starts in (ledger T46). A DVD title matches the scan title with that title number (`TINFO 24`). No title
-   in the scan, or no track for it: "not ripped".
+   in the scan: "not ripped". A title the job has no track for (one under the rip's minimum length) gets one,
+   left out and kept whatever its length (`any_length`), so it can be ticked in the job's title table.
 2. **Role and name from the label.** "Play All" is a play-all. A title identity numbered as an episode is checked,
    never renamed: the label's number confirms it or the mismatch is noted. Otherwise keywords pick the role
    (trailer, promo, PV, CM, teaser: `trailer`; opening, ending, OP, ED, creditless, textless: `other`; special,
@@ -16,8 +17,9 @@ into a `menu_proposals` row:
    else is an `extra`. The cleaned label is the name.
 3. **One row per title.** Several buttons (pages, languages) for one title keep the best-read label.
 
-Only rows for bonus titles with a track are `proposed`; the rest are `info`. Re-running a preview replaces the
-`proposed` and `info` rows and leaves the owner's decisions (`accepted`, `applied`, `rejected`) and their tracks.
+Rows for bonus titles are `proposed`, left-out ones included; episodes, play-alls, chapters and titles the scan
+doesn't have are `info`. Re-running a preview replaces the `proposed` and `info` rows and leaves the owner's
+decisions (`accepted`, `applied`, `rejected`) and their tracks.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
+from arm_backend.track_selection import video_track
 from arm_common import (
     Job,
     MenuProposal,
@@ -41,6 +44,7 @@ from arm_common import (
     TrackRole,
     TranscodeTask,
 )
+from arm_common.schemas.ripper import ScanTitle
 
 logger = logging.getLogger("arm_backend.disc_menus.proposals")
 
@@ -207,11 +211,29 @@ def _proposal(
         row.note = _not_ripped(job, index)
     elif chapter_of:
         row.note = "a chapter of this title"
-    elif track.excluded:
-        row.note = "left out of the rip"
     else:
         row.status = MenuProposalStatus.PROPOSED
+        if track.excluded:
+            row.note = "left out of the rip"
     return row
+
+
+def _menu_title_track(job: Job, index: int) -> Track:
+    """A left-out track for a title a button plays that the job has none for, kept whatever its length when ticked.
+    `index` is a scan title's (match_bd and match_dvd return no other)."""
+    title = next(t for t in scan_titles(job) if t.get("index") == index)
+    duration, size = title.get("duration_seconds"), title.get("size_bytes")
+    track = video_track(
+        job.id,
+        ScanTitle(
+            index=index,
+            duration_seconds=duration if isinstance(duration, int) else None,
+            size_bytes=size if isinstance(size, int) else None,
+        ),
+    )
+    track.excluded = True
+    track.any_length = True
+    return track
 
 
 async def make_proposals(
@@ -238,7 +260,12 @@ async def make_proposals(
         else:
             index = match_bd(playlists, scan, b.outcome, b.label)
         track = titles_by_ref.get(str(index)) if index is not None else None
-        key = track.id if track is not None else f"plays:{plays_text(b.outcome)}"
+        if track is not None:
+            key = track.id
+        elif index is not None:
+            key = f"title:{index}"
+        else:
+            key = f"plays:{plays_text(b.outcome)}"
         if b.outcome.get("kind") == "plays_title":
             chapters.setdefault(key, set()).add(int(b.outcome.get("chapter") or 0))
         if PLAY_ALL.search(b.label):
@@ -251,6 +278,10 @@ async def make_proposals(
         if track is not None and track.id in decided_tracks and not key.startswith("play_all:"):
             continue
         chapter_of = len(chapters.get(key, set())) > 1
+        if track is None and index is not None and not chapter_of and not key.startswith("play_all:"):
+            track = _menu_title_track(job, index)
+            db.add(track)
+            await db.flush()
         row = _proposal(job, task, b, track, index, chapter_of)
         db.add(row)
         rows.append(row)

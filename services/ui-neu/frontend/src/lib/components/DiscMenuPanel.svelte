@@ -1,23 +1,20 @@
 <script lang="ts">
 	// Job page: the disc menu (fork only, disc menus M3-M4). Shows each menu
-	// page the preview read, with every button's box over it, and the names the
-	// menu's buttons propose for the job's titles. Accepting a name renames the
-	// finished encode into the library's trailers/, other/, extras/ or Season 00
-	// folder (an encode still running is renamed when it finishes). A title the
-	// menu doesn't name can be named here by hand. The menu pack row says where
-	// the pack Jellyfin plays stands, and builds or deletes it. Shown only when
-	// the job has a copied disc menu (the GET 404s otherwise).
+	// page the preview read, with every button's box over it, and the menu's
+	// notes. The names the buttons propose are shown on the titles' rows in the
+	// Tracks table (`MenuProposalEditor`): this panel loads them and hands them
+	// to the page (`onproposals`), and a box that plays a title scrolls to its
+	// row. A title the menu doesn't name can be named here by hand. The menu
+	// pack row says where the pack Jellyfin plays stands, and builds or deletes
+	// it. Shown only when the job has a copied disc menu (the GET 404s otherwise).
 	import { onDestroy } from 'svelte';
 	import {
-		acceptAllMenuProposals,
 		buildDiscMenuPack,
 		createMenuProposal,
 		deleteDiscMenuPack,
 		fetchDiscMenu,
 		fetchDiscMenuImage,
-		requestDiscMenuPreview,
-		ripMenuTitle,
-		updateMenuProposal
+		requestDiscMenuPreview
 	} from '$lib/api/discMenus';
 	import { ApiError } from '$lib/api/client';
 	import type {
@@ -29,18 +26,12 @@
 	} from '$lib/types/api.gen';
 	import {
 		MENU_ROLES,
-		PROPOSAL_STATUS,
-		acceptBlocker,
 		boxPercent,
 		buttonHint,
-		canRip,
-		draftOf,
-		isOpen,
 		isPackLive,
 		isPreviewLive,
 		packState,
 		previewState,
-		statusText,
 		type ProposalDraft
 	} from '$lib/utils/disc-menu';
 	import { usePoll } from '$lib/utils/poll';
@@ -55,9 +46,13 @@
 		canEdit: boolean;
 		/** Called after a rename, so the page can reload the tracks' new paths. */
 		onrenamed?: () => void;
+		/** Called with the menu's proposals whenever they load, for the Tracks table's rows. */
+		onproposals?: (proposals: MenuProposalView[]) => void;
+		/** A box that plays a title was clicked: the page scrolls to that title's proposal. */
+		onfocus?: (proposalId: string) => void;
 	}
 
-	let { jobId, tracks, canEdit, onrenamed }: Props = $props();
+	let { jobId, tracks, canEdit, onrenamed, onproposals, onfocus }: Props = $props();
 
 	let view = $state<JobDiscMenuView | null>(null);
 	let absent = $state(false);
@@ -65,9 +60,6 @@
 	let pageId = $state<string | null>(null);
 	let focused = $state<string | null>(null);
 	let busy = $state<string | null>(null);
-	let drafts = $state<Record<string, ProposalDraft>>({});
-	let rowErrors = $state<Record<string, string>>({});
-	let refusedCount = $state(0);
 	let images = $state<Record<string, string>>({});
 	let byHand = $state(false);
 	let confirmDelete = $state(false);
@@ -75,36 +67,21 @@
 
 	const pages = $derived(view?.preview?.pages ?? []);
 	const page = $derived(pages.find((p) => p.id === pageId) ?? pages[0] ?? null);
-	const proposals = $derived(view?.proposals ?? []);
-	const named = $derived(proposals.filter((p) => p.status !== 'info'));
-	const notes = $derived(proposals.filter((p) => p.status === 'info'));
-	const acceptable = $derived(named.filter((p) => p.status === 'proposed' && !acceptBlocker(p, draft(p))));
+	const notes = $derived((view?.proposals ?? []).filter((p) => p.status === 'info'));
 	const titles = $derived(tracks.filter((t) => t.kind === 'video_title' && t.status === 'done'));
-
-	function trackName(id: string | null | undefined): string {
-		const t = tracks.find((x) => x.id === id);
-		return t ? `Title ${t.index}` : 'Not ripped';
-	}
-
-	function trackStatus(id: string | null | undefined) {
-		return tracks.find((x) => x.id === id)?.status;
-	}
 
 	function pageName(id: string): string {
 		const p = pages.find((x) => x.id === id);
 		return p ? `page ${p.id}` : `page ${id}`;
 	}
 
-	function draft(p: MenuProposalView): ProposalDraft {
-		return drafts[p.id] ?? draftOf(p);
-	}
-
-	function edit(p: MenuProposalView, change: Partial<ProposalDraft>): void {
-		drafts = { ...drafts, [p.id]: { ...draft(p), ...change } };
-	}
-
 	function message(e: unknown, fallback: string): string {
 		return e instanceof Error && e.message ? e.message : fallback;
+	}
+
+	/** Load the panel again (the page calls this after a name changes in the Tracks table). */
+	export async function reload(): Promise<void> {
+		await load();
 	}
 
 	async function load(): Promise<void> {
@@ -120,6 +97,10 @@
 	$effect(() => {
 		void jobId;
 		void load();
+	});
+
+	$effect(() => {
+		if (view) onproposals?.(view.proposals ?? []);
 	});
 
 	// Poll while the preview or the pack build runs; stop once both are done or failed.
@@ -150,64 +131,6 @@
 	onDestroy(() => {
 		for (const url of Object.values(images)) URL.revokeObjectURL(url);
 	});
-
-	function replace(updated: MenuProposalView): void {
-		if (!view) return;
-		const list = view.proposals ?? [];
-		const has = list.some((p) => p.id === updated.id);
-		view = { ...view, proposals: has ? list.map((p) => (p.id === updated.id ? updated : p)) : [...list, updated] };
-		const { [updated.id]: _, ...rest } = drafts;
-		drafts = rest;
-	}
-
-	async function act(p: MenuProposalView, action: 'accept' | 'reject' | 'reopen'): Promise<void> {
-		busy = p.id;
-		const { [p.id]: _, ...others } = rowErrors;
-		rowErrors = others;
-		try {
-			const d = draft(p);
-			const body =
-				action === 'accept' ? { role: d.role, name: d.name.trim(), episode_number: d.episode, action } : { action };
-			const updated = await updateMenuProposal(jobId, p.id, body);
-			replace(updated);
-			if (updated.status === 'applied') onrenamed?.();
-		} catch (e) {
-			rowErrors = { ...rowErrors, [p.id]: message(e, 'Could not save that') };
-		} finally {
-			busy = null;
-		}
-	}
-
-	async function acceptAll(): Promise<void> {
-		busy = 'all';
-		error = null;
-		try {
-			const resp = await acceptAllMenuProposals(jobId);
-			for (const p of resp.proposals) replace(p);
-			const refused = resp.refused ?? {};
-			rowErrors = { ...rowErrors, ...refused };
-			refusedCount = Object.keys(refused).length;
-			if (resp.proposals.some((p) => p.status === 'applied')) onrenamed?.();
-		} catch (e) {
-			error = message(e, 'Could not accept the names');
-		} finally {
-			busy = null;
-		}
-	}
-
-	async function ripTitle(p: MenuProposalView): Promise<void> {
-		busy = p.id;
-		const { [p.id]: _, ...others } = rowErrors;
-		rowErrors = others;
-		try {
-			replace(await ripMenuTitle(jobId, p.id));
-			onrenamed?.();
-		} catch (e) {
-			rowErrors = { ...rowErrors, [p.id]: message(e, 'Could not rip that title') };
-		} finally {
-			busy = null;
-		}
-	}
 
 	async function readAgain(): Promise<void> {
 		busy = 'preview';
@@ -256,7 +179,7 @@
 				name: handDraft.name.trim(),
 				episode_number: handDraft.episode
 			});
-			replace(created);
+			view = view ? { ...view, proposals: [...(view.proposals ?? []), created] } : view;
 			byHand = false;
 			handDraft = { trackId: '', role: null, name: '', episode: null };
 			onrenamed?.();
@@ -269,7 +192,10 @@
 
 	function clickButton(b: MenuPreviewButtonView): void {
 		if (b.outcome === 'page' && b.goes_to) pageId = b.goes_to;
-		else if (b.proposal_id) focused = b.proposal_id;
+		else if (b.proposal_id) {
+			focused = b.proposal_id;
+			onfocus?.(b.proposal_id);
+		}
 	}
 
 	const handBlocker = $derived(
@@ -391,7 +317,7 @@
 			</div>
 			<p class="field-help">
 				Each box is a menu button. Click one that opens another page to go there, or one that plays a title to find its
-				name below.
+				name in the Tracks table.
 			</p>
 			{#if (view?.preview?.unsupported ?? []).length > 0 || view?.preview?.truncated}
 				<p class="field-help" data-testid="dm-unsupported">
@@ -399,147 +325,6 @@
 					{#if (view?.preview?.unsupported ?? []).length > 0}Not shown: {view?.preview?.unsupported?.join(', ')}.{/if}
 				</p>
 			{/if}
-		{/if}
-
-		{#if named.length > 0}
-			<div class="disc-menu-proposals-head">
-				<h3 class="disc-menu-subtitle">Names from the menu</h3>
-				{#if canEdit && acceptable.length > 0}
-					<button
-						type="button"
-						class="btn btn-primary btn-sm"
-						data-testid="dm-accept-all"
-						disabled={busy !== null}
-						onclick={acceptAll}
-					>
-						<Glyph name="check" />
-						Accept all ({acceptable.length})
-					</button>
-				{/if}
-			</div>
-			{#if refusedCount > 0}
-				<p class="field-error" data-testid="dm-refused">
-					{refusedCount}
-					{refusedCount === 1 ? 'name was' : 'names were'} not accepted; see below.
-				</p>
-			{/if}
-			<div class="overflow-x-auto">
-				<table class="table responsive-table">
-					<thead>
-						<tr>
-							<th class="table-header">Button</th>
-							<th class="table-header">Title</th>
-							<th class="table-header">Role</th>
-							<th class="table-header">Name</th>
-							<th class="table-header">Status</th>
-							<th class="table-header"></th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each named as p (p.id)}
-							{@const d = draft(p)}
-							{@const editable = canEdit && isOpen(p)}
-							{@const blocker = acceptBlocker(p, d)}
-							<tr class="table-row" data-selected={p.id === focused} data-testid="dm-proposal">
-								<td class="table-cell" data-label="Button">
-									<span class="disc-menu-label">{p.label || 'No label'}</span>
-									<span class="disc-menu-faint">{p.plays}</span>
-								</td>
-								<td class="table-cell" data-label="Title">{trackName(p.track_id)}</td>
-								<td class="table-cell" data-label="Role">
-									{#if editable}
-										<select
-											class="field-control"
-											aria-label="Role"
-											data-testid="dm-role"
-											value={d.role ?? ''}
-											onchange={(e) => edit(p, { role: (e.currentTarget.value || null) as TrackRole | null })}
-										>
-											<option value="">Pick one</option>
-											{#each MENU_ROLES as r (r.value)}
-												<option value={r.value}>{r.label}</option>
-											{/each}
-										</select>
-									{:else}
-										{MENU_ROLES.find((r) => r.value === p.role)?.label ?? 'Not set'}
-									{/if}
-								</td>
-								<td class="table-cell" data-label="Name">
-									{#if editable}
-										<div class="disc-menu-name">
-											<input
-												class="field-control"
-												aria-label="Name"
-												data-testid="dm-name"
-												value={d.name}
-												oninput={(e) => edit(p, { name: e.currentTarget.value })}
-											/>
-											{#if d.role === 'special'}
-												<input
-													class="field-control disc-menu-episode"
-													type="number"
-													min="1"
-													aria-label="Season 0 episode"
-													placeholder="Ep."
-													data-testid="dm-episode"
-													value={d.episode ?? ''}
-													oninput={(e) => edit(p, { episode: e.currentTarget.valueAsNumber || null })}
-												/>
-											{/if}
-										</div>
-									{:else}
-										{p.name ?? ''}
-										{#if p.applied_path}
-											<span class="disc-menu-faint mono" data-testid="dm-applied">{p.applied_path}</span>
-										{/if}
-									{/if}
-									{#if rowErrors[p.id] || p.last_error}
-										<span class="field-error" data-testid="dm-row-error">{rowErrors[p.id] ?? p.last_error}</span>
-									{/if}
-								</td>
-								<td class="table-cell" data-label="Status">
-									<span
-										class="chip chip-sm {PROPOSAL_STATUS[p.status].tone
-											? `chip-${PROPOSAL_STATUS[p.status].tone}`
-											: ''}">{statusText(p, trackStatus(p.track_id))}</span
-									>
-								</td>
-								<td class="table-cell" data-label="">
-									{#if editable}
-										<div class="cluster disc-menu-actions">
-											<button
-												type="button"
-												class="btn btn-primary btn-sm"
-												data-testid="dm-accept"
-												disabled={busy !== null || blocker !== null}
-												title={blocker ?? 'Rename the encode to this name'}
-												onclick={() => act(p, 'accept')}>Accept</button
-											>
-											{#if p.status === 'rejected'}
-												<button
-													type="button"
-													class="btn btn-sm"
-													data-testid="dm-reopen"
-													disabled={busy !== null}
-													onclick={() => act(p, 'reopen')}>Reopen</button
-												>
-											{:else}
-												<button
-													type="button"
-													class="btn btn-sm"
-													data-testid="dm-reject"
-													disabled={busy !== null}
-													onclick={() => act(p, 'reject')}>Reject</button
-												>
-											{/if}
-										</div>
-									{/if}
-								</td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-			</div>
 		{/if}
 
 		{#if notes.length > 0}
@@ -550,20 +335,7 @@
 						<div>
 							<span class="disc-menu-label">{n.label || 'No label'}</span>
 							<span class="disc-menu-faint">{n.plays}{n.note ? `: ${n.note}` : ''}</span>
-							{#if rowErrors[n.id]}
-								<span class="field-error" data-testid="dm-rip-error">{rowErrors[n.id]}</span>
-							{/if}
 						</div>
-						{#if canEdit && canRip(n)}
-							<button
-								type="button"
-								class="btn btn-sm"
-								data-testid="dm-rip"
-								disabled={busy !== null || !!view?.rip_refusal}
-								title={view?.rip_refusal ?? `Rip it from the disc backup as ${n.name}`}
-								onclick={() => ripTitle(n)}>Rip it</button
-							>
-						{/if}
 					</li>
 				{/each}
 			</ul>
@@ -630,8 +402,7 @@
 		flex-direction: column;
 		gap: 0.75rem;
 	}
-	.disc-menu-head,
-	.disc-menu-proposals-head {
+	.disc-menu-head {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
@@ -710,16 +481,8 @@
 		font-size: 0.8rem;
 		color: var(--color-text-faint);
 	}
-	.disc-menu-name {
-		display: flex;
-		gap: 0.375rem;
-	}
 	.disc-menu-episode {
 		width: 5rem;
-	}
-	.disc-menu-actions {
-		gap: 0.375rem;
-		flex-wrap: nowrap;
 	}
 	.disc-menu-notes {
 		display: flex;
@@ -738,8 +501,5 @@
 		flex-wrap: wrap;
 		align-items: center;
 		gap: 0.5rem;
-	}
-	tr[data-selected='true'] {
-		background: color-mix(in srgb, var(--color-primary) 10%, transparent);
 	}
 </style>

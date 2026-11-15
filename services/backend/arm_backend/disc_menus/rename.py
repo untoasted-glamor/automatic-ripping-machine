@@ -206,8 +206,9 @@ async def apply_proposal(db: AsyncSession, proposal: MenuProposal, media_root: P
     job = (await db.execute(select(Job).where(col(Job.id) == track.job_id))).scalar_one()
     encodes = await _encodes(db, track.id)
     done = [t for t in encodes if t.status == TranscodeTaskStatus.DONE and t.output_path]
-    if any(t.status in _LIVE for t in encodes):
-        # Its encode is still running (or a re-encode is queued): the rename waits for /complete.
+    if not encodes or any(t.status in _LIVE for t in encodes):
+        # Not encoded yet (or a re-encode is running or queued): the track takes the name now, so fan-out lays the
+        # encode out under it, and the rename, if one is still needed, waits for the encode's /complete.
         name_track(track, proposal)
         proposal.status, proposal.last_error = MenuProposalStatus.ACCEPTED, None
         await db.flush()

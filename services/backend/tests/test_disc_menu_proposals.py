@@ -192,6 +192,11 @@ _D2 = _preview(
 async def test_make_proposals_on_a_blu_ray() -> None:
     db, job = _db()
     rows = await make_proposals(db, job, _D2)  # type: ignore[arg-type]
+    # The opening the job had no track for gets one, left out and kept whatever its length once ticked.
+    [op] = [t for t in db.rows["tracks"] if t.index == 19]
+    assert (op.kind, op.source_ref, op.status, op.excluded, op.any_length, op.role) == (
+        TrackKind.VIDEO_TITLE, "19", TrackStatus.QUEUED, True, True, None
+    )  # fmt: skip
     got = {(r.track_id, r.plays): (r.status.value, r.role, r.name, r.note) for r in rows}
     assert got == {
         ("trk_5", "00008.mpls"): ("info", TrackRole.PLAY_ALL, None, "plays the episodes back to back"),
@@ -201,7 +206,7 @@ async def test_make_proposals_on_a_blu_ray() -> None:
             "proposed", TrackRole.EXTRA, "FunimationCon 2020: Toilet-bound Hanako-kun Panel", None
         ),
         ("trk_8", "00023.mpls"): ("proposed", TrackRole.TRAILER, "Promo Videos", None),
-        (None, "00024.mpls"): ("info", TrackRole.OTHER, "Textless Opening Song ver. 1", "not ripped"),
+        (op.id, "00024.mpls"): ("proposed", TrackRole.OTHER, "Textless Opening Song ver. 1", "left out of the rip"),
     }  # fmt: skip
     # The better-read label wins, from its own page.
     panel = next(r for r in rows if r.track_id == "trk_7")
@@ -214,11 +219,49 @@ async def test_make_proposals_on_a_blu_ray() -> None:
 
 async def test_a_title_under_the_minimum_says_so() -> None:
     db, job = _db()
-    titles = [dict(t, duration_seconds=92 if t["index"] == 19 else 1400) for t in _TITLES]
+    titles = [dict(t, duration_seconds=92 if t["index"] == 19 else 1400, size_bytes=5) for t in _TITLES]
     job.metadata_json = {"scan_result": {"titles": titles, "min_length_seconds": 120}}
+    await make_proposals(db, job, _D2)  # type: ignore[arg-type]
+    [op] = [t for t in db.rows["tracks"] if t.index == 19]
+    assert (op.expected_duration_seconds, op.expected_size_bytes) == (92, 5)
+
+
+async def test_a_rerun_makes_no_second_track() -> None:
+    db, job = _db()
+    await make_proposals(db, job, _D2)  # type: ignore[arg-type]
     rows = await make_proposals(db, job, _D2)  # type: ignore[arg-type]
-    op = next(r for r in rows if r.track_id is None)
-    assert (op.scan_title, op.note) == (19, "not ripped: 92 s, under the rip's 120 s minimum")
+    assert len([t for t in db.rows["tracks"] if t.index == 19]) == 1
+    assert len([r for r in rows if r.scan_title == 19]) == 1
+
+
+async def test_a_play_all_or_chapters_with_no_track_get_none() -> None:
+    db, job = _db(_track(0))
+    preview = _preview(
+        ("1", _button("1", 1, "Play All", _plays("00024"))),
+        ("1", _button("1", 2, "Panel", _plays("00022"))),
+    )
+    rows = await make_proposals(db, job, preview)  # type: ignore[arg-type]
+    assert [t.index for t in db.rows["tracks"]] == [0, 7]
+    assert {r.scan_title: r.status for r in rows} == {19: MenuProposalStatus.INFO, 7: MenuProposalStatus.PROPOSED}
+    job.metadata_json = {
+        "scan_result": {
+            "titles": [{"index": 3, "original_title_id": 4, "duration_seconds": 50}],
+            "min_length_seconds": 120,
+        }
+    }
+    dvd = {
+        "disc": "dvd",
+        "pages": [{"id": "1", "buttons": [
+            _button("1", 1, "Scene one", {"kind": "plays_title", "title": 4, "chapter": 1}),
+            _button("1", 2, "Scene two", {"kind": "plays_title", "title": 4, "chapter": 2}),
+        ]}],
+    }  # fmt: skip
+    [row] = await make_proposals(db, job, dvd)  # type: ignore[arg-type]
+    assert (row.track_id, row.note) == (None, "not ripped: 50 s, under the rip's 120 s minimum")
+    job.metadata_json = {"scan_result": {"titles": [{"index": 3, "original_title_id": 4}]}}
+    [row] = await make_proposals(db, job, dvd)  # type: ignore[arg-type]
+    assert (row.track_id, row.note) == (None, "not ripped")
+    assert [t.index for t in db.rows["tracks"]] == [0, 7]
 
 
 async def test_a_rerun_replaces_undecided_rows_and_keeps_decisions() -> None:
@@ -239,7 +282,7 @@ async def test_excluded_bonus_and_an_episode_with_no_number() -> None:
     )
     rows = {r.track_id: r for r in await make_proposals(db, job, preview)}  # type: ignore[arg-type]
     assert rows["trk_0"].note == "an episode button"
-    assert (rows["trk_7"].status, rows["trk_7"].note) == (MenuProposalStatus.INFO, "left out of the rip")
+    assert (rows["trk_7"].status, rows["trk_7"].note) == (MenuProposalStatus.PROPOSED, "left out of the rip")
 
 
 async def test_a_special_waits_for_its_season_0_number() -> None:

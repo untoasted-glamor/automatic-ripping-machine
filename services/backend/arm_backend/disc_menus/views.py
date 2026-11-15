@@ -10,7 +10,6 @@ from sqlmodel import col, select
 
 from arm_backend.disc_menus.packs import folder_size, owned_pack_folder, pack_refusal, pack_tasks_of
 from arm_backend.disc_menus.preview_tasks import menu_dir_of, preview_tasks_of
-from arm_backend.disc_menus.rip import rip_refusal
 from arm_backend.disc_menus.proposals import (
     PLAY_ALL,
     scan_titles,
@@ -139,8 +138,6 @@ async def job_disc_menu_view(db: AsyncSession, job: Job) -> JobDiscMenuView | No
         proposals=[MenuProposalView.model_validate(p) for p in proposals],
         can_preview=menu_dir_of(track) is not None and not any(t.status in _LIVE for t in tasks),
     )
-    if any(p.track_id is None and p.scan_title is not None for p in proposals):
-        view.rip_refusal = await rip_refusal(db, job)
     view.pack = await _pack_view(db, job, track)
     view.pack_refusal = await pack_refusal(db, job, track)
     if not tasks:

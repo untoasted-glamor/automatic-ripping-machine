@@ -109,6 +109,17 @@ vi.mock('$lib/stores/ripperEvents.svelte', () => ({
 	}
 }));
 
+vi.mock('$lib/api/discMenus', () => ({
+	fetchDiscMenu: vi.fn(),
+	fetchDiscMenuImage: vi.fn(() => Promise.resolve('blob:x')),
+	requestDiscMenuPreview: vi.fn(),
+	updateMenuProposal: vi.fn(),
+	createMenuProposal: vi.fn(),
+	acceptAllMenuProposals: vi.fn(),
+	buildDiscMenuPack: vi.fn(),
+	deleteDiscMenuPack: vi.fn()
+}));
+
 vi.mock('$lib/api/settings', () => ({
 	fetchSettings: vi.fn(() => Promise.resolve({ transcoder_config: { config: {} } }))
 }));
@@ -123,6 +134,7 @@ import {
 	retryFailedTitles,
 	requestSubtitleOcr
 } from '$lib/api/jobs';
+import { acceptAllMenuProposals, fetchDiscMenu } from '$lib/api/discMenus';
 import { dashboard } from '$lib/stores/dashboard';
 import * as authStore from '$lib/stores/auth';
 import { fetchIdentity } from '$lib/api/identity';
@@ -279,6 +291,74 @@ describe('Job detail page (v3)', () => {
 		expect(box.getAttribute('title')).toBe("Titles can't be changed while the disc is ripping");
 		expect(screen.getByText('Skipped')).toBeInTheDocument();
 		expect(screen.queryByRole('button', { name: 'Keep all' })).toBeNull();
+	});
+
+	it("shows the menu's names on the titles' rows and accepts them all", async () => {
+		const menuName = (over: Record<string, unknown>) => ({
+			id: 'mnp_op',
+			job_id: 'job_42',
+			track_id: 'trk_19',
+			scan_title: 19,
+			page: '3',
+			button: 13,
+			label: 'Textless OP',
+			score: 0.9,
+			plays: '00024.mpls',
+			role: 'other' as const,
+			name: 'Textless OP',
+			episode_number: null,
+			note: 'left out of the rip',
+			status: 'proposed' as const,
+			applied_path: null,
+			last_error: null,
+			created_at: '2026-11-15T00:00:00Z',
+			updated_at: '2026-11-15T00:00:00Z',
+			...over
+		});
+		mockFetchJob.mockResolvedValue({
+			job: createJob({ id: 'job_42', status: 'ripped', disc_type: 'bluray' }),
+			tracks: [
+				createTrack({ id: 'trk_menu', kind: 'disc_menu', index: -1, source_ref: 'menu', status: 'done' }),
+				createTrack({ id: 'trk_1', index: 0, status: 'done' }),
+				createTrack({ id: 'trk_19', index: 19, status: 'queued', excluded: true, any_length: true })
+			],
+			fingerprints: []
+		});
+		vi.mocked(fetchDiscMenu).mockResolvedValue({
+			track_id: 'trk_menu',
+			track_status: 'done',
+			can_preview: true,
+			proposals: [
+				menuName({}),
+				menuName({ id: 'mnp_ep', track_id: 'trk_1', label: 'Episode 1', role: 'episode', status: 'info' })
+			]
+		});
+		vi.mocked(acceptAllMenuProposals).mockResolvedValue({
+			proposals: [menuName({ status: 'accepted' })],
+			refused: { mnp_x: 'Show/other/Textless OP.mkv already exists' }
+		});
+		renderComponent(Page);
+		const [row] = await screen.findAllByTestId('track-menu-name');
+		expect(row).toHaveTextContent('Textless OP');
+		expect(screen.getAllByTestId('track-menu-name')).toHaveLength(1);
+		await fireEvent.click(screen.getByTestId('dm-accept-all'));
+		expect(vi.mocked(acceptAllMenuProposals)).toHaveBeenCalledWith('job_42');
+		expect(await screen.findByTestId('dm-refused')).toHaveTextContent('1 name was not accepted');
+		vi.mocked(acceptAllMenuProposals).mockRejectedValueOnce(new Error('nope'));
+		await fireEvent.click(screen.getByTestId('dm-accept-all'));
+		expect(await screen.findByTestId('dm-refused')).toHaveTextContent('Could not accept the names: nope');
+		cleanup();
+
+		// A name for a title the page doesn't have yet (the preview made its row after the job loaded): load again.
+		vi.mocked(fetchDiscMenu).mockResolvedValue({
+			track_id: 'trk_menu',
+			track_status: 'done',
+			proposals: [menuName({ id: 'mnp_new', track_id: 'trk_20' })]
+		});
+		const before = mockFetchJob.mock.calls.length;
+		renderComponent(Page);
+		await waitFor(() => expect(mockFetchJob.mock.calls.length).toBeGreaterThanOrEqual(before + 2));
+		expect(screen.queryByTestId('track-menu-name')).toBeNull();
 	});
 
 	it('retries the failed kept titles and says how the retry starts', async () => {

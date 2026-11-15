@@ -104,9 +104,6 @@ class JobDiscMenuView(BaseModel):
     proposals: list[MenuProposalView] = Field(default_factory=list)
     # Another preview can be asked for (the menu is copied and none is live).
     can_preview: bool = False
-    # Why a title the menu plays but the job has no track for can't be ripped
-    # now (no kept disc backup, the drive is busy, ...); None when it can.
-    rip_refusal: str | None = None
     # The newest pack build, or None before the first one is queued.
     pack: MenuPackView | None = None
     # Why the pack can't be built (again) now; None when Build can be pressed.
