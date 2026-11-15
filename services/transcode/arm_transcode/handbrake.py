@@ -62,6 +62,36 @@ _PROGRESS_LINE_RE = re.compile(
 )
 
 
+def build_handbrake_command(
+    *,
+    input_path: Path,
+    output_path: Path,
+    preset_ref: str,
+    extra_args: str | None,
+    encoder_args: list[str],
+    track_args: list[str] | None = None,
+) -> list[str]:
+    """The HandBrakeCLI argv for one encode.
+
+    Input, output and preset come first, then the encoder args, then the
+    track selection (fork), then any extra args split on whitespace.
+    """
+    cmd: list[str] = [
+        "HandBrakeCLI",
+        "-i",
+        str(input_path),
+        "-o",
+        str(output_path),
+        "--preset",
+        preset_ref,
+    ]
+    cmd.extend(encoder_args)
+    cmd.extend(track_args or [])
+    if extra_args:
+        cmd.extend(extra_args.split())
+    return cmd
+
+
 async def transcode_handbrake(
     *,
     input_path: Path,
@@ -77,19 +107,14 @@ async def transcode_handbrake(
     Raises `RuntimeError` on non-zero exit. The caller is responsible for
     catching and dispatching to `BackendClient.fail`.
     """
-    cmd: list[str] = [
-        "HandBrakeCLI",
-        "-i",
-        str(input_path),
-        "-o",
-        str(output_path),
-        "--preset",
-        preset_ref,
-    ]
-    cmd.extend(encoder_args)
-    cmd.extend(track_args or [])
-    if extra_args:
-        cmd.extend(extra_args.split())
+    cmd = build_handbrake_command(
+        input_path=input_path,
+        output_path=output_path,
+        preset_ref=preset_ref,
+        extra_args=extra_args,
+        encoder_args=encoder_args,
+        track_args=track_args,
+    )
 
     logger.info("HandBrakeCLI launching: %s", " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
@@ -207,11 +232,19 @@ async def _process_progress_line(line: str, cb: ProgressCallback, last_emitted: 
     # for a two-pass encode) without having to know the schema's history.
     current_pass = f"{match.group('pass')}/{match.group('pass_total')}"
     fps, avg_fps = _parse_fps(match)
+    await _notify_progress(cb, pct, eta, current_pass, fps, avg_fps)
+    return pct
+
+
+async def _notify_progress(
+    cb: ProgressCallback, pct: int, eta: int | None, current_pass: str, fps: float | None, avg_fps: float | None
+) -> None:
+    """Hand one progress tick to the callback; a raising callback is logged at debug and ignored."""
     try:
         await cb(pct, eta, current_pass, fps, avg_fps)
     except Exception as exc:  # noqa: BLE001
+        # Swallowing the error is current behaviour, tracked in issue #412.
         logger.debug("progress_callback raised: %s", exc)
-    return pct
 
 
 def _parse_eta(match: re.Match[str]) -> int | None:
