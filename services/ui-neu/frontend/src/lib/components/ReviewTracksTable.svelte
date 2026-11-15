@@ -14,7 +14,6 @@
 	import PlayAllBadge from './PlayAllBadge.svelte';
 	import TrackKeepToggle from './TrackKeepToggle.svelte';
 	import TrackTitleSearch from './TrackTitleSearch.svelte';
-
 	interface Props {
 		job: JobView;
 		tracks: TrackView[];
@@ -23,9 +22,20 @@
 		isMusic: boolean;
 		/** The disc is backed up whole first (fork only): its titles are ticked at stop 2. */
 		parksAfterBackup?: boolean;
+		/** The generated file name per track id, when a session names them: shown as the episode. */
+		fileNames?: Map<string, string>;
 		onrefresh?: () => void;
 	}
-	let { job, tracks, scanTitles = [], isVideo, isMusic, parksAfterBackup = false, onrefresh }: Props = $props();
+	let {
+		job,
+		tracks,
+		scanTitles = [],
+		isVideo,
+		isMusic,
+		parksAfterBackup = false,
+		fileNames = new Map(),
+		onrefresh
+	}: Props = $props();
 
 	// Materialized tracks always win; scanned titles are the pre-rip fallback.
 	let rows = $derived(tracks.length ? tracks.map(trackToRow) : scanTitles.map(scanTitleToRow));
@@ -89,6 +99,11 @@
 		onrefresh?.();
 	}
 
+	// A title a source or the operator placed as something other than an episode.
+	const NON_EPISODE: Record<string, string> = { extra: 'Extra', trailer: 'Trailer', other: 'Other' };
+	function nonEpisode(row: { role: string | null; episodeNumber: number | null }): string | null {
+		return row.episodeNumber == null && row.role ? (NON_EPISODE[row.role] ?? null) : null;
+	}
 	function formatLength(secs: number | null | undefined): string {
 		if (!secs) return '--';
 		const h = Math.floor(secs / 3600);
@@ -115,7 +130,7 @@
 							{#if tracks.length}<th class="table-header w-8">Keep</th>{/if}
 							<th class="table-header">#</th>
 							<th class="table-header">{isMusic ? 'Name' : 'Title'}</th>
-							{#if isVideo}<th class="table-header review-tracks-table-center">Episode</th>{/if}
+							{#if isVideo}<th class="table-header">Episode</th>{/if}
 							<th class="table-header">Length</th>
 							<th class="table-header">Source</th>
 							{#if isVideo}<th class="table-header w-8"></th>{/if}
@@ -172,16 +187,32 @@
 									{/if}
 								</td>
 								{#if isVideo}
-									<td class="table-cell review-tracks-table-center">
-										{#if row.trackId && !row.isMenu}
-											<input
-												type="text"
-												value={row.episodeNumber ?? ''}
-												onchange={(e) => handleEpisodeNumberInput(row.trackId!, e.currentTarget.value)}
-												placeholder="--"
-												disabled={row.excluded}
-												class="field-control review-tracks-table-episode-input"
-											/>
+									<td class="table-cell">
+										{#if row.isMenu}
+											<span class="review-tracks-table-faint">-</span>
+										{:else if row.trackId && fileNames.get(row.trackId)}
+											<!-- A session names the track: the generated name is the episode. -->
+											<span class="mono review-tracks-table-generated" data-testid="track-generated-name"
+												>{fileNames.get(row.trackId)}</span
+											>
+										{:else if row.trackId && nonEpisode(row)}
+											<span class="chip chip-sm" data-testid="track-role">{nonEpisode(row)}</span>
+										{:else if row.trackId}
+											<div class="review-tracks-table-episode">
+												<input
+													type="text"
+													value={row.episodeNumber ?? ''}
+													onchange={(e) => handleEpisodeNumberInput(row.trackId!, e.currentTarget.value)}
+													placeholder="--"
+													disabled={row.excluded}
+													class="field-control review-tracks-table-episode-input"
+												/>
+												{#if row.episodeNumber != null && row.episodeName}
+													<span class="review-tracks-table-episode-name" data-testid="track-episode-name"
+														>{row.episodeName}</span
+													>
+												{/if}
+											</div>
 										{:else}
 											<span class="review-tracks-table-faint">-</span>
 										{/if}
@@ -275,11 +306,6 @@
 	.review-tracks-table .table-cell {
 		padding: 0.375rem 0.75rem;
 	}
-	.review-tracks-table-center {
-		text-align: center;
-		padding-left: 0.5rem;
-		padding-right: 0.5rem;
-	}
 	.table-row[data-disabled='true'] {
 		opacity: 0.4;
 	}
@@ -294,6 +320,24 @@
 		min-height: auto;
 		padding: 0.125rem 0.25rem;
 		text-align: center;
+	}
+	.review-tracks-table-episode {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+		min-width: 0;
+	}
+	.review-tracks-table-episode-name {
+		font-size: 0.875rem;
+		color: var(--color-text-secondary);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		max-width: 16rem;
+	}
+	.review-tracks-table-generated {
+		font-size: 0.8125rem;
+		color: var(--color-text);
 	}
 	.review-tracks-table-search-btn[aria-pressed='true'] {
 		color: var(--color-primary);

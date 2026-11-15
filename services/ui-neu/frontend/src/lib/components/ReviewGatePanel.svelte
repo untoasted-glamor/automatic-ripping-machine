@@ -37,6 +37,8 @@
 		parksAfterBackup = false,
 		onchanged
 	}: Props = $props();
+	// A guessed episode placement holds the countdown (the ripper won't auto-start on it).
+	let held = $derived(job.media_type === 'tv' && job.episodes_unsure ? 'Held: episodes are a guess' : null);
 
 	let busy = $state(false);
 	let error = $state<string | null>(null);
@@ -125,6 +127,7 @@
 				{requiresConfirm}
 				{waitSeconds}
 				{paused}
+				{held}
 				onpause={!$isAdmin || paused || busy ? undefined : () => setPause(true)}
 				onresume={!$isAdmin || paused || busy ? undefined : () => setPause(false)}
 			/>

@@ -180,12 +180,10 @@ describe('Job Detail Page', () => {
 			await waitFor(() => expect(screen.getByTestId('apply-open')).toBeInTheDocument());
 		});
 
-		it('shows the Identify (resolve) and Apply session buttons for a resolvable status', async () => {
+		it('shows Apply session for a resolvable status, and Identify only while the identity is missing', async () => {
 			renderComponent(JobDetailPage);
-			await waitFor(() => {
-				expect(screen.getByTestId('identify-open')).toBeInTheDocument();
-			});
-			expect(screen.getByTestId('apply-open')).toBeInTheDocument();
+			await waitFor(() => expect(screen.getByTestId('apply-open')).toBeInTheDocument());
+			expect(screen.queryByTestId('identify-open')).not.toBeInTheDocument();
 		});
 	});
 
@@ -224,7 +222,9 @@ describe('Job Detail Page', () => {
 			expect(screen.queryByText('Delete')).not.toBeInTheDocument();
 		});
 
-		it('shows Identify, Apply session, and Delete for admins', async () => {
+		it('shows Identify (on a disc awaiting identity), Apply session, and Delete for admins', async () => {
+			const { fetchJob } = await import('$lib/api/jobs');
+			vi.mocked(fetchJob).mockResolvedValueOnce(buildDetail({ status: 'ripped_awaiting_identify' }));
 			renderComponent(JobDetailPage);
 			await waitFor(() => {
 				expect(screen.getByTestId('identify-open')).toBeInTheDocument();

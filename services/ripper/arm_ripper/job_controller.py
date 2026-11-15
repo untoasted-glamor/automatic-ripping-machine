@@ -191,6 +191,8 @@ class JobController:
         self._scan_activity: RipperScanActivity | None = None
         self._on_scan_activity_change = on_scan_activity_change
         self._scan_notify_tasks: set[asyncio.Task[None]] = set()
+        # Jobs whose countdown hold for a guessed placement was already logged.
+        self._held_for_guess: set[str] = set()
         self._keydb_tasks: set[asyncio.Task[None]] = set()
         self._sdf_tasks: set[asyncio.Task[None]] = set()
         self._wipe_tasks: set[asyncio.Task[None]] = set()
@@ -824,6 +826,14 @@ class JobController:
         config (a transport blip) keeps it waiting.
         """
         if view.manual_pause:
+            return False
+        if view.episodes_unsure:
+            # The episode placement is a guess: never auto-start on it. Start
+            # rip by hand still works; the hold lifts when a Fix match or a
+            # re-run leaves a confident placement.
+            if view.id not in self._held_for_guess:
+                self._held_for_guess.add(view.id)
+                logger.info("job %s: countdown held, its episode placement is a guess", view.id)
             return False
         cfg = await self._safe_get_ripper_config()
         if cfg is None:

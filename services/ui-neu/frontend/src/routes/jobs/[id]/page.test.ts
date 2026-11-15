@@ -677,11 +677,27 @@ describe('Job detail page (v3)', () => {
 		});
 	});
 
-	it('shows the Identify (Edit identity) button for a resolvable status', async () => {
+	// A disc still waiting for an identity: the dialog is the way to give it one.
+	const awaitingIdentity = () => ({
+		...createJobDetail({ tracks: [] }),
+		job: createJob({ id: 'job_42', status: 'awaiting_user_id', title: null })
+	});
+
+	it('shows the Identify button only while the disc is waiting for an identity', async () => {
 		renderComponent(Page);
-		await waitFor(() => {
-			expect(screen.getByTestId('identify-open')).toBeInTheDocument();
-		});
+		await screen.findByRole('heading', { name: 'Test Movie' });
+		expect(screen.queryByTestId('identify-open')).not.toBeInTheDocument();
+		cleanup();
+		const jobImpl = mockFetchJob.getMockImplementation();
+		try {
+			mockFetchJob.mockResolvedValue(awaitingIdentity());
+			renderComponent(Page);
+			await waitFor(() => {
+				expect(screen.getByTestId('identify-open')).toHaveTextContent('Identify disc');
+			});
+		} finally {
+			mockFetchJob.mockImplementation(jobImpl!);
+		}
 	});
 
 	it('the Identity button opens the panel, and Edit by hand opens the IdentifyDialog', async () => {
@@ -971,10 +987,34 @@ describe('Job detail page (v3)', () => {
 			],
 			fingerprints: []
 		});
+		mockFetchNamingPreview.mockResolvedValue({ job_output_dir: '', job_output_name: '', items: [] });
 		renderComponent(Page);
 		await waitFor(() => expect(screen.getByText('Tracks (1)')).toBeInTheDocument());
 		expect(screen.getByRole('columnheader', { name: 'Episode' })).toBeInTheDocument();
 		expect(screen.getByText('The One With The Test')).toBeInTheDocument();
+	});
+
+	it('the Episode column reads the generated name once a session names the track', async () => {
+		mockFetchJob.mockResolvedValue({
+			job: createJob({ id: 'job_42', title: 'Show', status: 'ripped' }),
+			tracks: [createTrack({ id: 'trk_1', status: 'done', role: 'episode', episode_number: 3, episode_name: 'Ep 3' })],
+			fingerprints: []
+		});
+		mockFetchNamingPreview.mockResolvedValue({
+			job_output_dir: '/media/tv/Show/Season 01',
+			job_output_name: 'Show',
+			items: [
+				{
+					track_id: 'trk_1',
+					output_name: 'Show - S01E03 - Ep 3.mkv',
+					output_path: '/media/tv/Show/Season 01/Show - S01E03 - Ep 3.mkv'
+				}
+			]
+		} as never);
+		renderComponent(Page);
+		await waitFor(() => expect(screen.getByText('Tracks (1)')).toBeInTheDocument());
+		await waitFor(() => expect(screen.getAllByText('Show - S01E03 - Ep 3.mkv').length).toBeGreaterThan(0));
+		expect(screen.queryByText('Ep 3')).toBeNull();
 	});
 
 	it('omits the Episode column for non-series tracks', async () => {
@@ -1315,13 +1355,13 @@ describe('Job detail page (v3)', () => {
 			mockFetchJob.mockResolvedValue(tvJob());
 			renderComponent(Page);
 			await fireEvent.click(await screen.findByRole('radio', { name: 'TV' }));
-			expect(await screen.findByText('Matching episodes…')).toBeInTheDocument();
+			expect(await screen.findByText('Matching episodes...')).toBeInTheDocument();
 			// The page awaits the panel's reload before clearing, so the identity must load.
 			vi.mocked(fetchIdentity).mockResolvedValue({ sources: {}, pin: null } as unknown as IdentityView);
 			const identityCalls = vi.mocked(fetchIdentity).mock.calls.length;
 			// Another job's identity update leaves it matching.
 			fireRipperEvent('job_other', 'job.identity_updated');
-			expect(screen.getByText('Matching episodes…')).toBeInTheDocument();
+			expect(screen.getByText('Matching episodes...')).toBeInTheDocument();
 			// The resolve's own event refreshes the job but the stage is still running.
 			const fetches = mockFetchJob.mock.calls.length;
 			fireRipperEvent('job_42', 'rip.identify_resolved');
@@ -1329,9 +1369,9 @@ describe('Job detail page (v3)', () => {
 			await waitFor(() => expect(vi.mocked(fetchIdentity).mock.calls.length).toBeGreaterThan(identityCalls));
 			// Let the refresh fully settle before checking the state stuck.
 			await new Promise((r) => setTimeout(r, 50));
-			expect(screen.getByText('Matching episodes…')).toBeInTheDocument();
+			expect(screen.getByText('Matching episodes...')).toBeInTheDocument();
 			fireRipperEvent('job_42', 'job.identity_updated');
-			await waitFor(() => expect(screen.queryByText('Matching episodes…')).not.toBeInTheDocument());
+			await waitFor(() => expect(screen.queryByText('Matching episodes...')).not.toBeInTheDocument());
 			expect(vi.mocked(fetchIdentity).mock.calls.length).toBeGreaterThan(identityCalls);
 		});
 
@@ -1342,9 +1382,9 @@ describe('Job detail page (v3)', () => {
 				mockFetchJob.mockResolvedValue(tvJob());
 				renderComponent(Page);
 				await fireEvent.click(await screen.findByRole('radio', { name: 'TV' }));
-				expect(await screen.findByText('Matching episodes…')).toBeInTheDocument();
+				expect(await screen.findByText('Matching episodes...')).toBeInTheDocument();
 				await vi.advanceTimersByTimeAsync(60_000);
-				await waitFor(() => expect(screen.queryByText('Matching episodes…')).not.toBeInTheDocument());
+				await waitFor(() => expect(screen.queryByText('Matching episodes...')).not.toBeInTheDocument());
 			} finally {
 				vi.useRealTimers();
 			}

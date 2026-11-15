@@ -16,13 +16,24 @@
 		waitSeconds: number;
 		/** Global ripping pause: freezes every countdown. */
 		paused?: boolean;
+		/** Why the countdown is held (e.g. a guessed episode placement), shown in its place. */
+		held?: string | null;
 		/** Render for a coloured background (the review card's status bar). */
 		inverted?: boolean;
 		onpause?: () => void;
 		onresume?: () => void;
 	}
 
-	let { job, requiresConfirm, waitSeconds, paused = false, inverted = false, onpause, onresume }: Props = $props();
+	let {
+		job,
+		requiresConfirm,
+		waitSeconds,
+		paused = false,
+		held = null,
+		inverted = false,
+		onpause,
+		onresume
+	}: Props = $props();
 </script>
 
 {#if requiresConfirm}
@@ -34,7 +45,8 @@
 	<CountdownTimer
 		startTime={job.wait_start_time}
 		{waitSeconds}
-		paused={paused || !!job.manual_pause}
+		paused={paused || !!job.manual_pause || !!held}
+		{held}
 		{inverted}
 		{onpause}
 		{onresume}
