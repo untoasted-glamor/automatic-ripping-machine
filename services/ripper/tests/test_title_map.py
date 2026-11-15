@@ -10,8 +10,10 @@ import pytest
 from arm_common.schemas import ScanTitle
 
 from arm_ripper.rip.title_map import match_titles
-from arm_ripper.scan.makemkv import parse_makemkvcon_info
-from tests._makemkvcon_fake import FIXTURES
+from arm_ripper.scan.makemkv import SourceTitle, list_source_titles, parse_equal_playlists, parse_makemkvcon_info
+from tests._makemkvcon_fake import FIXTURES, Recording, install
+
+TUTU_BACKUP = "makemkvcon_bd_tutu_info_file_backup_minlength0_noscan_v1184.txt"
 
 
 def _titles(name: str) -> list[ScanTitle]:
@@ -134,3 +136,114 @@ def test_a_keyless_title_cannot_take_a_keyed_titles_twin() -> None:
     ]
 
     assert match_titles(disc, backup) == {1: 5, 0: 6}
+
+
+# Princess Tutu BD-1's nine 25:27 episodes as the disc scan stored them
+# (playlist, clip): MakeMKV kept 00007, 00010 and 00011.mpls on the disc, and
+# in the backup their twins 00017, 00020 and 00021.mpls (job 2026-11-14).
+_TUTU_DISC_EPISODES = [
+    ("00005.mpls", "6"),
+    ("00006.mpls", "8"),
+    ("00007.mpls", "10"),
+    ("00008.mpls", "12"),
+    ("00009.mpls", "14"),
+    ("00010.mpls", "16"),
+    ("00011.mpls", "18"),
+    ("00012.mpls", "20"),
+    ("00013.mpls", "22"),
+]
+
+
+def _tutu_disc() -> list[ScanTitle]:
+    return [
+        ScanTitle(index=i, duration_seconds=1527, source_playlist=playlist, segment_map=clips)
+        for i, (playlist, clips) in enumerate(_TUTU_DISC_EPISODES)
+    ]
+
+
+def test_makemkvs_equal_playlists_are_read_as_groups() -> None:
+    """`MSG:3309` pairs, joined transitively: 00057 was kept, then skipped as equal to 00012."""
+    equal = parse_equal_playlists((FIXTURES / TUTU_BACKUP).read_text().splitlines())
+
+    assert equal["00017.mpls"] == {"00007.mpls"}
+    assert equal["00007.mpls"] == {"00017.mpls"}
+    assert equal["00012.mpls"] == {"00057.mpls", "00022.mpls"}
+    assert equal["00057.mpls"] == {"00012.mpls", "00022.mpls"}
+    assert "00013.mpls" in equal and "00006.mpls" in equal
+
+
+async def test_a_backup_listing_says_which_playlists_each_title_stands_for(monkeypatch, tmp_path) -> None:
+    folder = tmp_path / "disc"
+    install(monkeypatch, folders={str(folder): Recording(TUTU_BACKUP)})
+
+    titles = {t.source_playlist: t for t in await list_source_titles(f"file:{folder / 'BDMV'}")}
+
+    assert all(isinstance(t, SourceTitle) for t in titles.values())
+    assert titles["00017.mpls"].equal_playlists == ("00007.mpls",)
+    assert titles["00012.mpls"].equal_playlists == ("00022.mpls", "00057.mpls")
+    assert titles["00002.m2ts"].equal_playlists == ()
+
+
+async def test_every_episode_finds_its_backup_title_when_makemkv_kept_the_other_twin(monkeypatch, tmp_path) -> None:
+    """Retry of the Princess Tutu job: titles 2, 5 and 6 failed "could not
+    map title to the backup" because their playlists were each skipped in
+    the backup as equal to another. They now map to that other playlist."""
+    folder = tmp_path / "disc"
+    install(monkeypatch, folders={str(folder): Recording(TUTU_BACKUP)})
+    backup = await list_source_titles(f"file:{folder / 'BDMV'}")
+    disc = _tutu_disc()
+
+    matched = match_titles(disc, backup)
+
+    by_index = {t.index: t for t in backup}
+    assert sorted(matched) == list(range(9))
+    assert {i: by_index[matched[i]].source_playlist for i in (2, 5, 6)} == {
+        2: "00017.mpls",
+        5: "00020.mpls",
+        6: "00021.mpls",
+    }
+    for i, (playlist, clips) in enumerate(_TUTU_DISC_EPISODES):
+        assert by_index[matched[i]].segment_map == clips
+        if i not in (2, 5, 6):
+            assert by_index[matched[i]].source_playlist == playlist
+
+
+def test_an_equal_twin_with_another_clip_list_is_unmatched() -> None:
+    disc = [ScanTitle(index=0, duration_seconds=1527, source_playlist="00007.mpls", segment_map="10")]
+    backup = [
+        SourceTitle(
+            index=3,
+            duration_seconds=1527,
+            source_playlist="00017.mpls",
+            segment_map="11",
+            equal_playlists=("00007.mpls",),
+        )
+    ]
+
+    assert match_titles(disc, backup) == {}
+
+
+def test_a_playlist_named_exactly_keeps_its_title_from_a_twin_asked_first() -> None:
+    """The disc listed both playlists; the backup only one, with the other as
+    its twin. The exact name wins, and the twin is left unmatched rather than
+    sharing the title."""
+    disc = [
+        ScanTitle(index=0, duration_seconds=1527, source_playlist="00007.mpls"),
+        ScanTitle(index=1, duration_seconds=1527, source_playlist="00017.mpls"),
+    ]
+    backup = [
+        SourceTitle(index=4, duration_seconds=1527, source_playlist="00017.mpls", equal_playlists=("00007.mpls",))
+    ]
+
+    assert match_titles(disc, backup) == {1: 4}
+
+
+def test_an_ambiguous_exact_match_does_not_fall_back_to_a_twin() -> None:
+    disc = [ScanTitle(index=0, duration_seconds=1527, source_playlist="00007.mpls")]
+    backup = [
+        SourceTitle(index=0, duration_seconds=1527, source_playlist="00007.mpls"),
+        SourceTitle(index=1, duration_seconds=1527, source_playlist="00007.mpls"),
+        SourceTitle(index=2, duration_seconds=1527, source_playlist="00017.mpls", equal_playlists=("00007.mpls",)),
+    ]
+
+    assert match_titles(disc, backup) == {}

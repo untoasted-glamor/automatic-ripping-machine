@@ -53,3 +53,4 @@ still exits 12 silently. Output files are 4-22 B larger than 2.0.0's. So the
 | `makemkvcon_iso_sintel_` | Sintel DVD ISO (`devtools/iso-smoke.sh`'s pinned image) | no drive; `_drive_seated` ones with a BD seated in `/dev/sr0` |
 | `makemkvcon_bd_hanako_` | Blu-ray "ToiletBound HanakoKun D1" | disc, its encrypted backup (`backup disc:0`) and remuxes from it |
 | `makemkvcon_dvd_acca_` | DVD ACCA_CS_D1 | disc, its backup (one ISO image) and remuxes from it |
+| `makemkvcon_bd_tutu_` | Blu-ray Princess Tutu BD-1 | its clean decrypted backup read back on **1.18.4** (2026-11-14): MakeMKV kept other playlists of equal pairs (`MSG:3309`) than the disc scan did (ledger T50) |

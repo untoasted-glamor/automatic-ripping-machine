@@ -551,7 +551,7 @@ async def scan_disc(device_path: str) -> ScanResult:
     )
 
 
-async def list_source_titles(source_url: str, *, minlength_seconds: int = 0) -> list[ScanTitle]:
+async def list_source_titles(source_url: str, *, minlength_seconds: int = 0) -> list[SourceTitle]:
     """The titles of a disc backup, an ISO or a disc folder, numbered as `mkv`
     at the same `--minlength` numbers them (backup-then-remux).
 
@@ -586,4 +586,52 @@ async def list_source_titles(source_url: str, *, minlength_seconds: int = 0) -> 
     _, titles, _ = parse_makemkvcon_info(lines)
     if not titles:
         raise ScanError(f"makemkvcon listed no titles in {source_url}: {summarize_empty_scan(lines)}")
-    return titles
+    equal = parse_equal_playlists(lines)
+    return [
+        SourceTitle.model_validate(
+            {**t.model_dump(), "equal_playlists": tuple(sorted(equal.get(t.source_playlist or "", ())))}
+        )
+        for t in titles
+    ]
+
+
+class SourceTitle(ScanTitle):
+    """A title of a disc backup, an ISO or a disc folder (`list_source_titles`).
+
+    `equal_playlists` are the playlists MakeMKV found equal to this title's
+    and skipped (`MSG:3309`). Which playlist of an equal pair MakeMKV keeps
+    isn't stable between a disc and its backup: on Princess Tutu BD-1
+    (1.18.4) the disc scan kept 00007, 00010 and 00011.mpls and the backup
+    their twins 00017, 00020 and 00021.mpls, so the disc's playlists weren't
+    in the backup's listing at all.
+    """
+
+    equal_playlists: tuple[str, ...] = ()
+
+
+def parse_equal_playlists(lines: Iterable[str]) -> dict[str, frozenset[str]]:
+    """Map each playlist MakeMKV called equal to another to all the others it
+    is equal to, from `MSG:3309,…,"Title %1 is equal to title %2 and was
+    skipped","00007.mpls","00017.mpls"`. Equality is transitive: MakeMKV can
+    keep a playlist and later skip it as equal to a third (00057 ≡ 00012).
+    """
+    parent: dict[str, str] = {}
+
+    def root(name: str) -> str:
+        while (up := parent.setdefault(name, name)) != name:
+            parent[name] = parent.setdefault(up, up)
+            name = up
+        return name
+
+    for raw in lines:
+        msg_type, _, rest = raw.strip().partition(":")
+        if msg_type != "MSG" or not rest.startswith("3309,"):
+            continue
+        fields = next(csv.reader([rest]), [])
+        if len(fields) >= 7 and fields[5] and fields[6]:
+            parent[root(fields[5])] = root(fields[6])
+
+    groups: dict[str, set[str]] = {}
+    for name in list(parent):
+        groups.setdefault(root(name), set()).add(name)
+    return {name: frozenset(members - {name}) for members in groups.values() for name in members}
