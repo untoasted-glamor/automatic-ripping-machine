@@ -73,8 +73,8 @@ describe('disc menu helpers', () => {
 		expect(statusText(accepted, 'queued')).toBe('Waiting for the rip');
 		expect(statusText(accepted, 'in_progress')).toBe('Waiting for the rip');
 		expect(statusText(accepted, 'failed')).toBe('The rip failed');
-		expect(statusText(accepted, 'done')).toBe('Waiting for the encode');
-		expect(statusText(accepted, undefined)).toBe('Waiting for the encode');
+		expect(statusText(accepted, 'done')).toBe('Waiting for the transcode');
+		expect(statusText(accepted, undefined)).toBe('Waiting for the transcode');
 		expect(statusText(proposal(), 'queued')).toBe('Proposed');
 	});
 

@@ -51,7 +51,7 @@ export function isOpen(p: MenuProposalView): boolean {
 
 export const PROPOSAL_STATUS: Record<MenuProposalView['status'], { text: string; tone: string }> = {
 	proposed: { text: 'Proposed', tone: 'info' },
-	accepted: { text: 'Waiting for the encode', tone: 'warning' },
+	accepted: { text: 'Waiting for the transcode', tone: 'warning' },
 	applied: { text: 'Renamed', tone: 'success' },
 	rejected: { text: 'Rejected', tone: '' },
 	info: { text: 'Note', tone: '' }
