@@ -14,7 +14,7 @@
 	import { fetchSessions } from '$lib/api/sessions';
 	import { parkedSessionLine, readJobMetadata, videoTypeLabel } from '$lib/utils/job-fields';
 	import { driveLabel } from '$lib/utils/drive-name';
-	import { previouslyRippedJobId, reviewPhaseBadge } from '$lib/utils/job-status';
+	import { identitySuggestionOf, previouslyRippedJobId, reviewPhaseBadge } from '$lib/utils/job-status';
 	import { formatDateTime } from '$lib/utils/format';
 	import ReviewWaitStatus from './ReviewWaitStatus.svelte';
 	import { discTypeLabel } from '$lib/utils/job-type';
@@ -31,6 +31,7 @@
 	import ReviewTracksTable from './ReviewTracksTable.svelte';
 	import JobTrackPicker from './JobTrackPicker.svelte';
 	import IsoSourceChip from './IsoSourceChip.svelte';
+	import IdentitySuggestionBanner from './IdentitySuggestionBanner.svelte';
 	import { isAdmin } from '$lib/stores/auth';
 
 	interface Props {
@@ -131,8 +132,11 @@
 	// on_previously_ripped = hold: this disc matched an earlier rip. No
 	// countdown runs; the operator chooses Rip again (Start) or Discard (Cancel).
 	let previousId = $derived(isReviewGate ? previouslyRippedJobId(displayJob) : null);
+	// A confident match identify held for confirmation (auto-apply off).
+	let suggestion = $derived(identitySuggestionOf(displayJob));
 	// Held for an explicit confirm: no countdown, Start is the only way on.
-	let awaitingConfirm = $derived(isReviewGate && requiresConfirm && !previousId);
+	// A held suggestion is its own confirm (use it or search), so it wins.
+	let awaitingConfirm = $derived(isReviewGate && requiresConfirm && !previousId && !suggestion);
 	let previous = $derived(data?.previous_rip ?? null);
 
 	function shortId(id: string): string {
@@ -343,13 +347,15 @@
 									? 'Backed up: Choose titles & Confirm'
 									: 'Backed up: Choose titles'
 								: 'Backed up: Reading the disc menu'
-							: awaitingConfirm
-								? 'Ready: Review & Confirm'
-								: isReviewGate
-									? 'Ready: Review & Start'
-									: isPostRip
-										? 'Ripped: Apply Session'
-										: 'Awaiting Review'}
+							: suggestion
+								? 'Confirm the title: use it or search'
+								: awaitingConfirm
+									? 'Ready: Review & Confirm'
+									: isReviewGate
+										? 'Ready: Review & Start'
+										: isPostRip
+											? 'Ripped: Apply Session'
+											: 'Awaiting Review'}
 				</span>
 			</div>
 			<!-- Review gate: "Waiting for your confirmation" in mandatory-confirm mode,
@@ -459,6 +465,24 @@
 				{:else if !initialLoading}
 					<p>ARM ripped this disc before, but that job has since been deleted.</p>
 				{/if}
+			</div>
+		{/if}
+
+		{#if suggestion}
+			<div class="disc-review-widget-suggestion">
+				<IdentitySuggestionBanner
+					job={displayJob}
+					canAct={$isAdmin}
+					onaccepted={() => {
+						loadDetail();
+						onrefresh?.();
+					}}
+					onsearch={() => {
+						showInfo = false;
+						showTitleSearch = !isMusic;
+						showMusicSearch = isMusic;
+					}}
+				/>
 			</div>
 		{/if}
 
@@ -636,6 +660,9 @@
 		justify-content: space-between;
 		background: var(--color-primary);
 		padding: 0.375rem 1rem;
+	}
+	.disc-review-widget-suggestion {
+		margin: 0 1rem 0.75rem;
 	}
 	.disc-review-widget-previous {
 		margin: 0 1rem 0.75rem;

@@ -26,7 +26,8 @@
 	import RawBackupRow from '$lib/components/RawBackupRow.svelte';
 	import MakeTextSubtitlesButton from '$lib/components/MakeTextSubtitlesButton.svelte';
 	import TaskKindChip from '$lib/components/TaskKindChip.svelte';
-	import { effectiveJobStatus, isPartialComplete } from '$lib/utils/job-status';
+	import { effectiveJobStatus, identitySuggestionOf, isPartialComplete } from '$lib/utils/job-status';
+	import IdentitySuggestionBanner from '$lib/components/IdentitySuggestionBanner.svelte';
 	import {
 		isAwaitingIdentity,
 		isLive,
@@ -526,6 +527,18 @@
 					</div>
 				</div>
 
+				<!-- A confident match identify held for confirmation (auto-apply off). -->
+				{#if identitySuggestionOf(job)}
+					<div class="job-detail-suggestion">
+						<IdentitySuggestionBanner
+							{job}
+							canAct={$isAdmin && canResolve}
+							onaccepted={handleIdentified}
+							onsearch={() => (showIdentify = true)}
+						/>
+					</div>
+				{/if}
+
 				<!-- Poster + Metadata grid -->
 				<div class="flex flex-col sm:flex-row items-start">
 					<!-- Poster -->
@@ -626,7 +639,8 @@
 				</section>
 			{/if}
 
-			{#if job.status === 'awaiting_review' || job.status === 'awaiting_titles'}
+			<!-- A held suggestion is confirmed in its banner first; accepting it opens the gate. -->
+			{#if (job.status === 'awaiting_review' && !identitySuggestionOf(job)) || job.status === 'awaiting_titles'}
 				<ReviewGatePanel
 					{job}
 					parksAfterBackup={parks}
@@ -1117,6 +1131,10 @@
 		box-shadow: var(--shadow-1);
 	}
 	.job-detail-title-bar {
+		border-bottom: 1px solid var(--color-border);
+		padding: 0.75rem 1.25rem;
+	}
+	.job-detail-suggestion {
 		border-bottom: 1px solid var(--color-border);
 		padding: 0.75rem 1.25rem;
 	}
