@@ -250,6 +250,18 @@ def test_name_by_hand(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert r.status_code == 404
 
 
+def test_name_by_hand_a_title_not_ripped_yet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """At stop 2 the titles have no file: the title takes the name now, for when it is ripped and encoded."""
+    db = _db(tmp_path)
+    trk_5 = next(t for t in db.rows["tracks"] if t.id == "trk_5")
+    trk_5.status, trk_5.output_path = TrackStatus.QUEUED, None
+    client, auth = _client(db, tmp_path, monkeypatch)
+    r = client.post(f"{BASE}/proposals", json={"track_id": "trk_5", "role": "extra", "name": "Outtakes"}, headers=auth)
+    assert r.status_code == 201, r.text
+    assert r.json()["status"] == "accepted"
+    assert (trk_5.role, trk_5.custom_filename) == (TrackRole.EXTRA, "Outtakes")
+
+
 def test_accept_all(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db = _db(tmp_path)
     db.rows["menu_proposals"].append(

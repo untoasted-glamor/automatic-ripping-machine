@@ -4,7 +4,8 @@
 	// notes. The names the buttons propose are shown on the titles' rows in the
 	// Tracks table (`MenuProposalEditor`): this panel loads them and hands them
 	// to the page (`onproposals`), and a box that plays a title scrolls to its
-	// row. A title the menu doesn't name can be named here by hand. The menu
+	// row. Any title can be named here by hand, ripped or not (at stop 2 its name
+	// is used when it is ripped), with the menu's pages above to read from. The menu
 	// pack row says where the pack Jellyfin plays stands, and builds or deletes
 	// it. Shown only when the job has a copied disc menu (the GET 404s otherwise).
 	import { onDestroy } from 'svelte';
@@ -36,6 +37,7 @@
 	} from '$lib/utils/disc-menu';
 	import { usePoll } from '$lib/utils/poll';
 	import { formatBytes } from '$lib/utils/format';
+	import { formatDuration } from '$lib/utils/duration';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 	import Glyph from './Glyph.svelte';
 
@@ -68,7 +70,16 @@
 	const pages = $derived(view?.preview?.pages ?? []);
 	const page = $derived(pages.find((p) => p.id === pageId) ?? pages[0] ?? null);
 	const notes = $derived((view?.proposals ?? []).filter((p) => p.status === 'info'));
-	const titles = $derived(tracks.filter((t) => t.kind === 'video_title' && t.status === 'done'));
+	// Every title on the disc: one not ripped yet takes the name now, and its file is laid out under it.
+	const titles = $derived(tracks.filter((t) => t.kind === 'video_title'));
+
+	/** "Title 7, 1:32: Clean Opening (left out)": enough to match it to its menu button. */
+	function titleOption(t: TrackView): string {
+		const seconds = t.duration_seconds ?? t.expected_duration_seconds;
+		const parts = [`Title ${t.index}${seconds ? `, ${formatDuration(seconds)}` : ''}`];
+		if (t.title) parts.push(t.title);
+		return parts.join(': ') + (t.excluded ? ' (left out)' : '');
+	}
 
 	function pageName(id: string): string {
 		const p = pages.find((x) => x.id === id);
@@ -184,7 +195,7 @@
 			handDraft = { trackId: '', role: null, name: '', episode: null };
 			onrenamed?.();
 		} catch (e) {
-			error = message(e, 'Could not rename that title');
+			error = message(e, 'Could not name that title');
 		} finally {
 			busy = null;
 		}
@@ -347,7 +358,7 @@
 					<select class="field-control" aria-label="Title" data-testid="dm-hand-track" bind:value={handDraft.trackId}>
 						<option value="">Pick a title</option>
 						{#each titles as t (t.id)}
-							<option value={t.id}>Title {t.index}{t.title ? `: ${t.title}` : ''}</option>
+							<option value={t.id}>{titleOption(t)}</option>
 						{/each}
 					</select>
 					<select class="field-control" aria-label="Role" data-testid="dm-hand-role" bind:value={handDraft.role}>
@@ -373,8 +384,8 @@
 						class="btn btn-primary btn-sm"
 						data-testid="dm-hand-save"
 						disabled={busy !== null || handBlocker !== null}
-						title={handBlocker ?? 'Rename the encode to this name'}
-						onclick={nameByHand}>Rename</button
+						title={handBlocker ?? 'Give the title this name (its encode is renamed if it has one)'}
+						onclick={nameByHand}>Save name</button
 					>
 					<button type="button" class="btn btn-sm" onclick={() => (byHand = false)}>Cancel</button>
 				</div>

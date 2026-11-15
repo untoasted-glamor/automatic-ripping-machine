@@ -256,6 +256,27 @@ describe('DiscMenuPanel', () => {
 		);
 	});
 
+	it('offers every title by hand, ripped or not, with its length and whether it is kept', async () => {
+		fetchMock.mockResolvedValue(menu());
+		const queued = [
+			...tracks,
+			createTrack({
+				id: 'trk_9',
+				kind: 'video_title',
+				index: 9,
+				status: 'queued',
+				duration_seconds: null,
+				expected_duration_seconds: 92
+			}),
+			createTrack({ id: 'trk_10', kind: 'video_title', index: 10, status: 'queued', excluded: true, title: 'Outtakes' })
+		];
+		render({ tracks: queued });
+		await fireEvent.click(await screen.findByTestId('dm-hand-open'));
+		const options = [...(screen.getByTestId('dm-hand-track') as HTMLSelectElement).options].map((o) => o.text);
+		expect(options).toEqual(expect.arrayContaining(['Title 9, 1:32', 'Title 10, 45:50: Outtakes (left out)']));
+		expect(options.some((o) => o.includes('Title -1'))).toBe(false); // the menu track isn't a title
+	});
+
 	it('shows a by-hand failure', async () => {
 		fetchMock.mockResolvedValue(menu());
 		vi.mocked(createMenuProposal).mockRejectedValue(new Error('no encode'));
