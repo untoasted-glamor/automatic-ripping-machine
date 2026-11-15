@@ -285,3 +285,154 @@ def test_rip_callbacks_default_to_none_and_are_frozen() -> None:
     assert (cbs.on_title_start, cbs.on_title_progress, cbs.on_disc_progress, cbs.on_title_done) == (None,) * 4
     with pytest.raises(dataclasses.FrozenInstanceError):
         cbs.on_title_start = _Recorder()  # type: ignore[misc]
+
+
+class _KillProc:
+    def __init__(self) -> None:
+        self.kills = 0
+
+    def kill(self) -> None:
+        self.kills += 1
+
+
+def _parser(
+    state: _ParserState, proc: _KillProc | None = None, eligible: list[int] | None = None
+) -> makemkv_rip._LineParser:
+    return makemkv_rip._LineParser(
+        cast(Any, proc or _KillProc()), state, makemkv_rip.RipCallbacks(), eligible or [], True
+    )
+
+
+_EXPIRED = 'MSG:5021,0,1,"evaluation period has expired","%1","x"'
+
+
+async def test_feed_first_binary_expired_msg_flags_records_and_kills_once() -> None:
+    state, proc = _ParserState(), _KillProc()
+    await _parser(state, proc).feed(_EXPIRED)
+    assert state.binary_expired is True
+    assert state.diagnostics == [_EXPIRED]
+    assert proc.kills == 1
+
+
+async def test_feed_second_binary_expired_msg_does_not_kill_again_and_falls_through(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG, logger=LOGGER)
+    state, proc = _ParserState(), _KillProc()
+    parser = _parser(state, proc)
+    await parser.feed(_EXPIRED)
+    assert _records(caplog, "makemkvcon: ") == []
+    await parser.feed(_EXPIRED)
+    assert proc.kills == 1
+    assert state.diagnostics == [_EXPIRED]
+    # Fell through to the generic MSG branch, which logs the line.
+    _assert_one(caplog, logging.INFO, f"makemkvcon: {_EXPIRED}")  # fork: MSG lines at INFO
+
+
+async def test_feed_prgc_position_maps_through_eligible_to_current_title() -> None:
+    state = _ParserState()
+    await _parser(state, eligible=[4, 9]).feed('PRGC:5017,1,"Saving to MKV file"')
+    assert state.current_title == 9
+
+
+# --- _LineParser handlers: True when the line was their kind, else False --------------------------------------------
+
+
+async def test_apply_expiry_true_on_first_5021_false_once_expired_or_other_line() -> None:
+    state, proc = _ParserState(), _KillProc()
+    parser = _parser(state, proc)
+    assert await parser._apply_expiry("PRGV:1,2,3") is False
+    assert await parser._apply_expiry(_EXPIRED) is True
+    assert await parser._apply_expiry(_EXPIRED) is False
+    assert proc.kills == 1
+
+
+async def test_apply_progress_true_for_prgv_false_otherwise() -> None:
+    parser = _parser(_ParserState())
+    assert await parser._apply_progress(PRGV.decode()) is True
+    assert await parser._apply_progress('PRGC:5017,0,"x"') is False
+
+
+async def test_apply_save_position_true_in_range_and_out_of_range_false_otherwise(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG, logger=LOGGER)
+    state = _ParserState()
+    parser = _parser(state, eligible=[4])
+    assert await parser._apply_save_position("PRGV:1,2,3") is False
+    assert await parser._apply_save_position('PRGC:5017,0,"Saving to MKV file"') is True
+    assert state.current_title == 4
+    assert await parser._apply_save_position('PRGC:5017,5,"Saving to MKV file"') is True
+    _assert_one(caplog, logging.WARNING, "PRGC:5017 output position 5 out of range (eligible has 1 entries)")
+    assert state.current_title == 4
+
+
+async def test_apply_title_line_true_for_saving_title_false_otherwise() -> None:
+    state = _ParserState()
+    parser = _parser(state)
+    assert await parser._apply_title_line("PRGV:1,2,3") is False
+    assert await parser._apply_title_line('PRGT:5011,0,"Saving title #5 to MKV file"') is True
+    assert state.current_title == 5
+
+
+async def test_apply_milestone_true_for_other_prgt_and_marks_save_phase(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG, logger=LOGGER)
+    state = _ParserState()
+    parser = _parser(state)
+    assert await parser._apply_milestone("PRGV:1,2,3") is False
+    assert await parser._apply_milestone('PRGT:5024,0,"Saving all titles"') is True
+    assert state.save_phase_started is True
+    _assert_one(caplog, logging.INFO, "makemkvcon milestone: Saving all titles")
+
+
+async def test_apply_msg_true_for_msg_false_for_non_msg(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG, logger=LOGGER)
+    state = _ParserState()
+    parser = _parser(state)
+    assert await parser._apply_msg("PRGV:1,2,3") is False
+    assert caplog.records == []
+    line = 'MSG:5003,0,2,"Failed to save title 2 to file x","Failed to save title %1 to file %2","2","x"'
+    assert await parser._apply_msg(line) is True
+    assert state.diagnostics == ["Failed to save title 2 to file x"]
+    assert state.titles[2].fail_reason == "Failed to save title 2 to file x"
+    _assert_one(caplog, logging.INFO, f"makemkvcon: {line}")  # fork: MSG lines at INFO
+
+
+def test_record_title_failure_with_index_stores_unescaped_reason() -> None:
+    state = _ParserState()
+    line = r'MSG:5003,0,2,"Failed \"x\" to save","fmt","3","y"'
+    _parser(state)._record_title_failure(line, ["3", "y"])
+    assert state.titles[3].fail_reason == 'Failed "x" to save'
+
+
+def test_record_title_failure_without_index_warns_and_leaves_state(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG, logger=LOGGER)
+    state = _ParserState()
+    line = 'MSG:5003,0,2,"nope","fmt"'
+    _parser(state)._record_title_failure(line, [])
+    assert state == _ParserState()
+    _assert_one(caplog, logging.WARNING, f"MSG:5003 without parseable title index: {line}")
+
+
+async def test_feed_tries_handlers_in_order_and_stops_at_the_first_taker(monkeypatch: pytest.MonkeyPatch) -> None:
+    names = ["expiry", "progress", "save_position", "title_line", "milestone", "msg"]
+    calls: list[str] = []
+
+    def install(parser: makemkv_rip._LineParser, take: str | None) -> None:
+        for name in names:
+
+            async def handler(line: str, name: str = name) -> bool:
+                calls.append(f"{name}:{line}")
+                return name == take
+
+            monkeypatch.setattr(parser, f"_apply_{name}", handler)
+
+    parser = _parser(_ParserState())
+    install(parser, None)
+    await parser.feed("L")
+    assert calls == [f"{n}:L" for n in names]
+
+    calls.clear()
+    install(parser, "title_line")
+    await parser.feed("M")
+    assert calls == [f"{n}:M" for n in names[:4]]

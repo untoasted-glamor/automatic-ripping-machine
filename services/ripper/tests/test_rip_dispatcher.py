@@ -43,7 +43,8 @@ from arm_common.schemas import ScanResult, ScanTitle, TrackView
 from arm_ripper.drive_status import probe_drive_media
 from arm_ripper.rip.dispatcher import rip_all
 from arm_ripper.rip.makemkv_backup import BackupResult
-from arm_ripper.rip.makemkv_rip import RipDiscResult, RipResult
+from arm_ripper.rip.makemkv_rip import RipDiscResult
+from arm_ripper.rip.result import RipResult
 from arm_ripper.scan.disc_probe import DiscProbe
 from tests._makemkvcon_fake import ACCA_DVD, HANAKO_BD, SINTEL_ISO, Recording, file_size, install
 

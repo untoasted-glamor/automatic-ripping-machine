@@ -30,12 +30,12 @@ from arm_ripper.rip.makemkv_rip import (
     REMUX_MIN_LENGTH_SECONDS,
     STOPPED_ERROR,
     RipDiscResult,
-    RipResult,
     _output_files_by_position,
     remux_title,
     rip_disc,
 )
 from arm_ripper.rip.preflight import check_backup_space
+from arm_ripper.rip.result import RipResult
 from arm_ripper.rip.title_hasher import OnHashed, TitleHasher
 from arm_ripper.rip.title_map import match_titles
 from arm_ripper.scan.makemkv import ScanError, list_source_titles

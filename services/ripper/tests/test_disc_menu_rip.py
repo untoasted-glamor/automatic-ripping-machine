@@ -370,6 +370,6 @@ async def test_a_whole_disc_rip_skips_a_menu(monkeypatch, tmp_path, disc_type, k
 
 
 async def _no_data_rip(**_kwargs: Any) -> Any:
-    from arm_ripper.rip.makemkv_rip import RipResult
+    from arm_ripper.rip.result import RipResult
 
     return RipResult(ok=False, error="not in this test")

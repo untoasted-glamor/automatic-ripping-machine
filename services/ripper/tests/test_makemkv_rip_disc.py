@@ -28,6 +28,7 @@ import pytest
 
 import arm_ripper.rip.makemkv_rip as makemkv_rip
 from arm_ripper.rip.makemkv_rip import rip_disc
+from arm_ripper.rip.result import RipResult
 from tests._makemkvcon_fake import SINTEL_ISO, install
 
 
@@ -1141,6 +1142,16 @@ async def test_attribute_outputs_with_no_eligible_indexes_is_empty(tmp_path):
     assert await makemkv_rip._attribute_outputs(tmp_path, [], hash_outputs=True) == {}
 
 
+def test_output_files_by_position_skips_files_without_a_title_suffix(tmp_path):
+    # Upstream pins _output_files_in_rip_order; the fork pairs by suffix value instead.
+    for name in ("disc_t01.mkv", "disc_t00.mkv", "stray.mkv", "notes.txt"):
+        (tmp_path / name).write_bytes(b"x")
+    assert makemkv_rip._output_files_by_position(tmp_path) == {
+        0: tmp_path / "disc_t00.mkv",
+        1: tmp_path / "disc_t01.mkv",
+    }
+
+
 def _state_with_reasons(**reasons: str | None) -> makemkv_rip._ParserState:
     """Titles keyed `t<idx>` -> fail_reason."""
     state = makemkv_rip._ParserState()
@@ -1154,11 +1165,11 @@ _NO_MKV = "makemkvcon exited 0 but produced no .mkv for this title"
 
 def test_failed_titles_reports_a_captured_reason_for_an_unripped_title():
     out = makemkv_rip._failed_titles(_state_with_reasons(t2="read error"), [], {})
-    assert out == {2: makemkv_rip.RipResult(ok=False, error="read error")}
+    assert out == {2: RipResult(ok=False, error="read error")}
 
 
 def test_failed_titles_ignores_a_captured_reason_for_a_ripped_title():
-    ripped = {2: makemkv_rip.RipResult(ok=True)}
+    ripped = {2: RipResult(ok=True)}
     assert makemkv_rip._failed_titles(_state_with_reasons(t2="read error"), [], ripped) == {}
 
 
@@ -1168,22 +1179,22 @@ def test_failed_titles_without_a_reason_or_eligibility_gives_nothing():
 
 def test_failed_titles_gives_the_generic_error_for_an_eligible_title_without_a_reason():
     out = makemkv_rip._failed_titles(makemkv_rip._ParserState(), [4], {})
-    assert out == {4: makemkv_rip.RipResult(ok=False, error=_NO_MKV)}
+    assert out == {4: RipResult(ok=False, error=_NO_MKV)}
 
 
 def test_failed_titles_prefers_the_captured_reason_over_the_generic_error():
     out = makemkv_rip._failed_titles(_state_with_reasons(t4="read error"), [4], {})
-    assert out == {4: makemkv_rip.RipResult(ok=False, error="read error")}
+    assert out == {4: RipResult(ok=False, error="read error")}
 
 
 def test_failed_titles_orders_captured_reasons_before_generic_failures():
-    ripped = {1: makemkv_rip.RipResult(ok=True)}
+    ripped = {1: RipResult(ok=True)}
     state = _state_with_reasons(t9="bad", t3="worse")
     out = makemkv_rip._failed_titles(state, [8, 1, 3, 5], ripped)
     assert list(out) == [9, 3, 8, 5]
 
 
 def test_failed_titles_does_not_mutate_ripped():
-    ripped = {1: makemkv_rip.RipResult(ok=True)}
+    ripped = {1: RipResult(ok=True)}
     makemkv_rip._failed_titles(_state_with_reasons(t2="bad"), [3], ripped)
     assert list(ripped) == [1]

@@ -36,12 +36,12 @@ from arm_common.schemas import ScanTitle
 from arm_ripper.rip.makemkv_rip import (
     OnDiscProgress,
     RipCallbacks,
-    RipResult,
     _compose_error,
     _ParserState,
     _run_makemkvcon,
 )
 from arm_ripper.rip.preflight import title_clips
+from arm_ripper.rip.result import RipResult
 from arm_ripper.source import is_file_source, makemkv_source_url
 
 logger = logging.getLogger("arm_ripper.rip.makemkv_backup")
