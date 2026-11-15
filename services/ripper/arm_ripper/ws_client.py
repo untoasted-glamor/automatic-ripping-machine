@@ -40,6 +40,14 @@ SERVICE_TOKEN_SUBPROTOCOL = "arm-service-token"
 EnvelopeHandler = Callable[[WSEnvelope], Awaitable[None]]
 
 
+def reconnect_delay(attempt: int) -> float:
+    """Seconds to wait before reconnect attempt `attempt` (0-based).
+
+    RECONNECT_DELAYS in turn, then its last value.
+    """
+    return RECONNECT_DELAYS[min(attempt, len(RECONNECT_DELAYS) - 1)]
+
+
 class WSClient:
     def __init__(
         self,
@@ -121,7 +129,7 @@ class WSClient:
 
             if self._stopping.is_set():
                 return
-            delay = RECONNECT_DELAYS[min(delay_idx, len(RECONNECT_DELAYS) - 1)]
+            delay = reconnect_delay(delay_idx)
             delay_idx += 1
             try:
                 await asyncio.wait_for(self._stopping.wait(), timeout=delay)
@@ -139,49 +147,68 @@ class WSClient:
             ping_timeout=20.0,
             max_size=2**20,
         ) as conn:
-            await conn.send(WSAuthRequest(token=self._token).model_dump_json())
-            ack_raw = await asyncio.wait_for(conn.recv(), timeout=AUTH_ACK_TIMEOUT_SECONDS)
-            ack = json.loads(ack_raw)
-            if ack.get("op") == "error":
-                err = WSError.model_validate(ack)
-                raise WSAuthFailed(f"backend rejected auth: code={err.code} reason={err.reason}")
-            if ack.get("op") != "ack":
-                raise WSAuthFailed(f"unexpected first frame: {ack!r}")
-            WSAck.model_validate(ack)
+            await self._authenticate(conn)
             logger.info("ws connected url=%s", self._url)
 
             self._conn = conn
             self._connected.set()
 
-            for topic in self._handlers:
-                await conn.send(WSSubscribeRequest(topic=topic).model_dump_json())
+            await self._replay_subscriptions(conn)
 
             async for raw in conn:
                 if self._stopping.is_set():
                     break
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    logger.warning("ws non-json frame discarded")
-                    continue
+                await self._handle_frame(raw)
 
-                op = msg.get("op")
-                if op == "event":
-                    try:
-                        env = WSEnvelope.model_validate(msg)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("ws envelope validation failed: %s", exc)
-                        continue
-                    handler = self._handlers.get(env.topic)
-                    if handler is not None:
-                        try:
-                            await handler(env)
-                        except Exception as exc:  # noqa: BLE001
-                            logger.exception("ws handler raised on topic=%s: %s", env.topic, exc)
-                elif op == "error":
-                    err = WSError.model_validate(msg)
-                    logger.warning("ws error from backend: code=%s reason=%s", err.code, err.reason)
-                # ack frames are subscribe acks; harmless to ignore here.
+    async def _authenticate(self, conn: ClientConnection) -> None:
+        """Send the service token and await the ack; raise WSAuthFailed on a rejection or other first frame."""
+        await conn.send(WSAuthRequest(token=self._token).model_dump_json())
+        ack_raw = await asyncio.wait_for(conn.recv(), timeout=AUTH_ACK_TIMEOUT_SECONDS)
+        ack = json.loads(ack_raw)
+        if ack.get("op") == "error":
+            err = WSError.model_validate(ack)
+            raise WSAuthFailed(f"backend rejected auth: code={err.code} reason={err.reason}")
+        if ack.get("op") != "ack":
+            raise WSAuthFailed(f"unexpected first frame: {ack!r}")
+        WSAck.model_validate(ack)
+
+    async def _replay_subscriptions(self, conn: ClientConnection) -> None:
+        """Send a subscribe op for every recorded topic, in the order they were first subscribed."""
+        for topic in self._handlers:
+            await conn.send(WSSubscribeRequest(topic=topic).model_dump_json())
+
+    async def _handle_frame(self, raw: str | bytes) -> None:
+        """Decode one inbound frame: dispatch an event to its topic handler, log a backend error, ignore the rest."""
+        try:
+            msg = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("ws non-json frame discarded")
+            return
+
+        op = msg.get("op")
+        if op == "event":
+            await self._dispatch_event(msg)
+        elif op == "error":
+            err = WSError.model_validate(msg)
+            logger.warning("ws error from backend: code=%s reason=%s", err.code, err.reason)
+        # ack frames are subscribe acks; harmless to ignore here.
+
+    async def _dispatch_event(self, msg: Any) -> None:
+        """Validate an event frame and run its topic handler.
+
+        Bad envelopes and raising handlers are logged, not raised.
+        """
+        try:
+            env = WSEnvelope.model_validate(msg)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ws envelope validation failed: %s", exc)
+            return
+        handler = self._handlers.get(env.topic)
+        if handler is not None:
+            try:
+                await handler(env)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("ws handler raised on topic=%s: %s", env.topic, exc)
 
 
 class WSAuthFailed(Exception):
