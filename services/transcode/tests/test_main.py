@@ -195,7 +195,6 @@ async def test_run_encoder_progress_callback_records_frame_rates(monkeypatch, tm
         final_output=tmp_path / "out.mkv",
         duration_seconds=100,
         state=state,
-        cancel_event=asyncio.Event(),
     )
     assert (state.eta_seconds, state.current_pass, state.fps, state.avg_fps) == (600, "1/2", 45.67, 23.45)
     assert state.pct == 100
@@ -223,6 +222,197 @@ async def test_run_encoder_ffmpeg_vaapi_requires_gpu_device(monkeypatch, tmp_pat
             final_output=tmp_path / "out.mkv",
             duration_seconds=100,
             state=state,
+        )
+
+
+def _clear_encoder_env(monkeypatch) -> None:
+    for name in ("ARM_TRANSCODE_ENCODER", "ARM_GPU_VENDOR", "ARM_GPU_CODEC"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _audio_preset(*, preset_ref: str | None) -> TranscodePresetView:
+    return _handbrake_preset(preset_ref=preset_ref).model_copy(
+        update={"tool": TranscodeTool.ABCDE, "container": ContainerFormat.FLAC}
+    )
+
+
+async def _call_run_encoder(tmp_path, *, tool, preset, state=None, duration_seconds=100):
+    # Fork: `_run_encoder` takes no cancel_event (a cancel or revoke cancels the
+    # encode from outside, `_encode_until_stopped`) and returns an EncodeResult.
+    import arm_transcode.main as m
+
+    result = await m._run_encoder(
+        tool=tool,
+        preset=preset,
+        raw_input=tmp_path / "in.mkv",
+        final_output=tmp_path / "out.mkv",
+        duration_seconds=duration_seconds,
+        state=state if state is not None else ProgressState(),
+    )
+    return result.size
+
+
+@pytest.mark.asyncio
+async def test_run_encoder_none_copies_without_consulting_encoder(monkeypatch, tmp_path) -> None:
+    import arm_transcode.main as m
+
+    calls: list[tuple] = []
+
+    def fake_transcode_none(*args, **kwargs):
+        calls.append((args, kwargs))
+        return 1234
+
+    def must_not_call():
+        raise AssertionError("selected_encoder must not be consulted for tool=NONE")
+
+    monkeypatch.setattr(m, "transcode_none", fake_transcode_none)
+    monkeypatch.setattr(m, "selected_encoder", must_not_call)
+    state = ProgressState()
+    size = await _call_run_encoder(tmp_path, tool=TranscodeTool.NONE, preset=None, state=state)
+    assert size == 1234
+    assert calls == [((tmp_path / "in.mkv", tmp_path / "out.mkv"), {})]
+    assert state.pct == 100
+
+
+@pytest.mark.asyncio
+async def test_run_encoder_handbrake_with_handbrake_engine_spec(monkeypatch, tmp_path) -> None:
+    import arm_transcode.main as m
+
+    monkeypatch.setenv("ARM_TRANSCODE_ENCODER", "nvenc_h265")
+    called: dict = {}
+
+    async def fake_transcode_handbrake(**kwargs):
+        called.update(kwargs)
+        kwargs["output_path"].write_bytes(b"h" * 7)
+        return 7
+
+    monkeypatch.setattr(m, "transcode_handbrake", fake_transcode_handbrake)
+    state = ProgressState()
+    preset = _handbrake_preset(preset_ref="HQ 1080p", extra_args="--foo")
+    size = await _call_run_encoder(tmp_path, tool=TranscodeTool.HANDBRAKE, preset=preset, state=state)
+    assert size == 7
+    assert state.pct == 100
+    assert called["input_path"] == tmp_path / "in.mkv"
+    assert called["output_path"] == tmp_path / "out.mkv.arm-inprogress"
+    assert called["preset_ref"] == "HQ 1080p"
+    assert called["extra_args"] == "--foo"
+    assert called["encoder_args"] == ["--encoder", "nvenc_h265"]
+    assert (tmp_path / "out.mkv").read_bytes() == b"h" * 7
+    assert not (tmp_path / "out.mkv.arm-inprogress").exists()
+
+
+@pytest.mark.asyncio
+async def test_run_encoder_handbrake_without_encoder_spec_passes_no_encoder_args(monkeypatch, tmp_path) -> None:
+    import arm_transcode.main as m
+
+    _clear_encoder_env(monkeypatch)
+    called: dict = {}
+
+    async def fake_transcode_handbrake(**kwargs):
+        called.update(kwargs)
+        kwargs["output_path"].write_bytes(b"h")
+        return 1
+
+    monkeypatch.setattr(m, "transcode_handbrake", fake_transcode_handbrake)
+    await _call_run_encoder(tmp_path, tool=TranscodeTool.HANDBRAKE, preset=_handbrake_preset(preset_ref="Fast 1080p30"))
+    assert called["encoder_args"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_encoder_handbrake_requires_preset_ref(monkeypatch, tmp_path) -> None:
+    _clear_encoder_env(monkeypatch)
+    with pytest.raises(RuntimeError, match="transcode tool=handbrake requires a preset_ref"):
+        await _call_run_encoder(tmp_path, tool=TranscodeTool.HANDBRAKE, preset=_handbrake_preset(preset_ref=None))
+
+
+@pytest.mark.asyncio
+async def test_run_encoder_abcde_requires_a_preset(monkeypatch, tmp_path) -> None:
+    _clear_encoder_env(monkeypatch)
+    with pytest.raises(RuntimeError, match="transcode tool=abcde requires a preset_ref"):
+        await _call_run_encoder(tmp_path, tool=TranscodeTool.ABCDE, preset=None)
+
+
+@pytest.mark.asyncio
+async def test_run_encoder_abcde_encodes_audio_with_preset_ref(monkeypatch, tmp_path) -> None:
+    import arm_transcode.main as m
+
+    _clear_encoder_env(monkeypatch)
+    called: dict = {}
+
+    async def fake_transcode_audio(**kwargs):
+        called.update(kwargs)
+        kwargs["output_path"].write_bytes(b"a" * 5)
+        return 5
+
+    monkeypatch.setattr(m, "transcode_audio", fake_transcode_audio)
+    state = ProgressState()
+    size = await _call_run_encoder(
+        tmp_path,
+        tool=TranscodeTool.ABCDE,
+        preset=_audio_preset(preset_ref="mp3"),
+        state=state,
+        duration_seconds=321,
+    )
+    assert size == 5
+    assert state.pct == 100
+    assert called["input_path"] == tmp_path / "in.mkv"
+    assert called["output_path"] == tmp_path / "out.mkv.arm-inprogress"
+    assert called["preset_ref"] == "mp3"
+    assert called["duration_seconds"] == 321
+    assert (tmp_path / "out.mkv").read_bytes() == b"a" * 5
+
+
+@pytest.mark.asyncio
+async def test_run_encoder_abcde_empty_preset_ref_falls_back_to_container(monkeypatch, tmp_path) -> None:
+    import arm_transcode.main as m
+
+    _clear_encoder_env(monkeypatch)
+    called: dict = {}
+
+    async def fake_transcode_audio(**kwargs):
+        called.update(kwargs)
+        kwargs["output_path"].write_bytes(b"a")
+        return 1
+
+    monkeypatch.setattr(m, "transcode_audio", fake_transcode_audio)
+    await _call_run_encoder(tmp_path, tool=TranscodeTool.ABCDE, preset=_audio_preset(preset_ref=""))
+    assert called["preset_ref"] == "flac"
+
+
+@pytest.mark.asyncio
+async def test_run_encoder_abcde_ignores_vaapi_encoder(monkeypatch, tmp_path) -> None:
+    import arm_transcode.main as m
+
+    monkeypatch.setenv("ARM_TRANSCODE_ENCODER", "vaapi_h265")
+    monkeypatch.setenv("ARM_GPU_DEVICE", "/dev/dri/renderD128")
+    called: dict = {}
+
+    async def fake_transcode_audio(**kwargs):
+        called.update(kwargs)
+        kwargs["output_path"].write_bytes(b"a")
+        return 1
+
+    async def must_not_call(**_kwargs):
+        raise AssertionError("the vaapi route is HANDBRAKE-only")
+
+    monkeypatch.setattr(m, "transcode_audio", fake_transcode_audio)
+    monkeypatch.setattr(m, "transcode_ffmpeg_vaapi", must_not_call)
+    size = await _call_run_encoder(tmp_path, tool=TranscodeTool.ABCDE, preset=_audio_preset(preset_ref="mp3"))
+    assert size == 1
+    assert called["preset_ref"] == "mp3"
+
+
+@pytest.mark.asyncio
+async def test_run_encoder_unknown_tool_raises(monkeypatch, tmp_path) -> None:
+    import types
+
+    _clear_encoder_env(monkeypatch)
+    bogus = types.SimpleNamespace(value="bogus")
+    with pytest.raises(RuntimeError, match="unknown transcode tool=bogus"):
+        await _call_run_encoder(
+            tmp_path,
+            tool=bogus,  # type: ignore[arg-type]
+            preset=_handbrake_preset(preset_ref="x"),
         )
 
 
