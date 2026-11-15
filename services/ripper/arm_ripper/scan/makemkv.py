@@ -140,6 +140,15 @@ def _str_field(entry: dict[str, object], key: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _split_robot_line(raw: str) -> tuple[str, list[str]] | None:
+    """A robot-mode line as (message type, stripped comma fields); None for a blank or colonless line."""
+    line = raw.strip()
+    if not line or ":" not in line:
+        return None
+    msg_type, _, rest = line.partition(":")
+    return msg_type, [f.strip() for f in rest.split(",")]
+
+
 def parse_makemkvcon_info(
     lines: Iterable[str],
 ) -> tuple[str | None, list[ScanTitle], DiscType | None]:
@@ -187,11 +196,10 @@ def parse_makemkvcon_info(
     sinfo: dict[int, dict[int, dict[int, tuple[int, str]]]] = {}
 
     for raw in lines:
-        line = raw.strip()
-        if not line or ":" not in line:
+        split = _split_robot_line(raw)
+        if split is None:
             continue
-        msg_type, _, rest = line.partition(":")
-        fields = [f.strip() for f in rest.split(",")]
+        msg_type, fields = split
 
         if msg_type == "TCOUNT":
             try:

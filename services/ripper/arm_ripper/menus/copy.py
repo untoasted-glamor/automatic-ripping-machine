@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import IO
 
 from arm_common.disc_menus import MenuParseError, dvd, hdmv, pg, ts
-from arm_common.fileops import safe_join
+from arm_common.path_containment import safe_join
 from arm_ripper.menus import tree as disc_tree
 
 logger = logging.getLogger(__name__)

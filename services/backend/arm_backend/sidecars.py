@@ -24,7 +24,7 @@ import logging
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
-from arm_common.fileops import is_within
+from arm_common.path_containment import is_within
 
 logger = logging.getLogger("arm_backend.sidecars")
 
