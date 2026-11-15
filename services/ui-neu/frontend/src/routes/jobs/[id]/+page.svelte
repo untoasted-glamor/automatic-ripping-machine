@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { fetchJob, fetchNamingPreview, keepTracks, retryFailedTitles } from '$lib/api/jobs';
 	import { ApiError } from '$lib/api/client';
 	import { posterSrc, posterFallback, jobPoster } from '$lib/utils/poster';
@@ -59,6 +59,7 @@
 	import JobLogPanel from '$lib/components/JobLogPanel.svelte';
 	import DiscMenuPanel from '$lib/components/DiscMenuPanel.svelte';
 	import MenuProposalEditor from '$lib/components/MenuProposalEditor.svelte';
+	import MenuNameByHand from '$lib/components/MenuNameByHand.svelte';
 	import { acceptAllMenuProposals } from '$lib/api/discMenus';
 	import { acceptableProposals, proposalByTrack } from '$lib/utils/disc-menu';
 	import { startRipperEvents, onRipperEvent } from '$lib/stores/ripperEvents.svelte';
@@ -81,6 +82,8 @@
 	// apply. Cleared when job.identity_updated arrives for this job (the stage
 	// finished), or after MATCHING_TIMEOUT_MS so it never sticks.
 	const MATCHING_TIMEOUT_MS = 60_000;
+	// How long a title's row stays highlighted after a menu box jumps to it.
+	const FLASH_MS = 4000;
 	let matching = $state(false);
 	let matchingTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -231,8 +234,32 @@
 		if (list.some((p) => p.track_id && !have.has(p.track_id))) loadJob();
 	}
 
-	function focusMenuName(proposalId: string) {
-		document.querySelector(`[data-proposal-id="${proposalId}"]`)?.scrollIntoView({ block: 'center' });
+	// A title's menu-name row: open when the menu names it, else when its Episode cell was clicked. A click on the
+	// cell flips it either way.
+	let menuRowOverride = $state<Record<string, boolean>>({});
+	let menuRowOpen = (trackId: string) => menuRowOverride[trackId] ?? menuByTrack.has(trackId);
+	function toggleMenuRow(trackId: string) {
+		menuRowOverride = { ...menuRowOverride, [trackId]: !menuRowOpen(trackId) };
+	}
+
+	function menuNamedByHand(created: MenuProposalView) {
+		menuProposals = [...menuProposals, created];
+		loadJob();
+		void menuPanel?.reload();
+	}
+
+	// A menu box was clicked: bring its title's row to the top and highlight it (and its menu name) for a moment.
+	let flashTrackId = $state<string | null>(null);
+	let flashTimer: ReturnType<typeof setTimeout> | null = null;
+	async function focusMenuName(proposalId: string) {
+		const trackId = menuProposals.find((p) => p.id === proposalId)?.track_id;
+		if (!trackId) return;
+		menuRowOverride = { ...menuRowOverride, [trackId]: true };
+		flashTrackId = trackId;
+		if (flashTimer) clearTimeout(flashTimer);
+		flashTimer = setTimeout(() => (flashTrackId = null), FLASH_MS);
+		await tick();
+		document.getElementById(`track-row-${trackId}`)?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
 	}
 
 	async function acceptAllNames(jobId: string) {
@@ -421,6 +448,9 @@
 		{@const onlyFailed = remaining.every((t) => t.status === 'failed')}
 		{@const retryArmed = isRetryArmed(job.metadata_json)}
 		{@const retryBacksUp = d.retry_backs_up ?? false}
+		{@const hasMenu = tracks.some((t) => isDiscMenu(t) && t.status === 'done')}
+		<!-- The Episode column: a series' episodes, and on a disc with a menu each title's menu name (click to name it). -->
+		{@const nameColumn = tracksAreSeries || hasMenu}
 		<div class="stack-lg stack">
 			<!-- Breadcrumb -->
 			<nav class="job-detail-breadcrumb">
@@ -640,6 +670,17 @@
 				</section>
 			{/if}
 
+			<!-- Disc menu (fork only): its pages, and the names its buttons give the titles (on their rows below) -->
+			{#if hasMenu}
+				<DiscMenuPanel
+					bind:this={menuPanel}
+					jobId={job.id}
+					canEdit={$isAdmin}
+					onproposals={menuProposalsLoaded}
+					onfocus={focusMenuName}
+				/>
+			{/if}
+
 			<!-- Tracks -->
 			{#if tracks.length > 0}
 				<section>
@@ -658,8 +699,8 @@
 									<th class="table-header">#</th>
 									<th class="table-header">Kind</th>
 									<th class="table-header">Title</th>
-									{#if tracksAreSeries}
-										<th class="table-header">Episode</th>
+									{#if nameColumn}
+										<th class="table-header">{tracksAreSeries ? 'Episode' : 'Extra'}</th>
 									{/if}
 									<th class="table-header">Filename</th>
 									<th class="table-header">Length</th>
@@ -673,7 +714,13 @@
 								{#each tracks as track (track.id)}
 									{@const preview = previewByTrack.get(track.id)}
 									{@const length = trackDuration(track.duration_seconds, track.expected_duration_seconds)}
-									<tr class="table-row" data-disabled={track.excluded}>
+									{@const nameable = $isAdmin && hasMenu && track.kind === 'video_title'}
+									<tr
+										class="table-row job-detail-track-row"
+										class:job-detail-row-flash={flashTrackId === track.id}
+										id="track-row-{track.id}"
+										data-disabled={track.excluded}
+									>
 										<td class="table-cell" data-label="#">{isDiscMenu(track) ? '-' : track.index}</td>
 										<td class="table-cell job-detail-track-kind" data-label="Kind">{trackKindLabel(track.kind)}</td>
 										<td
@@ -736,8 +783,18 @@
 												>
 											{/if}
 										</td>
-										{#if tracksAreSeries}
-											<td class="table-cell" data-label="Episode">
+										{#if nameColumn}
+											<td
+												class="table-cell {nameable ? 'job-detail-track-title-cell' : ''}"
+												data-label={tracksAreSeries ? 'Episode' : 'Extra'}
+												data-testid="track-name-cell"
+												title={nameable
+													? menuRowOpen(track.id)
+														? 'Hide its menu name'
+														: 'Name it from the menu'
+													: undefined}
+												onclick={nameable ? () => toggleMenuRow(track.id) : undefined}
+											>
 												{#if track.episode_number != null}
 													<span class="job-detail-track-title job-detail-track-title-strong"
 														>{track.episode_number}</span
@@ -819,17 +876,26 @@
 											</td>
 										</tr>
 									{/if}
-									{#if menuByTrack.get(track.id)}
-										{@const named = menuByTrack.get(track.id)!}
-										<tr data-testid="track-menu-name">
+									{@const named = menuByTrack.get(track.id)}
+									{#if menuRowOpen(track.id) && (named || nameable)}
+										<tr data-testid="track-menu-name" class:job-detail-row-flash={flashTrackId === track.id}>
 											<td colspan="99" class="table-cell" data-label="Menu name">
-												<MenuProposalEditor
-													jobId={job.id}
-													proposal={named}
-													trackStatus={track.status}
-													canEdit={$isAdmin}
-													onchange={menuNameChanged}
-												/>
+												{#if named}
+													<MenuProposalEditor
+														jobId={job.id}
+														proposal={named}
+														trackStatus={track.status}
+														canEdit={$isAdmin}
+														onchange={menuNameChanged}
+													/>
+												{:else}
+													<MenuNameByHand
+														jobId={job.id}
+														trackId={track.id}
+														onsaved={menuNamedByHand}
+														oncancel={() => toggleMenuRow(track.id)}
+													/>
+												{/if}
 											</td>
 										</tr>
 									{/if}
@@ -909,19 +975,6 @@
 						/>
 					{/if}
 				</section>
-			{/if}
-
-			<!-- Disc menu (fork only): its pages, and the names its buttons give the titles -->
-			{#if tracks.some((t) => isDiscMenu(t) && t.status === 'done')}
-				<DiscMenuPanel
-					bind:this={menuPanel}
-					jobId={job.id}
-					{tracks}
-					canEdit={$isAdmin}
-					onrenamed={() => loadJob()}
-					onproposals={menuProposalsLoaded}
-					onfocus={focusMenuName}
-				/>
 			{/if}
 
 			<!-- Disc fingerprints (read-only) -->
@@ -1212,6 +1265,14 @@
 	}
 	.job-detail-tracks[open] > summary {
 		margin-bottom: 1rem;
+	}
+	.job-detail-track-row {
+		/* A menu box's jump lands the row clear of the top bar. */
+		scroll-margin-top: 5rem;
+	}
+	.job-detail-row-flash > :global(td) {
+		background: color-mix(in srgb, var(--color-primary) 18%, transparent);
+		transition: background var(--motion-fast) var(--ease);
 	}
 	.job-detail-section-title .chevron {
 		transition: transform var(--motion-fast) var(--ease);

@@ -4,57 +4,36 @@
 	// notes. The names the buttons propose are shown on the titles' rows in the
 	// Tracks table (`MenuProposalEditor`): this panel loads them and hands them
 	// to the page (`onproposals`), and a box that plays a title scrolls to its
-	// row. Any title can be named here by hand, ripped or not (at stop 2 its name
-	// is used when it is ripped), with the menu's pages above to read from. The menu
+	// row. A title the menu doesn't name is named by hand from its row's Episode
+	// cell (`MenuNameByHand`). The menu
 	// pack row says where the pack Jellyfin plays stands, and builds or deletes
 	// it. Shown only when the job has a copied disc menu (the GET 404s otherwise).
 	import { onDestroy } from 'svelte';
 	import {
 		buildDiscMenuPack,
-		createMenuProposal,
 		deleteDiscMenuPack,
 		fetchDiscMenu,
 		fetchDiscMenuImage,
 		requestDiscMenuPreview
 	} from '$lib/api/discMenus';
 	import { ApiError } from '$lib/api/client';
-	import type {
-		JobDiscMenuView,
-		MenuPreviewButtonView,
-		MenuProposalView,
-		TrackRole,
-		TrackView
-	} from '$lib/types/api.gen';
-	import {
-		MENU_ROLES,
-		boxPercent,
-		buttonHint,
-		isPackLive,
-		isPreviewLive,
-		packState,
-		previewState,
-		type ProposalDraft
-	} from '$lib/utils/disc-menu';
+	import type { JobDiscMenuView, MenuPreviewButtonView, MenuProposalView } from '$lib/types/api.gen';
+	import { boxPercent, buttonHint, isPackLive, isPreviewLive, packState, previewState } from '$lib/utils/disc-menu';
 	import { usePoll } from '$lib/utils/poll';
 	import { formatBytes } from '$lib/utils/format';
-	import { formatDuration } from '$lib/utils/duration';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 	import Glyph from './Glyph.svelte';
 
 	interface Props {
 		jobId: string;
-		/** The job's tracks: names the titles a proposal plays, and the by-hand picker. */
-		tracks: TrackView[];
 		canEdit: boolean;
-		/** Called after a rename, so the page can reload the tracks' new paths. */
-		onrenamed?: () => void;
 		/** Called with the menu's proposals whenever they load, for the Tracks table's rows. */
 		onproposals?: (proposals: MenuProposalView[]) => void;
 		/** A box that plays a title was clicked: the page scrolls to that title's proposal. */
 		onfocus?: (proposalId: string) => void;
 	}
 
-	let { jobId, tracks, canEdit, onrenamed, onproposals, onfocus }: Props = $props();
+	let { jobId, canEdit, onproposals, onfocus }: Props = $props();
 
 	let view = $state<JobDiscMenuView | null>(null);
 	let absent = $state(false);
@@ -63,24 +42,11 @@
 	let focused = $state<string | null>(null);
 	let busy = $state<string | null>(null);
 	let images = $state<Record<string, string>>({});
-	let byHand = $state(false);
 	let confirmDelete = $state(false);
-	let handDraft = $state<ProposalDraft & { trackId: string }>({ trackId: '', role: null, name: '', episode: null });
 
 	const pages = $derived(view?.preview?.pages ?? []);
 	const page = $derived(pages.find((p) => p.id === pageId) ?? pages[0] ?? null);
 	const notes = $derived((view?.proposals ?? []).filter((p) => p.status === 'info'));
-	// Every title on the disc: one not ripped yet takes the name now, and its file is laid out under it.
-	const titles = $derived(tracks.filter((t) => t.kind === 'video_title'));
-
-	/** "Title 7, 1:32: Clean Opening (left out)": enough to match it to its menu button. */
-	function titleOption(t: TrackView): string {
-		const seconds = t.duration_seconds ?? t.expected_duration_seconds;
-		const parts = [`Title ${t.index}${seconds ? `, ${formatDuration(seconds)}` : ''}`];
-		if (t.title) parts.push(t.title);
-		return parts.join(': ') + (t.excluded ? ' (left out)' : '');
-	}
-
 	function pageName(id: string): string {
 		const p = pages.find((x) => x.id === id);
 		return p ? `page ${p.id}` : `page ${id}`;
@@ -180,27 +146,6 @@
 		}
 	}
 
-	async function nameByHand(): Promise<void> {
-		busy = 'hand';
-		error = null;
-		try {
-			const created = await createMenuProposal(jobId, {
-				track_id: handDraft.trackId,
-				role: handDraft.role as TrackRole,
-				name: handDraft.name.trim(),
-				episode_number: handDraft.episode
-			});
-			view = view ? { ...view, proposals: [...(view.proposals ?? []), created] } : view;
-			byHand = false;
-			handDraft = { trackId: '', role: null, name: '', episode: null };
-			onrenamed?.();
-		} catch (e) {
-			error = message(e, 'Could not name that title');
-		} finally {
-			busy = null;
-		}
-	}
-
 	function clickButton(b: MenuPreviewButtonView): void {
 		if (b.outcome === 'page' && b.goes_to) pageId = b.goes_to;
 		else if (b.proposal_id) {
@@ -208,18 +153,6 @@
 			onfocus?.(b.proposal_id);
 		}
 	}
-
-	const handBlocker = $derived(
-		!handDraft.trackId
-			? 'Pick a title'
-			: !handDraft.role
-				? 'Pick a role'
-				: !handDraft.name.trim()
-					? 'Give it a name'
-					: handDraft.role === 'special' && !handDraft.episode
-						? 'A special needs its season 0 episode number'
-						: null
-	);
 </script>
 
 {#if !absent && (view || error)}
@@ -351,50 +284,6 @@
 				{/each}
 			</ul>
 		{/if}
-
-		{#if canEdit && titles.length > 0}
-			{#if byHand}
-				<div class="disc-menu-by-hand" data-testid="dm-by-hand">
-					<select class="field-control" aria-label="Title" data-testid="dm-hand-track" bind:value={handDraft.trackId}>
-						<option value="">Pick a title</option>
-						{#each titles as t (t.id)}
-							<option value={t.id}>{titleOption(t)}</option>
-						{/each}
-					</select>
-					<select class="field-control" aria-label="Role" data-testid="dm-hand-role" bind:value={handDraft.role}>
-						<option value={null}>Pick a role</option>
-						{#each MENU_ROLES as r (r.value)}
-							<option value={r.value}>{r.label}</option>
-						{/each}
-					</select>
-					<input class="field-control" aria-label="Name" data-testid="dm-hand-name" bind:value={handDraft.name} />
-					{#if handDraft.role === 'special'}
-						<input
-							class="field-control disc-menu-episode"
-							type="number"
-							min="1"
-							aria-label="Season 0 episode"
-							placeholder="Ep."
-							data-testid="dm-hand-episode"
-							bind:value={handDraft.episode}
-						/>
-					{/if}
-					<button
-						type="button"
-						class="btn btn-primary btn-sm"
-						data-testid="dm-hand-save"
-						disabled={busy !== null || handBlocker !== null}
-						title={handBlocker ?? 'Give the title this name (its encode is renamed if it has one)'}
-						onclick={nameByHand}>Save name</button
-					>
-					<button type="button" class="btn btn-sm" onclick={() => (byHand = false)}>Cancel</button>
-				</div>
-			{:else}
-				<button type="button" class="btn btn-link" data-testid="dm-hand-open" onclick={() => (byHand = true)}>
-					Name a title by hand
-				</button>
-			{/if}
-		{/if}
 	</section>
 	<ConfirmDialog
 		open={confirmDelete}
@@ -492,9 +381,6 @@
 		font-size: 0.8rem;
 		color: var(--color-text-faint);
 	}
-	.disc-menu-episode {
-		width: 5rem;
-	}
 	.disc-menu-notes {
 		display: flex;
 		flex-direction: column;
@@ -505,12 +391,6 @@
 		flex-wrap: wrap;
 		align-items: center;
 		justify-content: space-between;
-		gap: 0.5rem;
-	}
-	.disc-menu-by-hand {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
 		gap: 0.5rem;
 	}
 </style>

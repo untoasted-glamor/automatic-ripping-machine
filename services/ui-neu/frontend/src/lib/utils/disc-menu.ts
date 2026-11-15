@@ -34,6 +34,11 @@ export function draftOf(p: MenuProposalView): ProposalDraft {
 /** Why a draft can't be accepted yet, or null when it can. */
 export function acceptBlocker(p: MenuProposalView, d: ProposalDraft): string | null {
 	if (!p.track_id) return 'That button plays a title that was not ripped';
+	return draftBlocker(d);
+}
+
+/** Why a name (from the menu, or typed by hand) can't be saved yet, or null. */
+export function draftBlocker(d: ProposalDraft): string | null {
 	if (!MENU_ROLES.some((r) => r.value === d.role)) return 'Pick a role';
 	if (!d.name.trim()) return 'Give it a name';
 	if (d.role === 'special' && !d.episode) return 'A special needs its season 0 episode number';

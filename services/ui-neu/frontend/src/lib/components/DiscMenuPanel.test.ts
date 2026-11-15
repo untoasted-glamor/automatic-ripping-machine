@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { renderComponent, screen, fireEvent, cleanup, waitFor, within } from '$lib/test-utils';
-import { createTrack } from './__fixtures__/job';
 import type { JobDiscMenuView, MenuProposalView } from '$lib/types/api.gen';
 import DiscMenuPanel from './DiscMenuPanel.svelte';
 
@@ -9,14 +8,12 @@ vi.mock('$lib/api/discMenus', () => ({
 	fetchDiscMenuImage: vi.fn(),
 	requestDiscMenuPreview: vi.fn(),
 	updateMenuProposal: vi.fn(),
-	createMenuProposal: vi.fn(),
 	buildDiscMenuPack: vi.fn(),
 	deleteDiscMenuPack: vi.fn()
 }));
 
 import {
 	buildDiscMenuPack,
-	createMenuProposal,
 	deleteDiscMenuPack,
 	fetchDiscMenu,
 	fetchDiscMenuImage,
@@ -110,18 +107,8 @@ function menu(over: Partial<JobDiscMenuView> = {}): JobDiscMenuView {
 	};
 }
 
-const tracks = [
-	createTrack({ id: 'trk_menu', kind: 'disc_menu', index: -1, status: 'done' }),
-	createTrack({ id: 'trk_7', kind: 'video_title', index: 7, status: 'done' }),
-	createTrack({ id: 'trk_8', kind: 'video_title', index: 8, status: 'done' })
-];
-
 function render(props: Record<string, unknown> = {}) {
-	const onrenamed = vi.fn();
-	renderComponent(DiscMenuPanel, {
-		props: { jobId: 'job_1', tracks, canEdit: true, onrenamed, onproposals, onfocus, ...props }
-	});
-	return onrenamed;
+	renderComponent(DiscMenuPanel, { props: { jobId: 'job_1', canEdit: true, onproposals, onfocus, ...props } });
 }
 
 const onproposals = vi.fn();
@@ -212,89 +199,11 @@ describe('DiscMenuPanel', () => {
 		expect(await screen.findByTestId('dm-error')).toHaveTextContent('already queued');
 	});
 
-	it('names a title by hand', async () => {
-		fetchMock.mockResolvedValue(menu());
-		vi.mocked(createMenuProposal).mockResolvedValue(
-			proposal({
-				id: 'mnp_hand',
-				track_id: 'trk_7',
-				label: '',
-				plays: 'set by hand',
-				role: 'special',
-				name: 'Panel',
-				episode_number: 2,
-				status: 'applied'
-			})
-		);
-		const onrenamed = render();
-		await fireEvent.click(await screen.findByTestId('dm-hand-open'));
-		const save = screen.getByTestId('dm-hand-save');
-		expect(save).toHaveAttribute('title', 'Pick a title');
-		await fireEvent.change(screen.getByTestId('dm-hand-track'), { target: { value: 'trk_7' } });
-		expect(save).toHaveAttribute('title', 'Pick a role');
-		await fireEvent.change(screen.getByTestId('dm-hand-role'), { target: { value: 'special' } });
-		expect(save).toHaveAttribute('title', 'Give it a name');
-		await fireEvent.input(screen.getByTestId('dm-hand-name'), { target: { value: ' Panel' } });
-		expect(save).toHaveAttribute('title', 'A special needs its season 0 episode number');
-		await fireEvent.input(screen.getByTestId('dm-hand-episode'), { target: { value: '2' } });
-		expect(save).not.toBeDisabled();
-		await fireEvent.click(save);
-		await waitFor(() =>
-			expect(createMenuProposal).toHaveBeenCalledWith('job_1', {
-				track_id: 'trk_7',
-				role: 'special',
-				name: 'Panel',
-				episode_number: 2
-			})
-		);
-		expect(onrenamed).toHaveBeenCalled();
-		expect(screen.queryByTestId('dm-by-hand')).toBeNull();
-		await waitFor(() =>
-			expect(onproposals).toHaveBeenLastCalledWith(
-				expect.arrayContaining([expect.objectContaining({ id: 'mnp_hand' })])
-			)
-		);
-	});
-
-	it('offers every title by hand, ripped or not, with its length and whether it is kept', async () => {
-		fetchMock.mockResolvedValue(menu());
-		const queued = [
-			...tracks,
-			createTrack({
-				id: 'trk_9',
-				kind: 'video_title',
-				index: 9,
-				status: 'queued',
-				duration_seconds: null,
-				expected_duration_seconds: 92
-			}),
-			createTrack({ id: 'trk_10', kind: 'video_title', index: 10, status: 'queued', excluded: true, title: 'Outtakes' })
-		];
-		render({ tracks: queued });
-		await fireEvent.click(await screen.findByTestId('dm-hand-open'));
-		const options = [...(screen.getByTestId('dm-hand-track') as HTMLSelectElement).options].map((o) => o.text);
-		expect(options).toEqual(expect.arrayContaining(['Title 9, 1:32', 'Title 10, 45:50: Outtakes (left out)']));
-		expect(options.some((o) => o.includes('Title -1'))).toBe(false); // the menu track isn't a title
-	});
-
-	it('shows a by-hand failure', async () => {
-		fetchMock.mockResolvedValue(menu());
-		vi.mocked(createMenuProposal).mockRejectedValue(new Error('no encode'));
-		render();
-		await fireEvent.click(await screen.findByTestId('dm-hand-open'));
-		await fireEvent.change(screen.getByTestId('dm-hand-track'), { target: { value: 'trk_7' } });
-		await fireEvent.change(screen.getByTestId('dm-hand-role'), { target: { value: 'extra' } });
-		await fireEvent.input(screen.getByTestId('dm-hand-name'), { target: { value: 'Panel' } });
-		await fireEvent.click(screen.getByTestId('dm-hand-save'));
-		expect(await screen.findByTestId('dm-error')).toHaveTextContent('no encode');
-	});
-
 	it('is read-only for a guest', async () => {
 		fetchMock.mockResolvedValue(menu());
 		render({ canEdit: false });
 		expect(await screen.findByTestId('dm-notes')).toBeInTheDocument();
 		expect(screen.queryByTestId('dm-read-again')).toBeNull();
-		expect(screen.queryByTestId('dm-hand-open')).toBeNull();
 	});
 
 	it('builds the menu pack and polls until it is built', async () => {

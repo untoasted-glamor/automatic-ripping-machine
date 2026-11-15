@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { renderComponent, screen, cleanup, waitFor, fireEvent } from '$lib/test-utils';
+import { renderComponent, screen, cleanup, waitFor, fireEvent, within } from '$lib/test-utils';
 import Page from './+page.svelte';
 import { createJob, createJobDetail, createTrack } from '$lib/components/__fixtures__/job';
-import type { IdentityView, JobView, TrackView } from '$lib/types/api.gen';
+import type { IdentityView, JobDiscMenuView, JobView, TrackView } from '$lib/types/api.gen';
 
 // --- Mocks ---
 
@@ -134,7 +134,7 @@ import {
 	retryFailedTitles,
 	requestSubtitleOcr
 } from '$lib/api/jobs';
-import { acceptAllMenuProposals, fetchDiscMenu } from '$lib/api/discMenus';
+import { acceptAllMenuProposals, createMenuProposal, fetchDiscMenu } from '$lib/api/discMenus';
 import { dashboard } from '$lib/stores/dashboard';
 import * as authStore from '$lib/stores/auth';
 import { fetchIdentity } from '$lib/api/identity';
@@ -359,6 +359,134 @@ describe('Job detail page (v3)', () => {
 		renderComponent(Page);
 		await waitFor(() => expect(mockFetchJob.mock.calls.length).toBeGreaterThanOrEqual(before + 2));
 		expect(screen.queryByTestId('track-menu-name')).toBeNull();
+	});
+
+	it("the Episode cell opens a title's menu name, or names it by hand; a menu box jumps to its row", async () => {
+		const opName = {
+			id: 'mnp_op',
+			job_id: 'job_42',
+			track_id: 'trk_19',
+			scan_title: 19,
+			page: '1',
+			button: 1,
+			label: 'Clean Opening',
+			score: 0.9,
+			plays: '00051.mpls',
+			role: 'other' as const,
+			name: 'Clean Opening',
+			episode_number: null,
+			note: null,
+			status: 'proposed' as const,
+			applied_path: null,
+			last_error: null,
+			created_at: '2026-11-15T00:00:00Z',
+			updated_at: '2026-11-15T00:00:00Z'
+		};
+		mockFetchJob.mockResolvedValue({
+			job: createJob({ id: 'job_42', status: 'ripped', disc_type: 'bluray', media_type: 'movie' }),
+			tracks: [
+				createTrack({ id: 'trk_menu', kind: 'disc_menu', index: -1, source_ref: 'menu', status: 'done' }),
+				createTrack({ id: 'trk_4', index: 4, status: 'done' }),
+				createTrack({ id: 'trk_19', index: 19, status: 'done' })
+			],
+			fingerprints: []
+		});
+		const menuView: JobDiscMenuView = {
+			track_id: 'trk_menu',
+			track_status: 'done',
+			can_preview: true,
+			preview: {
+				task_id: 'txt_1',
+				status: 'done',
+				progress_pct: 100,
+				disc: 'bd',
+				notes: [],
+				unsupported: [],
+				truncated: false,
+				pages: [
+					{
+						id: '1',
+						at: 'm p1',
+						language: 'eng',
+						image: 'pages/1.jpg',
+						size: [1920, 1080],
+						buttons: [
+							{
+								id: 1,
+								box: [10, 10, 200, 60],
+								visible: true,
+								label: 'Clean Opening',
+								outcome: 'plays',
+								plays: '00051.mpls',
+								track_id: 'trk_19',
+								proposal_id: 'mnp_op'
+							}
+						]
+					}
+				]
+			},
+			proposals: [opName]
+		};
+		vi.mocked(fetchDiscMenu).mockResolvedValue(menuView);
+		const handName = {
+			...opName,
+			id: 'mnp_hand',
+			track_id: 'trk_4',
+			label: '',
+			plays: 'set by hand',
+			role: 'extra' as const,
+			name: 'Ballet for Beginners',
+			status: 'applied' as const
+		};
+		vi.mocked(createMenuProposal).mockImplementation(async () => {
+			// The menu's next load has it too.
+			vi.mocked(fetchDiscMenu).mockResolvedValue({ ...menuView, proposals: [opName, handName] });
+			return handName;
+		});
+		const scrolled = vi.fn();
+		Element.prototype.scrollIntoView = scrolled;
+		renderComponent(Page);
+
+		// The Disc menu panel sits above the Tracks table, and a movie disc's column is "Extra".
+		const panel = await screen.findByTestId('disc-menu-panel');
+		const table = screen.getByRole('table');
+		expect(panel.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		expect(within(table).getByRole('columnheader', { name: 'Extra' })).toBeInTheDocument();
+		expect(screen.queryByTestId('dm-hand-open')).toBeNull();
+
+		// The menu names title 19: its name row is open; a click on its cell hides it, another shows it.
+		const [, , cell19] = screen.getAllByTestId('track-name-cell');
+		expect(await screen.findAllByTestId('track-menu-name')).toHaveLength(1);
+		await fireEvent.click(cell19);
+		expect(screen.queryByTestId('track-menu-name')).toBeNull();
+		await fireEvent.click(cell19);
+		expect(screen.getAllByTestId('track-menu-name')).toHaveLength(1);
+
+		// Title 4 has no menu button: its cell opens the by-hand form.
+		await fireEvent.click(screen.getAllByTestId('track-name-cell')[1]);
+		await fireEvent.change(screen.getByTestId('dm-hand-role'), { target: { value: 'extra' } });
+		await fireEvent.input(screen.getByTestId('dm-hand-name'), { target: { value: 'Ballet for Beginners' } });
+		await fireEvent.click(screen.getByTestId('dm-hand-save'));
+		await waitFor(() =>
+			expect(vi.mocked(createMenuProposal)).toHaveBeenCalledWith('job_42', {
+				track_id: 'trk_4',
+				role: 'extra',
+				name: 'Ballet for Beginners',
+				episode_number: null
+			})
+		);
+		// It shows as the title's menu name from then on.
+		await waitFor(() => expect(screen.queryByTestId('dm-by-hand')).toBeNull());
+		expect(screen.getAllByTestId('track-menu-name')).toHaveLength(2);
+
+		// A box that plays a title brings its row to the top and highlights it.
+		await fireEvent.click(cell19); // hidden again: the jump opens it
+		await fireEvent.click(screen.getByTestId('dm-box'));
+		const row = document.getElementById('track-row-trk_19')!;
+		await waitFor(() => expect(row).toHaveClass('job-detail-row-flash'));
+		expect(scrolled.mock.contexts).toContain(row);
+		expect(scrolled).toHaveBeenLastCalledWith({ block: 'start', behavior: 'smooth' });
+		expect(screen.getAllByTestId('track-menu-name')).toHaveLength(2);
 	});
 
 	it('retries the failed kept titles and says how the retry starts', async () => {
