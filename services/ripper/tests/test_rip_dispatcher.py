@@ -262,7 +262,7 @@ def _stub_rip_disc(
         # `mkv all` mode (fire_per_title_start=False) emits no
         # per-title PRGT and therefore no per-title progress; skipping
         # it here keeps the fake's behaviour aligned with the real
-        # streamer in [makemkv_rip.py].
+        # streamer in [makemkv_stream.py].
         if fire_per_title_start and on_title_progress is not None:
             for idx in fake_result.titles:
                 await on_title_progress(idx, 0.5)
@@ -1163,7 +1163,7 @@ async def test_rip_all_stopped_pass_reports_the_rest_without_touching_settled_tr
     """A pass stopped by the lost drive reports its unfinished tracks with
     the stop error (the controller holds them for the resume), never the
     ones an earlier pass settled."""
-    from arm_ripper.rip.makemkv_rip import STOPPED_ERROR
+    from arm_ripper.rip.makemkv_process import STOPPED_ERROR
 
     _stub_rip_disc(monkeypatch, RipDiscResult(overall_error=STOPPED_ERROR, titles={}), fire_per_title_start=False)
     done: list[tuple[str, str | None]] = []
@@ -1192,7 +1192,7 @@ async def test_rip_all_does_not_finalise_a_title_the_drive_dropped_under(monkeyp
     PRGC transition) before the poll loop notices. That title's file is cut
     short, so it and the rest are reported stopped, never DONE, and `stop` is
     set to kill makemkvcon."""
-    from arm_ripper.rip.makemkv_rip import STOPPED_ERROR
+    from arm_ripper.rip.makemkv_process import STOPPED_ERROR
 
     for pos in range(3):
         (tmp_path / f"Disc_t{pos:02d}.mkv").write_bytes(b"x" * (10 + pos))
@@ -2224,7 +2224,7 @@ async def test_a_drop_during_the_backup_reruns_it_on_the_resume(monkeypatch, tmp
     """The drive leaves mid-backup: the backup is stopped and deleted, every
     kept track is reported with the stop error (the controller holds them for
     the resume), and the resume pass backs the disc up again."""
-    from arm_ripper.rip.makemkv_rip import STOPPED_ERROR
+    from arm_ripper.rip.makemkv_process import STOPPED_ERROR
 
     fake, scan = await _bd_job(monkeypatch, tmp_path)
     tracks = _exclude(_rip_start_tracks(scan), 7)
@@ -2261,7 +2261,7 @@ async def test_a_backup_that_finished_after_the_drive_dropped_does_not_count(mon
     """makemkvcon can exit 0 after the drive left under it, before anything
     stopped it: the copy may be cut short, so it is deleted and the kept
     tracks are reported stopped (unfinished, for the resume)."""
-    from arm_ripper.rip.makemkv_rip import STOPPED_ERROR
+    from arm_ripper.rip.makemkv_process import STOPPED_ERROR
 
     fake, scan = await _bd_job(monkeypatch, tmp_path)
     tracks = _exclude(_rip_start_tracks(scan), 7)

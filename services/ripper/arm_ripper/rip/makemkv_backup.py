@@ -12,7 +12,7 @@ Both read a drive as `disc:<N>` (`backup_source`): `backup` refuses `dev:`.
   is taken lives in `selection_backup` alone.
 
 There are no titles and no `.mkv` files, so only the mode-independent half of
-the `mkv all` stream handling is shared (`makemkv_rip._run_makemkvcon`): PRGV
+the `mkv all` stream handling is shared (`makemkv_process.run_makemkvcon`): PRGV
 progress, MSG diagnostics, the MSG:5021 kill switch, the timeout, `stop` and
 cancel-safe cleanup. Progress is the disc-level PRGV `total/max` from the
 first line, since backup mode's phase markers are not the `mkv all` save
@@ -33,13 +33,8 @@ from arm_common import DiscType
 from arm_common.fileops import tree_size
 from arm_common.schemas import ScanTitle
 
-from arm_ripper.rip.makemkv_rip import (
-    OnDiscProgress,
-    RipCallbacks,
-    _compose_error,
-    _ParserState,
-    _run_makemkvcon,
-)
+from arm_ripper.rip.makemkv_process import compose_error, run_makemkvcon
+from arm_ripper.rip.makemkv_stream import OnDiscProgress, ParserState, RipCallbacks
 from arm_ripper.rip.preflight import title_clips
 from arm_ripper.rip.result import RipResult
 from arm_ripper.source import is_file_source, makemkv_source_url
@@ -258,8 +253,8 @@ async def rip_backup(
     cmd += ["--robot", "--progress=-stdout", source, str(target)]
     logger.info("makemkvcon backup source=%s target=%s decrypt=%s", source, target, decrypt)
 
-    state = _ParserState()
-    error = await _run_makemkvcon(
+    state = ParserState()
+    error = await run_makemkvcon(
         cmd, state, callbacks=RipCallbacks(on_disc_progress=on_progress), gate_disc_progress=False, stop=stop
     )
     if error is not None:
@@ -267,7 +262,7 @@ async def rip_backup(
     if not _backup_written(target):
         return BackupResult(
             ok=False,
-            error=_compose_error("makemkvcon backup produced no BDMV, VIDEO_TS or disc image", state.diagnostics),
+            error=compose_error("makemkvcon backup produced no BDMV, VIDEO_TS or disc image", state.diagnostics),
         )
     size = await asyncio.to_thread(tree_size, target) if target.is_dir() else target.stat().st_size
     result = BackupResult(

@@ -25,10 +25,10 @@ from arm_ripper.rip.makemkv_backup import (
     selection_backup,
     titles_lost_to_damage,
 )
+from arm_ripper.rip.makemkv_process import STOPPED_ERROR
 from arm_ripper.rip.makemkv_rip import (
     _OUTPUT_FILE_RE,
     REMUX_MIN_LENGTH_SECONDS,
-    STOPPED_ERROR,
     RipDiscResult,
     _output_files_by_position,
     remux_title,
