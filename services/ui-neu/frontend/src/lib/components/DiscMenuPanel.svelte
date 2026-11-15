@@ -29,8 +29,8 @@
 		canEdit: boolean;
 		/** Called with the menu's proposals whenever they load, for the Tracks table's rows. */
 		onproposals?: (proposals: MenuProposalView[]) => void;
-		/** A box that plays a title was clicked: the page scrolls to that title's proposal. */
-		onfocus?: (proposalId: string) => void;
+		/** A box that plays a title was clicked: the page brings that title's row (its track) into view. */
+		onfocus?: (trackId: string) => void;
 	}
 
 	let { jobId, canEdit, onproposals, onfocus }: Props = $props();
@@ -148,9 +148,9 @@
 
 	function clickButton(b: MenuPreviewButtonView): void {
 		if (b.outcome === 'page' && b.goes_to) pageId = b.goes_to;
-		else if (b.proposal_id) {
-			focused = b.proposal_id;
-			onfocus?.(b.proposal_id);
+		else if (b.track_id) {
+			focused = b.track_id;
+			onfocus?.(b.track_id);
 		}
 	}
 </script>
@@ -250,18 +250,33 @@
 							style:--h={at.h}
 							data-outcome={b.outcome}
 							data-visible={b.visible}
-							data-selected={b.proposal_id !== null && b.proposal_id === focused}
+							data-selected={b.track_id != null && b.track_id === focused}
 							data-testid="dm-box"
 							title={buttonHint(b, pageName)}
 							aria-label={buttonHint(b, pageName)}
 							onclick={() => clickButton(b)}
-						></button>
+						>
+							{#if b.outcome === 'plays' && b.title_index != null}
+								<!-- Where the jump lands: the Tracks table's #, and the whole playlist's title when it differs. -->
+								<span class="disc-menu-markers">
+									<span class="disc-menu-marker" data-testid="dm-marker" data-untracked={b.track_id == null}
+										>{b.title_index}</span
+									>
+									{#if b.whole_title_index != null}
+										<span class="disc-menu-marker disc-menu-marker-whole" data-testid="dm-marker-whole"
+											>whole: {b.whole_title_index}</span
+										>
+									{/if}
+								</span>
+							{/if}
+						</button>
 					{/if}
 				{/each}
 			</div>
 			<p class="field-help">
-				Each box is a menu button. Click one that opens another page to go there, or one that plays a title to find its
-				name in the Tracks table.
+				Each box is a menu button. Click one that opens another page to go there, or one that plays a title to go to its
+				row in the Tracks table. A number is the title (the Tracks table's #) the button plays; "whole" is the title of
+				the button's whole playlist when the button lands on one clip of it.
 			</p>
 			{#if (view?.preview?.unsupported ?? []).length > 0 || view?.preview?.truncated}
 				<p class="field-help" data-testid="dm-unsupported">
@@ -366,6 +381,35 @@
 	}
 	.disc-menu-box[data-visible='false'] {
 		border-style: dotted;
+	}
+	.disc-menu-markers {
+		position: absolute;
+		top: 50%;
+		right: 0.25rem;
+		display: flex;
+		gap: 0.25rem;
+		transform: translateY(-50%);
+		pointer-events: none;
+	}
+	.disc-menu-marker {
+		border-radius: 999px;
+		background: var(--color-primary);
+		padding: 0 0.4rem;
+		font-size: 0.7rem;
+		font-weight: 700;
+		line-height: 1.15rem;
+		color: var(--color-on-primary);
+		white-space: nowrap;
+	}
+	.disc-menu-marker[data-untracked='true'] {
+		border: 1px dashed currentColor;
+		background: var(--color-surface-raised);
+		color: var(--color-text);
+	}
+	.disc-menu-marker-whole {
+		border: 1px solid var(--color-warning);
+		background: var(--color-surface-raised);
+		color: var(--color-text);
 	}
 	.disc-menu-box:hover,
 	.disc-menu-box:focus-visible,

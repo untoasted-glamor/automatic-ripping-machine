@@ -3324,6 +3324,18 @@ export type MenuPreviewButtonView = {
      * Proposal Id
      */
     proposal_id?: string | null;
+    /**
+     * Title Index
+     */
+    title_index?: number | null;
+    /**
+     * Clips
+     */
+    clips?: Array<number>;
+    /**
+     * Whole Title Index
+     */
+    whole_title_index?: number | null;
 };
 
 /**

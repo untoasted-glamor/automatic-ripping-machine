@@ -96,8 +96,12 @@ export function boxPercent(box: number[], size: number[]): { x: string; y: strin
 export function buttonHint(b: MenuPreviewButtonView, pageName: (id: string) => string): string {
 	const label = b.label ? `"${b.label}"` : 'No label';
 	switch (b.outcome) {
-		case 'plays':
-			return `${label}: plays ${b.plays ?? 'a title'}`;
+		case 'plays': {
+			const clips = (b.clips ?? []).length > 1 ? ` (clips ${b.clips!.join(' + ')})` : '';
+			const lands = b.title_index != null ? `, lands on title ${b.title_index}` : '';
+			const whole = b.whole_title_index != null ? `; the whole playlist is title ${b.whole_title_index}` : '';
+			return `${label}: plays ${b.plays ?? 'a title'}${clips}${lands}${whole}`;
+		}
 		case 'page':
 			return `${label}: ${b.goes_to ? `opens ${pageName(b.goes_to)}` : 'opens a page the walk did not reach'}`;
 		case 'stays':

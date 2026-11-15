@@ -100,6 +100,9 @@ describe('disc menu helpers', () => {
 		const name = (id: string) => `page ${id}`;
 		expect(buttonHint(b({ label: 'Play All', plays: '00008.mpls' }), name)).toBe('"Play All": plays 00008.mpls');
 		expect(buttonHint(b({}), name)).toBe('No label: plays a title');
+		expect(buttonHint(b({ label: 'PV', plays: '00061.mpls', clips: [57], title_index: 19 }), name)).toBe(
+			'"PV": plays 00061.mpls, lands on title 19'
+		);
 		expect(buttonHint(b({ outcome: 'page', goes_to: '2' }), name)).toBe('No label: opens page 2');
 		expect(buttonHint(b({ outcome: 'page' }), name)).toBe('No label: opens a page the walk did not reach');
 		expect(buttonHint(b({ outcome: 'stays' }), name)).toBe('No label: stays on this page');

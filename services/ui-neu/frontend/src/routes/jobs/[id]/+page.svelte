@@ -251,10 +251,9 @@
 	// A menu box was clicked: bring its title's row to the top and highlight it (and its menu name) for a moment.
 	let flashTrackId = $state<string | null>(null);
 	let flashTimer: ReturnType<typeof setTimeout> | null = null;
-	async function focusMenuName(proposalId: string) {
-		const trackId = menuProposals.find((p) => p.id === proposalId)?.track_id;
-		if (!trackId) return;
-		menuRowOverride = { ...menuRowOverride, [trackId]: true };
+	async function focusTitle(trackId: string) {
+		// Its menu name, if the menu names it (an episode's row opens nothing).
+		if (menuByTrack.has(trackId)) menuRowOverride = { ...menuRowOverride, [trackId]: true };
 		flashTrackId = trackId;
 		if (flashTimer) clearTimeout(flashTimer);
 		flashTimer = setTimeout(() => (flashTrackId = null), FLASH_MS);
@@ -677,7 +676,7 @@
 					jobId={job.id}
 					canEdit={$isAdmin}
 					onproposals={menuProposalsLoaded}
-					onfocus={focusMenuName}
+					onfocus={focusTitle}
 				/>
 			{/if}
 

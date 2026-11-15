@@ -16719,6 +16719,36 @@
               }
             ],
             "title": "Proposal Id"
+          },
+          "title_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Index"
+          },
+          "clips": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Clips",
+            "default": []
+          },
+          "whole_title_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Whole Title Index"
           }
         },
         "type": "object",

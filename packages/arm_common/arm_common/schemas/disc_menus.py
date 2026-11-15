@@ -55,6 +55,12 @@ class MenuPreviewButtonView(BaseModel):
     # The job's track it plays, and that title's proposal.
     track_id: str | None = None
     proposal_id: str | None = None
+    # The scan title the play lands on (the Tracks table's #), even one with no track.
+    title_index: int | None = None
+    # Blu-ray: the clips its playlist plays, and the scan title of that whole
+    # playlist when the play lands on another (a single clip of it).
+    clips: list[int] = []
+    whole_title_index: int | None = None
 
 
 class MenuPreviewPageView(BaseModel):

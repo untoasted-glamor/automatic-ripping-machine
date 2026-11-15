@@ -108,6 +108,20 @@ def scan_titles(job: Job) -> list[dict[str, Any]]:
     return [t for t in titles if isinstance(t, dict)] if isinstance(titles, list) else []
 
 
+def playlist_clips(playlists: dict[str, Any], name: str | None) -> list[int]:
+    """The clips a Blu-ray playlist plays, in order ([] when the preview doesn't list it)."""
+    pl = playlists.get(name or "")
+    return [int(it["clip"]) for it in (pl.get("items") or [])] if pl else []
+
+
+def whole_title(titles: list[dict[str, Any]], name: str | None, clips: list[int]) -> int | None:
+    """The scan title MakeMKV made of a whole playlist (the one named after it first, since MakeMKV merges
+    identical playlists into one title), or None."""
+    whole = [t for t in titles if clips and _clips(t.get("segment_map")) == clips]
+    whole.sort(key=lambda t: t.get("source_playlist") != f"{name}.mpls")
+    return int(whole[0]["index"]) if whole else None
+
+
 def match_bd(
     playlists: dict[str, Any], titles: list[dict[str, Any]], outcome: dict[str, Any], label: str
 ) -> int | None:
@@ -117,10 +131,6 @@ def match_bd(
     if not pl:
         return None
     items = pl.get("items") or []
-    clips = [int(it["clip"]) for it in items]
-    whole = [t for t in titles if _clips(t.get("segment_map")) == clips]
-    # The title MakeMKV named after this playlist first; it merges identical playlists into one title.
-    whole.sort(key=lambda t: t.get("source_playlist") != f"{name}.mpls")
     if len(items) > 1 and not PLAY_ALL.search(label):
         start = int(outcome.get("start") or 0)
         at = 0
@@ -132,7 +142,7 @@ def match_bd(
                     return int(single[0]["index"])
                 break
             at += span
-    return int(whole[0]["index"]) if whole else None
+    return whole_title(titles, name, playlist_clips(playlists, name))
 
 
 def match_dvd(titles: list[dict[str, Any]], outcome: dict[str, Any]) -> int | None:

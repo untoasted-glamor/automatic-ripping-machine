@@ -22,6 +22,7 @@ from arm_backend.routers import disc_menus as router_module  # noqa: E402
 from arm_common import (  # noqa: E402
     DiscType,
     Job,
+    JobStatus,
     MediaType,
     MenuProposal,
     MenuProposalStatus,
@@ -291,3 +292,44 @@ def test_ws_hub_dependency(tmp_path: Path) -> None:
                 ws_hub = "hub"
 
     assert router_module._get_hub(_Req()) == "hub"  # type: ignore[arg-type]
+
+
+def test_a_button_says_which_title_it_lands_on_and_what_its_playlist_plays() -> None:
+    """The markers on the menu picture: the title a button lands on (even one with no track), its playlist's clips,
+    and the title of the whole playlist when the button lands on a single clip of it."""
+    from arm_backend.disc_menus.views import _pages
+
+    preview = {
+        "pages": [{"id": "1", "at": "m p1", "language": "eng", "image": "pages/1.jpg", "size": [1920, 1080], "buttons": [
+            {"id": 1, "box": [0, 0, 5, 5], "visible": True, "label": "Making Of",
+             "outcome": {"kind": "plays", "playlist": "00008", "start": 0}},
+            {"id": 2, "box": [0, 0, 5, 5], "visible": True, "label": "Play All",
+             "outcome": {"kind": "plays", "playlist": "00008", "start": 0}},
+            {"id": 3, "box": [0, 0, 5, 5], "visible": True, "label": "PV",
+             "outcome": {"kind": "plays", "playlist": "00023", "start": 0}},
+            {"id": 4, "box": [0, 0, 5, 5], "visible": True, "label": "Gone",
+             "outcome": {"kind": "plays", "playlist": "00099", "start": 0}},
+        ]}],
+        "playlists": _PREVIEW["playlists"],
+    }  # fmt: skip
+    job = Job(
+        id=JOB,
+        disc_type=DiscType.BLURAY,
+        status=JobStatus.RIPPED,
+        resumed_from_crash=False,
+        manual_pause=False,
+        metadata_json={"scan_result": {"titles": [
+            {"index": 5, "segment_map": "14,15"}, {"index": 6, "segment_map": "14"}, {"index": 8, "segment_map": "28"},
+        ]}},
+    )  # fmt: skip
+    track = Track(id="trk_6", job_id=JOB, kind=TrackKind.VIDEO_TITLE, index=6, source_ref="6", attempts=0)
+
+    [page] = _pages(preview, job, [track], [])
+
+    got = [(b.title_index, b.clips, b.whole_title_index, b.track_id) for b in page.buttons]
+    assert got == [
+        (6, [14, 15], 5, "trk_6"),  # lands on clip 14's title; the whole playlist is title 5
+        (5, [14, 15], None, None),  # a Play All lands on the whole playlist (title 5, no track)
+        (8, [28], None, None),
+        (None, [], None, None),  # a playlist the preview doesn't list
+    ]

@@ -16,8 +16,10 @@ from arm_backend.disc_menus.proposals import (
     clean_label,
     match_bd,
     match_dvd,
+    playlist_clips,
     plays_text,
     read_preview,
+    whole_title,
 )
 from arm_common import Job, MenuProposal, Track, TrackKind, TranscodeTaskStatus
 from arm_common.schemas import (
@@ -73,6 +75,11 @@ def _pages(
             if kind in ("plays", "plays_title"):
                 view.outcome, view.plays = "plays", plays_text(o)
                 index = match_dvd(titles, o) if kind == "plays_title" else match_bd(playlists, titles, o, label)
+                view.title_index = index
+                if kind == "plays":
+                    view.clips = playlist_clips(playlists, o.get("playlist"))
+                    whole = whole_title(titles, o.get("playlist"), view.clips)
+                    view.whole_title_index = whole if whole != index else None
                 track = by_ref.get(str(index)) if index is not None else None
                 view.track_id = track.id if track is not None else None
                 proposal = by_button.get((str(page["id"]), view.id))
