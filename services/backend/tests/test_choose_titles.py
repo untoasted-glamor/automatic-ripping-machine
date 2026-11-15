@@ -21,6 +21,7 @@ from arm_backend.choose_titles import (  # noqa: E402
     default_ticks,
     delete_parked_backup,
     parks_after_backup,
+    redoes_first_pass,
     sweep_choose_titles,
 )
 from arm_backend.disc_menus.preview_tasks import preview_settled, sweep_menu_previews  # noqa: E402
@@ -579,3 +580,74 @@ def test_the_backup_cant_be_deleted_while_its_titles_wait_to_be_chosen(raw_root:
 
     assert r.status_code == 409 and "once they're chosen" in r.json()["detail"]
     assert (raw_root / JOB_ID / ".backup").exists()
+
+
+# --- a failed first pass that left nothing runs again (Retry backup and menu) ---------------------
+
+
+def _failed_first_pass(*, done: bool = False) -> FakeSession:
+    """The backup failed, then so did the titles ripped straight from the disc after it."""
+    failed = TrackStatus.FAILED
+    menu = _menu()
+    menu.status, menu.output_path = failed, None
+    return _db(
+        job=_job(JobStatus.FAILED, metadata_json={"scan_result": _SCAN}),
+        tracks=[
+            _title(0, status=TrackStatus.DONE if done else failed, role=TrackRole.EPISODE),
+            _title(1, status=failed),
+            menu,
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "done", "backup", "iso", "redo"),
+    [
+        (JobStatus.FAILED, False, False, False, True),
+        (JobStatus.FAILED, True, False, False, False),  # a title was ripped: retry the rest from the disc
+        (JobStatus.FAILED, False, True, False, False),  # a finished backup: remux from it
+        (JobStatus.FAILED, False, False, True, False),  # an ISO never parks
+        (JobStatus.RIPPED_PARTIAL, False, False, False, False),
+    ],
+    ids=["nothing-left", "title-done", "backup-kept", "iso", "partial"],
+)
+def test_redoes_first_pass(raw_root: Path, status: JobStatus, done: bool, backup: bool, iso: bool, redo: bool) -> None:
+    if backup:
+        _backup(raw_root, complete=True)
+    db = _failed_first_pass(done=done)
+    job, drive = db.rows["jobs"][0], db.rows["drives"][0]
+    job.status = status
+    if iso:
+        drive.source_kind = DriveSourceKind.ISO
+    assert redoes_first_pass(job, drive, db.rows["tracks"]) is redo
+
+
+def test_the_job_detail_says_a_retry_backs_the_disc_up_again(raw_root: Path) -> None:
+    db = _failed_first_pass()
+    db.rows["users"] = _users()
+    client, auth = _jobs(db, _Hub())
+
+    r = client.get(f"/api/jobs/{JOB_ID}", headers=auth)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["retry_backs_up"] is True and r.json()["parks_after_backup"] is False
+
+
+def test_a_retry_of_a_first_pass_that_left_nothing_backs_up_and_parks_again(raw_root: Path) -> None:
+    db, hub = _failed_first_pass(), _Hub()
+    db.rows["users"] = _users()
+    job = db.rows["jobs"][0]
+
+    client, auth = _jobs(db, hub)
+    r = client.post(f"/api/jobs/{JOB_ID}/retry-failed", headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["from_backup"] is False  # it waits for the disc
+
+    # The disc goes back in: rip-start runs the first pass again, not a retry, and parks after the backup.
+    for _ in range(2):  # a repeated rip-start answers the same
+        rs = _ripper(db, hub).post(f"/api/ripper/jobs/{JOB_ID}/rip-start", headers=_SERVICE_AUTH)
+        assert rs.status_code == 200, rs.text
+        assert rs.json()["retry"] is False and rs.json()["park_after_backup"] is True
+        assert rs.json()["extract_menu"] is not None
+    assert job.status == JobStatus.RIPPING
+    assert not flag_is_set(job.metadata_json, "retry_armed") and not flag_is_set(job.metadata_json, "retrying")

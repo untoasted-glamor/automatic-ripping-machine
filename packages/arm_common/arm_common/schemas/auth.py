@@ -58,6 +58,10 @@ class JobDetailView(BaseModel):
     # titles are chosen at stop 2 (`awaiting_titles`), so stop 1 doesn't tick
     # titles. False once the rip has started.
     parks_after_backup: bool = False
+    # A failed job of such a disc with no title ripped and no finished backup
+    # (fork only): Retry runs its first pass again (the backup, the menu, then
+    # stop 2) rather than ripping its titles straight from the disc.
+    retry_backs_up: bool = False
 
 
 class ConfigView(BaseModel):

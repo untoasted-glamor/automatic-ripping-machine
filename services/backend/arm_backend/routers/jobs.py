@@ -34,7 +34,7 @@ from arm_backend.job_abandon import abandon_job_transition
 from arm_backend.job_track_selection import default_for_job, disc_languages, edit_lock_reason, job_override
 from arm_backend.path_template import TemplateValidationError
 from arm_backend.raw_backup import delete_backup, describe_backup
-from arm_backend.choose_titles import backs_up_first, drive_of
+from arm_backend.choose_titles import backs_up_first, drive_of, redoes_first_pass
 from arm_backend.rip_retry import RetryRefused, arm_retry, check_retryable, remaining_tracks
 from arm_backend.routers._params import JobIdParam
 from arm_backend.routers.logs import per_job_log_path
@@ -477,6 +477,7 @@ async def get_job_detail(
         tv.subtitle_ocr_status = latest_ocr_status.get(t.id)
         return tv
 
+    drive = await drive_of(session, job)
     return JobDetailView(
         job=job_view,
         tracks=[_track_view(t) for t in tracks],
@@ -484,8 +485,8 @@ async def get_job_detail(
         previous_rip=await _previous_rip_view(session, job),
         raw_backup=describe_backup(job.id),
         subtitle_ocr=await job_subtitle_ocr_view(session, job, Path(settings.MEDIA_ROOT)),
-        parks_after_backup=job.status in PRE_RIP_JOB_STATUSES
-        and backs_up_first(job, await drive_of(session, job), tracks),
+        parks_after_backup=job.status in PRE_RIP_JOB_STATUSES and backs_up_first(job, drive, tracks),
+        retry_backs_up=redoes_first_pass(job, drive, tracks),
     )
 
 

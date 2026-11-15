@@ -46,8 +46,8 @@ function render(job: JobView, extra: Record<string, unknown> = {}) {
 		onmanual: vi.fn(),
 		...extra
 	};
-	renderComponent(IdentityPanel, { props });
-	return props;
+	const { component, rerender } = renderComponent(IdentityPanel, { props });
+	return { props, panel: component as unknown as { accepted: () => void }, rerender };
 }
 
 const toggle = () => screen.getByTestId('identity-toggle');
@@ -62,7 +62,7 @@ describe('IdentityPanel', () => {
 	it.each<[JobStatus, boolean]>([
 		['awaiting_user_id', true],
 		['awaiting_review', true],
-		['awaiting_titles', true],
+		['awaiting_titles', false],
 		['ripped_awaiting_identify', true],
 		['identified', false],
 		['ripped', false]
@@ -70,6 +70,24 @@ describe('IdentityPanel', () => {
 		render(createJob({ status }));
 		expect(toggle()).toHaveAttribute('aria-expanded', String(opens));
 		expect(!!screen.queryByTestId('identity-step-search')).toBe(opens);
+	});
+
+	it('an accept collapses it, and the stop the job moves on to does not open it again', async () => {
+		const job = createJob({ status: 'awaiting_user_id' });
+		const { props, panel, rerender } = render(job);
+		expect(toggle()).toHaveAttribute('aria-expanded', 'true');
+		panel.accepted();
+		await waitFor(() => expect(toggle()).toHaveAttribute('aria-expanded', 'false'));
+		await rerender({ ...props, job: { ...job, status: 'awaiting_review' } });
+		expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+	});
+
+	it('without an accept, the next stop opens it', async () => {
+		const job = createJob({ status: 'identified' });
+		const { props, rerender } = render(job);
+		expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+		await rerender({ ...props, job: { ...job, status: 'awaiting_review' } });
+		expect(toggle()).toHaveAttribute('aria-expanded', 'true');
 	});
 
 	it('the toggle opens and closes it', async () => {
@@ -81,7 +99,7 @@ describe('IdentityPanel', () => {
 	});
 
 	it('a disc waiting for its identity is identified by a pick or by hand, not by its season and disc', async () => {
-		const props = render(createJob({ status: 'awaiting_user_id', media_type: 'tv' }));
+		const { props } = render(createJob({ status: 'awaiting_user_id', media_type: 'tv' }));
 		expect(screen.queryByTestId('identity-step-position')).not.toBeInTheDocument();
 		const manual = screen.getByTestId('identify-manual');
 		expect(manual).toHaveTextContent('Identify by hand');
@@ -92,7 +110,8 @@ describe('IdentityPanel', () => {
 	it('saves the season and disc through resolve, with only the changed fields', async () => {
 		vi.mocked(resolveJob).mockResolvedValue({ job: createJob(), fan_out: [] });
 		const job = createJob({ status: 'awaiting_titles', media_type: 'tv', title: 'Hanako', year: 2020, season: 1 });
-		const props = render(job);
+		const { props } = render(job);
+		await fireEvent.click(toggle());
 		const save = screen.getByTestId('identity-position-save');
 		expect(save).toBeDisabled();
 		await fireEvent.input(screen.getByTestId('identify-disc-number'), { target: { value: '2' } });
@@ -104,7 +123,7 @@ describe('IdentityPanel', () => {
 
 	it('shows why the season and disc were not saved', async () => {
 		vi.mocked(resolveJob).mockRejectedValue(new Error('409 Conflict'));
-		const props = render(createJob({ status: 'ripped', media_type: 'movie' }));
+		const { props } = render(createJob({ status: 'ripped', media_type: 'movie' }));
 		await fireEvent.click(toggle());
 		expect(screen.getByTestId('identity-step-position')).toHaveTextContent('Disc');
 		expect(screen.queryByTestId('identify-season')).toBeInTheDocument();

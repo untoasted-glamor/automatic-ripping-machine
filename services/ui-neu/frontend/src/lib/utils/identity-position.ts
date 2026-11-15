@@ -35,8 +35,9 @@ export function changedPosition(
 	return out;
 }
 
-// The job waits for the operator: its identity (or, at a stop, the titles it names) is what they check next.
-const OPENS_IDENTITY = new Set(['awaiting_user_id', 'ripped_awaiting_identify', 'awaiting_review', 'awaiting_titles']);
+// The job waits for the operator to identify it, or at stop 1 (identified before the backup). By stop 2
+// (`awaiting_titles`) the identity is settled: that stop is for the titles.
+const OPENS_IDENTITY = new Set(['awaiting_user_id', 'ripped_awaiting_identify', 'awaiting_review']);
 
 /** Whether the job page's Identity panel opens by itself for a job in `status`. */
 export function identityOpensFor(status: string): boolean {

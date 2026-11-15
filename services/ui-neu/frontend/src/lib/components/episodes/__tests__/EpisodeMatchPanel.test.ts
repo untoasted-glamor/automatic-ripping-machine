@@ -298,13 +298,17 @@ describe('EpisodeMatchPanel actions', () => {
 		fetchIdentity.mockResolvedValue({ ...applied, sources: { episodes_tmdb: { status: 'ok', suggestion: true } } });
 		let resolve: (v: MatchPreview) => void = () => {};
 		vi.mocked(matchIdentity).mockReturnValue(new Promise((r) => (resolve = r)));
-		renderComponent(EpisodeMatchPanel, { props: { job: job(), tracks, matching: false } });
+		const onapplied = vi.fn();
+		renderComponent(EpisodeMatchPanel, { props: { job: job(), tracks, matching: false, onapplied } });
 		await fireEvent.click(await screen.findByRole('button', { name: 'Accept suggestion' }));
 		expect(matchIdentity).toHaveBeenCalledWith('job_1', { source: 'tmdb', apply: true });
 		expect(screen.getByRole('button', { name: 'Accepting…' })).toBeDisabled();
 		const before = fetchIdentity.mock.calls.length;
+		expect(onapplied).not.toHaveBeenCalled();
 		resolve({ outcomes: [] });
 		await waitFor(() => expect(fetchIdentity.mock.calls.length).toBe(before + 1));
+		// The Identity panel collapses on it.
+		await waitFor(() => expect(onapplied).toHaveBeenCalledOnce());
 	});
 
 	it('unpin asks inline first', async () => {

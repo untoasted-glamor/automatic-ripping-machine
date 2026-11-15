@@ -44,7 +44,7 @@ describe('identityOpensFor', () => {
 		['awaiting_user_id', true],
 		['ripped_awaiting_identify', true],
 		['awaiting_review', true],
-		['awaiting_titles', true],
+		['awaiting_titles', false],
 		['identified', false],
 		['ripping', false],
 		['ripped', false]

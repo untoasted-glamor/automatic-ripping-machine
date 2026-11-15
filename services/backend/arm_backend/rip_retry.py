@@ -37,7 +37,7 @@ class RetryRefused(Exception):
         self.detail = detail
 
 
-def _has_complete_backup(job: Job) -> bool:
+def has_complete_backup(job: Job) -> bool:
     backup = describe_backup(job.id)
     return backup is not None and backup.complete
 
@@ -59,7 +59,7 @@ async def check_retryable(db: AsyncSession, job: Job) -> None:
             status.HTTP_409_CONFLICT,
             "the job wasn't ripped on a drive that is still enrolled; rip its source again instead",
         )
-    if _has_complete_backup(job):
+    if has_complete_backup(job):
         return
     if job.status == JobStatus.AWAITING_TITLES:
         raise RetryRefused(
@@ -108,7 +108,7 @@ async def arm_retry(db: AsyncSession, job: Job, hub: WSHub, remaining: Sequence[
         db.add(track)
     if job.status != JobStatus.AWAITING_TITLES:
         job.metadata_json = with_flags(job.metadata_json, retry_armed=True)
-    from_backup = _has_complete_backup(job)
+    from_backup = has_complete_backup(job)
     if from_backup:
         # Off the drive: the drive's next disc gets its own job meanwhile.
         job.status = JobStatus.REMUXING

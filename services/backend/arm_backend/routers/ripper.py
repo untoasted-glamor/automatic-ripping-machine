@@ -8,7 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
 from arm_backend import iso_prepare
-from arm_backend.choose_titles import delete_parked_backup, drive_of, mark_parked, parks_after_backup
+from arm_backend.choose_titles import (
+    delete_parked_backup,
+    drive_of,
+    mark_parked,
+    parks_after_backup,
+    redoes_first_pass,
+)
 from arm_backend.disc_dedupe import find_previous_rips, find_reusable_job_for_disc
 from arm_backend.auth import (
     require_drive_owner_by_job,
@@ -989,7 +995,14 @@ async def rip_start(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"job already ripped: status={enum_value_str(job.status)}",
             )
-        if flag_is_set(job.metadata_json, "retry_armed"):
+        drive = await drive_of(session, job)
+        if retry and redoes_first_pass(job, drive, existing):
+            # Its first pass left nothing (fork only): run it again, not as a retry, so it backs the disc up
+            # and stops at stop 2. With the flags cleared, a repeated rip-start answers the same.
+            job.metadata_json = with_flags(job.metadata_json, retry_armed=False, retrying=False)
+            retry = False
+            logger.info("rip-start job_id=%s: backing the disc up again (its first pass ripped nothing)", job.id)
+        elif flag_is_set(job.metadata_json, "retry_armed"):
             job.metadata_json = with_flags(job.metadata_json, retry_armed=False, retrying=True)
             logger.info("rip-start job_id=%s: retrying its failed titles", job.id)
         # A remux from the kept disc backup stays `remuxing`: the disc is gone,
@@ -1009,7 +1022,7 @@ async def rip_start(
             scan_titles=_stored_scan_titles(job),
             retry=retry,
             extract_menu=extract_menu,
-            park_after_backup=parks_after_backup(job, await drive_of(session, job), existing, retry=retry),
+            park_after_backup=parks_after_backup(job, drive, existing, retry=retry),
         )
 
     # IDENTIFIED is the normal pre-rip state; AWAITING_REVIEW reaches here only

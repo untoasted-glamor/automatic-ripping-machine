@@ -15083,6 +15083,11 @@
             "type": "boolean",
             "title": "Parks After Backup",
             "default": false
+          },
+          "retry_backs_up": {
+            "type": "boolean",
+            "title": "Retry Backs Up",
+            "default": false
           }
         },
         "type": "object",

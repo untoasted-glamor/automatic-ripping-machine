@@ -33,7 +33,7 @@ from sqlmodel import col, select
 
 from arm_backend.disc_menus.preview_tasks import preview_settled
 from arm_backend.raw_backup import delete_backup
-from arm_backend.rip_retry import RetryRefused, arm_retry, check_retryable, remaining_tracks
+from arm_backend.rip_retry import RetryRefused, arm_retry, check_retryable, has_complete_backup, remaining_tracks
 from arm_backend.seeders import CONFIG_SINGLETON_ID
 from arm_backend.ws import WSHub
 from arm_common import Config, DiscType, Drive, Job, JobStatus, MediaType, TrackKind, TrackRole, TrackStatus
@@ -67,6 +67,19 @@ def parks_after_backup(job: Job, drive: Drive | None, tracks: Sequence[Track], *
     """At rip-start: whether the ripper stops at stop 2 after backing this disc up. Its first pass only (not a
     retry, nor a remux from a kept backup)."""
     return not retry and job.status == JobStatus.RIPPING and backs_up_first(job, drive, tracks)
+
+
+def redoes_first_pass(job: Job, drive: Drive | None, tracks: Sequence[Track]) -> bool:
+    """A failed job of a disc backed up first that has nothing to show for its first pass: no title ripped and
+    no finished backup (the backup failed, and so did the titles ripped straight from the disc after it). Its
+    retry runs that first pass again, backed up whole and stopped at stop 2 (rip-start answers `retry=false`),
+    rather than ripping its titles from the disc. The job page reads it (`JobDetailView.retry_backs_up`)."""
+    return (
+        job.status == JobStatus.FAILED
+        and backs_up_first(job, drive, tracks)
+        and not any(t.status == TrackStatus.DONE for t in titles(tracks))
+        and not has_complete_backup(job)
+    )
 
 
 async def drive_of(db: AsyncSession, job: Job) -> Drive | None:

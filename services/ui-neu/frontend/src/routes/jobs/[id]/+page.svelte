@@ -73,7 +73,8 @@
 	// The Identity panel (search, season and disc, episodes; MusicSearch on a CD).
 	let identityOpen = $state(false);
 	let identityPanel = $state<
-		{ reloadEpisodes: () => Promise<void>; showSearch: (type?: 'movie' | 'tv') => void } | undefined
+		| { reloadEpisodes: () => Promise<void>; showSearch: (type?: 'movie' | 'tv') => void; accepted: () => void }
+		| undefined
 	>(undefined);
 
 	// True while the Backend re-matches episodes after a type flip or a series
@@ -141,6 +142,7 @@
 
 	function handleIdentified(resp: ResolveResponse) {
 		showIdentify = false;
+		identityPanel?.accepted();
 		loadJob();
 		if (resp.fan_out?.length) {
 			const n = resp.fan_out.length;
@@ -258,7 +260,9 @@
 			const titles = res.retried === 1 ? '1 title' : `${res.retried} titles`;
 			retryNote = res.from_backup
 				? `Ripping ${titles} from the kept disc backup. No disc needed.`
-				: `Put the disc back in the drive: ARM rips ${titles} as soon as it goes in.`;
+				: detail?.retry_backs_up
+					? 'Put the disc back in the drive: ARM backs it up and copies its menu as soon as it goes in.'
+					: `Put the disc back in the drive: ARM rips ${titles} as soon as it goes in.`;
 		} catch (e) {
 			trackError = `Could not rip the remaining titles: ${e instanceof Error ? e.message : 'unknown error'}`;
 		} finally {
@@ -416,6 +420,7 @@
 		{@const remainingTitles = titleTracks(remaining)}
 		{@const onlyFailed = remaining.every((t) => t.status === 'failed')}
 		{@const retryArmed = isRetryArmed(job.metadata_json)}
+		{@const retryBacksUp = d.retry_backs_up ?? false}
 		<div class="stack-lg stack">
 			<!-- Breadcrumb -->
 			<nav class="job-detail-breadcrumb">
@@ -559,6 +564,39 @@
 				<JobLifecycle status={effectiveJobStatus(job)} sourceType={null} size="md" partial={isPartialComplete(job)} />
 			</div>
 
+			{#if retryBacksUp}
+				<!-- The backup failed, then so did the titles ripped from the disc: nothing was ripped (fork only). -->
+				<section class="job-detail-lifecycle-card stack" data-testid="retry-backup-card">
+					<h2 class="job-detail-section-title">The disc backup failed</h2>
+					<p class="job-detail-retry-note">
+						Nothing was ripped. Retry backs the disc up again and copies its menu once the disc is back in the drive;
+						its titles are chosen after that.
+					</p>
+					{#if trackError}
+						<p class="alert alert-danger" role="alert">{trackError}</p>
+					{/if}
+					{#if retryNote}
+						<p class="job-detail-retry-note" data-testid="retry-note">{retryNote}</p>
+					{:else if retryArmed}
+						<p class="job-detail-retry-note" data-testid="retry-armed">
+							Waiting for the disc: put it back in the drive to back it up again.
+						</p>
+					{:else if $isAdmin}
+						<div>
+							<button
+								type="button"
+								class="btn btn-primary"
+								data-testid="retry-backup"
+								disabled={retrying}
+								onclick={() => retryFailed(job.id)}
+							>
+								{retrying ? 'Working...' : 'Retry backup and menu'}
+							</button>
+						</div>
+					{/if}
+				</section>
+			{/if}
+
 			{#if job.status === 'awaiting_review' || job.status === 'awaiting_titles'}
 				<ReviewGatePanel
 					{job}
@@ -572,11 +610,11 @@
 			{/if}
 
 			{#if (job.disc_type === 'dvd' || job.disc_type === 'bluray') && job.status !== 'awaiting_review'}
-				<!-- A held disc picks its tracks in the review panel above, saved on Start. -->
-				<section class="job-detail-lifecycle-card stack" data-testid="job-tracks-section">
-					<h2 class="job-detail-section-title">Audio and subtitle tracks</h2>
+				<!-- A held disc picks its tracks in the review panel above, saved on Start. Closed until opened. -->
+				<details class="job-detail-lifecycle-card job-detail-tracks" data-testid="job-tracks-section">
+					<summary class="job-detail-section-title">Audio and subtitle tracks</summary>
 					<JobTrackPicker jobId={job.id} variant="page" />
-				</section>
+				</details>
 			{/if}
 
 			{#if ripping}
@@ -610,7 +648,7 @@
 							Tracks ({tracks.length})
 						</h2>
 					</div>
-					{#if trackError}
+					{#if trackError && !retryBacksUp}
 						<p class="alert alert-danger mb-3" role="alert" data-testid="track-error">{trackError}</p>
 					{/if}
 					<div class="overflow-x-auto job-detail-table-scroll">
@@ -835,7 +873,7 @@
 								{acceptingAll ? 'Working...' : `Accept all menu names (${menuAcceptable.length})`}
 							</button>
 						{/if}
-						{#if $isAdmin && (job.status === 'ripped' || job.status === 'ripped_partial' || job.status === 'failed') && remainingTitles.length > 0 && !retryArmed}
+						{#if $isAdmin && (job.status === 'ripped' || job.status === 'ripped_partial' || job.status === 'failed') && remainingTitles.length > 0 && !retryArmed && !retryBacksUp}
 							<button
 								type="button"
 								class="btn job-detail-keep-all"
@@ -852,7 +890,9 @@
 					{#if menuNote}
 						<p class="job-detail-retry-note" data-testid="dm-refused">{menuNote}</p>
 					{/if}
-					{#if retryNote}
+					{#if retryBacksUp}
+						<!-- Its retry's notes are in the card above. -->
+					{:else if retryNote}
 						<p class="job-detail-retry-note" data-testid="retry-note">{retryNote}</p>
 					{:else if retryArmed && !isRipperBusyStatus(job.status) && !d.raw_backup?.complete}
 						<p class="job-detail-retry-note" data-testid="retry-armed">
@@ -1166,6 +1206,12 @@
 		line-height: 1.75rem;
 		font-weight: 600;
 		color: var(--color-text);
+	}
+	.job-detail-tracks > summary {
+		cursor: pointer;
+	}
+	.job-detail-tracks[open] > summary {
+		margin-bottom: 1rem;
 	}
 	.job-detail-section-title .chevron {
 		transition: transform var(--motion-fast) var(--ease);

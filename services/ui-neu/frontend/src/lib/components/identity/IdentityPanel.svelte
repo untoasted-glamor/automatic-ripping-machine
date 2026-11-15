@@ -51,14 +51,28 @@
 	let canResolve = $derived(job.actions.can_resolve);
 	let awaitingIdentity = $derived(isAwaitingIdentity(job.status));
 
-	// Opens by itself when the job comes to wait for the operator (and on a first load there).
+	// Opens by itself when the job comes to wait for the operator (and on a first load there), until the
+	// operator accepts an identity on this page: an accept collapses it (`accepted`), and the next stop
+	// the accept moves the job to doesn't open it again.
 	let seenStatus: string | null = null;
+	let acceptedFor: string | null = null;
 	$effect(() => {
 		const status = job.status;
 		if (status === seenStatus) return;
 		seenStatus = status;
-		if (identityOpensFor(status)) open = true;
+		if (identityOpensFor(status) && acceptedFor !== job.id) open = true;
 	});
+
+	/** An identity was accepted (a pick, an episode placement, or the dialog): collapse the panel. */
+	export function accepted(): void {
+		acceptedFor = job.id;
+		open = false;
+	}
+
+	function picked(): void {
+		accepted();
+		onchanged();
+	}
 
 	// The search remounts with a type when the episode step asks for a series search.
 	let searchType = $state<'movie' | 'tv' | undefined>(undefined);
@@ -143,13 +157,13 @@
 		<div id="identity-panel-body" class="identity-panel-body">
 			{#if isCd}
 				<section class="identity-panel-step" data-testid="identity-step-music">
-					<MusicSearch {job} discTracks={tracks} onapply={onchanged} />
+					<MusicSearch {job} discTracks={tracks} onapply={picked} />
 				</section>
 			{:else}
 				<section class="identity-panel-step" id="identity-step-search" data-testid="identity-step-search">
 					<h3 class="identity-panel-step-title">Search and pick</h3>
 					{#key searchKey}
-						<TitleSearch {job} onapply={onchanged} {onseries} initialType={searchType} />
+						<TitleSearch {job} onapply={picked} {onseries} initialType={searchType} />
 					{/key}
 				</section>
 				{#if positionEditable}
@@ -179,6 +193,7 @@
 							{tracks}
 							{matching}
 							onsearchseries={() => showSearch('tv')}
+							onapplied={accepted}
 						/>
 					</section>
 				{/if}

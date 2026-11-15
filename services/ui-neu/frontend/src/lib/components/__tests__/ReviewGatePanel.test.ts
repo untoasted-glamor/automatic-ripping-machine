@@ -132,6 +132,12 @@ describe('ReviewGatePanel track choice', () => {
 		expect(startWaitingJob).not.toHaveBeenCalled();
 	});
 
+	it("a video disc's track choice starts closed", async () => {
+		renderComponent(ReviewGatePanel, { props: { job: held(), requiresConfirm: true, waitSeconds: 60 } });
+		const tracks = await screen.findByTestId('review-gate-tracks');
+		expect(tracks).not.toHaveAttribute('open');
+	});
+
 	it('shows no track choice for a CD', () => {
 		renderComponent(ReviewGatePanel, {
 			props: { job: held({ disc_type: 'cd' }), requiresConfirm: true, waitSeconds: 60 }

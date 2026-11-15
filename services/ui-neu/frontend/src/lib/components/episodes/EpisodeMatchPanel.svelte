@@ -31,8 +31,10 @@
 		tracks: TrackView[];
 		matching?: boolean;
 		onsearchseries?: () => void;
+		// A placement was applied (Accept suggestion, or Apply & pin from a re-run).
+		onapplied?: () => void;
 	}
-	let { job, tracks, matching = false, onsearchseries }: Props = $props();
+	let { job, tracks, matching = false, onsearchseries, onapplied }: Props = $props();
 
 	const STATUS_WORD: Record<string, string> = { ok: 'matched', miss: 'no match', skipped: 'skipped', error: 'failed' };
 
@@ -194,6 +196,7 @@
 				dropPreview();
 				rerunOpen = false;
 				await reload();
+				onapplied?.();
 			} else {
 				preview = out;
 				previewSource = req.source ?? null;

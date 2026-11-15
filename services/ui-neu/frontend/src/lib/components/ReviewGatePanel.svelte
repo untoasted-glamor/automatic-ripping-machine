@@ -137,7 +137,7 @@
 		</p>
 	{/if}
 	{#if isVideoDisc && !previousRip && !stop2}
-		<details class="review-gate-panel-tracks" data-testid="review-gate-tracks" open>
+		<details class="review-gate-panel-tracks" data-testid="review-gate-tracks">
 			<summary class="field-label">Audio and subtitle tracks</summary>
 			<JobTrackPicker bind:this={picker} jobId={job.id} variant="review" />
 		</details>

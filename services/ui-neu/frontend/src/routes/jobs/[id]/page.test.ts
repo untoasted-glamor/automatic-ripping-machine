@@ -388,6 +388,39 @@ describe('Job detail page (v3)', () => {
 		);
 	});
 
+	it('a failed disc whose backup failed and nothing ripped offers Retry backup and menu', async () => {
+		const failed = {
+			job: createJob({ id: 'job_42', status: 'failed', disc_type: 'bluray' }),
+			tracks: [createTrack({ id: 'trk_1', index: 0, status: 'failed', last_error: 'makemkvcon refused' })],
+			fingerprints: [],
+			retry_backs_up: true
+		};
+		mockFetchJob.mockResolvedValue(failed);
+		vi.mocked(retryFailedTitles).mockResolvedValueOnce({ job: failed.job, retried: 1, from_backup: false });
+		renderComponent(Page);
+		const card = await screen.findByTestId('retry-backup-card');
+		// The titles' own retry would rip them from the disc: only this one is offered.
+		expect(screen.queryByRole('button', { name: /Retry failed titles/ })).toBeNull();
+		await fireEvent.click(screen.getByTestId('retry-backup'));
+		expect(vi.mocked(retryFailedTitles)).toHaveBeenCalledWith('job_42');
+		expect(await screen.findByTestId('retry-note')).toHaveTextContent(
+			'Put the disc back in the drive: ARM backs it up and copies its menu as soon as it goes in.'
+		);
+		expect(card).toContainElement(screen.getByTestId('retry-note'));
+	});
+
+	it('the audio and subtitle tracks section starts closed', async () => {
+		mockFetchJob.mockResolvedValue({
+			job: createJob({ id: 'job_42', status: 'ripping', disc_type: 'bluray' }),
+			tracks: [],
+			fingerprints: []
+		});
+		renderComponent(Page);
+		const section = await screen.findByTestId('job-tracks-section');
+		expect(section.tagName).toBe('DETAILS');
+		expect(section).not.toHaveAttribute('open');
+	});
+
 	it("text subtitles: the Make text subtitles action and each track's OCR status", async () => {
 		mockFetchJob.mockResolvedValue({
 			job: createJob({ id: 'job_42', status: 'ripped', disc_type: 'bluray' }),

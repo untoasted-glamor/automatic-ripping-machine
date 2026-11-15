@@ -2443,6 +2443,10 @@ export type JobDetailView = {
      * Parks After Backup
      */
     parks_after_backup?: boolean;
+    /**
+     * Retry Backs Up
+     */
+    retry_backs_up?: boolean;
 };
 
 /**
@@ -6483,6 +6487,10 @@ export type JobDetailViewWritable = {
      * Parks After Backup
      */
     parks_after_backup?: boolean;
+    /**
+     * Retry Backs Up
+     */
+    retry_backs_up?: boolean;
 };
 
 /**
