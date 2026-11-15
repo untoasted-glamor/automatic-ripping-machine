@@ -63,7 +63,7 @@
 	import MenuNameByHand from '$lib/components/MenuNameByHand.svelte';
 	import { acceptAllMenuProposals } from '$lib/api/discMenus';
 	import { acceptableProposals, proposalByTrack } from '$lib/utils/disc-menu';
-	import { startRipperEvents, onRipperEvent } from '$lib/stores/ripperEvents.svelte';
+	import { EpisodeMatching, watchEpisodeMatching } from '$lib/stores/episodeMatching.svelte';
 	import { ripProgress, reconcileSubscriptions, startWS, formatEta, formatTransfer } from '$lib/stores/rips.svelte';
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
 	import { isAdmin } from '$lib/stores/auth';
@@ -79,26 +79,11 @@
 		| undefined
 	>(undefined);
 
-	// True while the Backend re-matches episodes after a type flip or a series
-	// apply. Cleared when job.identity_updated arrives for this job (the stage
-	// finished), or after MATCHING_TIMEOUT_MS so it never sticks.
-	const MATCHING_TIMEOUT_MS = 60_000;
+	// "Matching episodes…" while the Backend re-matches after a type flip or a
+	// series apply; job.identity_updated for this job (or a timeout) ends it.
+	const matching = new EpisodeMatching();
 	// How long a title's row stays highlighted after a menu box jumps to it.
 	const FLASH_MS = 4000;
-	let matching = $state(false);
-	let matchingTimer: ReturnType<typeof setTimeout> | null = null;
-
-	function startMatching() {
-		matching = true;
-		if (matchingTimer) clearTimeout(matchingTimer);
-		matchingTimer = setTimeout(stopMatching, MATCHING_TIMEOUT_MS);
-	}
-
-	function stopMatching() {
-		matching = false;
-		if (matchingTimer) clearTimeout(matchingTimer);
-		matchingTimer = null;
-	}
 	let editingTrackId = $state<string | null>(null);
 	// Why the last Keep change was refused (shown above the Tracks table).
 	let trackError = $state<string | null>(null);
@@ -349,16 +334,16 @@
 	}
 
 	function handleSeriesApplied() {
-		startMatching();
+		matching.start();
 		loadJob();
 	}
 
 	function handleMediaTypeChanged(type: 'movie' | 'tv') {
 		if (type === 'tv') {
 			// Episode matching starts: show its step.
-			startMatching();
+			matching.start();
 			identityOpen = true;
-		} else stopMatching();
+		} else matching.stop();
 		loadJob();
 	}
 
@@ -386,9 +371,6 @@
 
 	onMount(() => {
 		let stopped = false;
-		// The review card's episode line links here as #episodes: the Identity
-		// panel holds the episode step.
-		if (window.location.hash === '#episodes') identityOpen = true;
 		startWS();
 		fetchSessions()
 			.then((s) => (sessionNames = new Map(s.map((x) => [x.id, x.name]))))
@@ -396,19 +378,16 @@
 		// Instant status for the job being viewed (ripper and transcode
 		// events): refresh only when an event names this job, so other jobs'
 		// events don't disturb the page. The 5s poll below stays as
-		// reconciliation.
-		startRipperEvents();
-		const offRipperEvents = onRipperEvent((jobIds, eventTypes) => {
-			const id = $page.params.id ?? '';
-			if (id === '' || !jobIds.has(id)) return;
-			// Refresh on every event; only the identity update ends matching
-			// (rip.identify_resolved fires before the episode stage has run).
-			const identityUpdated = eventTypes.get(id)?.has('job.identity_updated') ?? false;
-			loadJob().then(async () => {
+		// reconciliation. Only the identity update ends matching
+		// (rip.identify_resolved fires before the episode stage has run).
+		const offRipperEvents = watchEpisodeMatching(
+			() => $page.params.id,
+			matching,
+			async () => {
+				await loadJob();
 				await identityPanel?.reloadEpisodes();
-				if (identityUpdated) stopMatching();
-			});
-		});
+			}
+		);
 		async function poll() {
 			// Never exits while mounted: a finished job can go live again (a new
 			// apply), and the next tick picks that up without a remount.
@@ -422,7 +401,7 @@
 			stopped = true;
 			offRipperEvents();
 			reconcileSubscriptions([]);
-			if (matchingTimer) clearTimeout(matchingTimer);
+			matching.stop();
 		};
 	});
 </script>
@@ -594,7 +573,7 @@
 						bind:open={identityOpen}
 						{job}
 						{tracks}
-						{matching}
+						matching={matching.active}
 						{handSetCount}
 						onchanged={() => loadJob()}
 						onseries={handleSeriesApplied}

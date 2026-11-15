@@ -1263,18 +1263,7 @@ describe('Job detail page (v3)', () => {
 			expect(toggle.parentElement).toContainElement(group);
 		});
 
-		it('opens the Identity panel at its episode step when the URL hash is #episodes', async () => {
-			window.location.hash = '#episodes';
-			try {
-				mockFetchJob.mockResolvedValue(tvJob());
-				renderComponent(Page);
-				expect(await screen.findByTestId('identity-step-episodes')).toBeInTheDocument();
-			} finally {
-				window.location.hash = '';
-			}
-		});
-
-		it('leaves the Identity panel closed without the hash', async () => {
+		it('starts with the Identity panel closed', async () => {
 			mockFetchJob.mockResolvedValue(tvJob());
 			renderComponent(Page);
 			expect(await screen.findByTestId('identity-toggle')).toBeInTheDocument();
