@@ -877,3 +877,21 @@ async def test_run_menu_pack_task_fails_without_a_plan(monkeypatch, tmp_path) ->
     api.registered.menu_pack = None
     assert await m.run() == 1
     assert api.calls[-1] == ("fail", {"last_error": "register sent no menu pack plan"})
+
+
+async def test_progress_recorder_records_all_fields() -> None:
+    import arm_transcode.main as m
+
+    state = ProgressState()
+    on_progress = m._progress_recorder(state)
+
+    result = await on_progress(42, 90, "pass 1", 24.5, 23.0)
+
+    assert result is None
+    assert (state.pct, state.eta_seconds, state.current_pass, state.fps, state.avg_fps) == (
+        42,
+        90,
+        "pass 1",
+        24.5,
+        23.0,
+    )

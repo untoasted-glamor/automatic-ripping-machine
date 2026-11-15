@@ -70,7 +70,7 @@ from arm_transcode.engines.ffmpeg_vaapi import transcode_ffmpeg_vaapi
 from arm_transcode.engines.handbrake_engine import encoder_args as handbrake_encoder_args
 from arm_transcode.engines.handbrake_engine import preset_audio, track_args
 from arm_transcode.ffmpeg_audio import transcode_audio
-from arm_transcode.handbrake import transcode_handbrake
+from arm_transcode.handbrake import ProgressCallback, transcode_handbrake
 from arm_transcode.heartbeat import HeartbeatPump, ProgressState
 from arm_transcode.subtitle_ocr.task import SubtitleOcrFailed, make_text_subtitles
 from arm_transcode.tracks import (
@@ -131,6 +131,22 @@ def _detect_hw_caps() -> HardwareCaps:
     )
 
 
+def _progress_recorder(state: ProgressState) -> ProgressCallback:
+    """Build a progress callback that records each tick on `state`. (Fork: a
+    cancel or revoke stops the encode from outside, `_encode_until_stopped`.)"""
+
+    async def _on_progress(
+        pct: int, eta: int | None, current: str | None, fps: float | None, avg_fps: float | None
+    ) -> None:
+        state.pct = pct
+        state.eta_seconds = eta
+        state.current_pass = current
+        state.fps = fps
+        state.avg_fps = avg_fps
+
+    return _on_progress
+
+
 @dataclass(frozen=True)
 class EncodeResult:
     size: int
@@ -158,14 +174,7 @@ async def _run_encoder(
     """Dispatch on `tool`. Returns the size of the video we wrote and the
     subtitle sidecars written next to it."""
 
-    async def _on_progress(
-        pct: int, eta: int | None, current: str | None, fps: float | None, avg_fps: float | None
-    ) -> None:
-        state.pct = pct
-        state.eta_seconds = eta
-        state.current_pass = current
-        state.fps = fps
-        state.avg_fps = avg_fps
+    on_progress = _progress_recorder(state)
 
     if tool == TranscodeTool.NONE:
         size = transcode_none(raw_input, final_output)
@@ -193,7 +202,7 @@ async def _run_encoder(
                     container=preset.container,
                     extra_args=preset.extra_args,
                     duration_seconds=duration_seconds,
-                    progress_callback=_on_progress,
+                    progress_callback=on_progress,
                     plan=plan,
                 )
         state.pct = 100
@@ -219,7 +228,7 @@ async def _run_encoder(
                     preset_ref=preset.preset_ref,
                     extra_args=preset.extra_args,
                     encoder_args=handbrake_encoder_args(selected_encoder()),
-                    progress_callback=_on_progress,
+                    progress_callback=on_progress,
                     track_args=hb_track_args,
                 )
         state.pct = 100
@@ -235,7 +244,7 @@ async def _run_encoder(
                 output_path=tmp,
                 preset_ref=target,
                 duration_seconds=duration_seconds,
-                progress_callback=_on_progress,
+                progress_callback=on_progress,
             )
         state.pct = 100
         return EncodeResult(size=size)
