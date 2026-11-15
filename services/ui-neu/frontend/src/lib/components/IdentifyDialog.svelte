@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { resolveJob, searchMetadata, updateJobTitle } from '$lib/api/jobs';
-	import type { JobView, MetadataCandidate, ResolveResponse } from '$lib/types/api.gen';
-	import PosterImage from './PosterImage.svelte';
+	import { resolveJob } from '$lib/api/jobs';
+	import type { JobView, ResolveResponse } from '$lib/types/api.gen';
+	import TitleSearch from './TitleSearch.svelte';
+	import { missReason } from '$lib/utils/job-status';
 	import { driveLabel } from '$lib/utils/drive-name';
 	import { isAwaitingIdentity } from '$lib/utils/job-status-groups';
 	import { changedPosition } from '$lib/utils/identity-position';
@@ -40,13 +41,8 @@
 			: 0
 	);
 
-	// Why automatic identification missed (one entry per skipped or failed
-	// lookup), recorded at identify and cleared by a resolve.
-	const missReasons = $derived(
-		Array.isArray(job.metadata_json?.identify_miss_reasons)
-			? (job.metadata_json.identify_miss_reasons as unknown[]).filter((r): r is string => typeof r === 'string')
-			: []
-	);
+	// Why automatic identification missed, from the identify attempts.
+	const missLine = $derived(missReason(job));
 
 	// Video / DVD / BD / data fields.
 	let title = $state(job.title ?? '');
@@ -65,76 +61,22 @@
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
 
-	// Search the configured metadata provider instead of typing everything in
-	// (video discs only: a CD needs the artist/album/track shape this search
-	// doesn't return). Picking a result fills Title and Year; on submit its
-	// type and ids go to resolve, and its poster becomes the job's, the same
-	// way TitleSearch's Apply does it. Retyping the title drops the pick.
-	let searchQuery = $state(job.title ?? '');
-	let searchType = $state<'movie' | 'tv'>(
-		job.media_type === 'tv' || (job.media_type == null && job.looks_episodic) ? 'tv' : 'movie'
-	);
-	let searching = $state(false);
-	let searchError = $state<string | null>(null);
-	let candidates = $state<MetadataCandidate[]>([]);
-	let picked = $state<MetadataCandidate | null>(null);
-
-	async function runSearch(): Promise<void> {
-		const q = searchQuery.trim();
-		if (!q) return;
-		searching = true;
-		searchError = null;
-		try {
-			const resp = await searchMetadata(q, searchType);
-			candidates = resp.candidates;
-			if (resp.candidates.length === 0) searchError = 'No results found. Try a different search term.';
-		} catch (e) {
-			candidates = [];
-			searchError = e instanceof Error ? e.message : 'Search failed';
-		} finally {
-			searching = false;
-		}
-	}
-
-	function onSearchKeydown(e: KeyboardEvent): void {
-		if (e.key === 'Enter') {
-			// Enter searches; it must not submit the identify form.
-			e.preventDefault();
-			void runSearch();
-		}
-	}
-
-	function pick(c: MetadataCandidate): void {
-		picked = c;
-		title = c.title;
-		year = c.year ?? null;
-	}
-
-	// The pick, while the form still describes it.
-	function currentPick(): MetadataCandidate | null {
-		return picked && picked.title === title.trim() ? picked : null;
-	}
-
-	function pickedIdentity(c: MetadataCandidate | null): {
-		media_type?: 'movie' | 'tv';
-		external_ids?: Record<string, string>;
-	} {
-		if (c === null) return {};
-		// Resolve reads an explicit null as "clear this id": send only the ids it has.
-		const ids = Object.entries(c.external_ids ?? {}).filter((e): e is [string, string] => e[1] != null);
-		return {
-			media_type: c.kind === 'series' || c.kind === 'tv' ? 'tv' : 'movie',
-			...(ids.length ? { external_ids: Object.fromEntries(ids) } : {})
-		};
-	}
-
 	const canSubmit = $derived(
 		submitting ? false : isCd ? album.trim().length > 0 && artist.trim().length > 0 : title.trim().length > 0
 	);
 
+	// A TV disc saved by hand has no show id, so episodes cannot be matched
+	// automatically; the operator confirms that with a second click.
+	const isEpisodic = $derived(!isCd && (job.looks_episodic || job.media_type === 'tv') && !job.has_series);
+	let confirmNoMatch = $state(false);
+
 	async function submit(event: Event): Promise<void> {
 		event.preventDefault();
 		if (!canSubmit) return;
+		if (isEpisodic && !confirmNoMatch) {
+			confirmNoMatch = true;
+			return;
+		}
 		submitting = true;
 		error = null;
 		try {
@@ -145,21 +87,12 @@
 						tracks: trackTitles.map((t) => ({ title: t.trim() }))
 					}
 				: undefined;
-			const chosen = isCd ? null : currentPick();
 			const resp = await resolveJob(job.id, {
 				title: isCd ? album.trim() : title.trim(),
 				year: year ?? null,
 				music,
-				...pickedIdentity(chosen),
 				...changedPosition(job, { season, discNumber, discTotal }, { isCd })
 			});
-			if (chosen?.poster_url && chosen.poster_url !== (job.poster_url_manual ?? null)) {
-				try {
-					await updateJobTitle(job.id, { poster_url_manual: chosen.poster_url });
-				} catch {
-					// The disc is identified; a poster that didn't save isn't worth failing it.
-				}
-			}
 			onidentified(resp);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Identify failed';
@@ -202,74 +135,20 @@
 			</p>
 		{/if}
 
-		{#if missReasons.length > 0}
-			<div class="alert alert-warning mt-3" data-testid="identify-miss-reasons">
-				<div class="alert-title">Why automatic identification missed</div>
-				<ul class="alert-body identify-dialog-miss-list">
-					{#each missReasons as reason, i (i)}
-						<li class="mono">{reason}</li>
-					{/each}
-				</ul>
+		{#if missLine}
+			<div class="alert alert-warning mt-3" data-testid="identify-miss-reason">
+				<div class="alert-body">{missLine}</div>
 			</div>
 		{/if}
 
 		{#if !isCd}
-			<div class="identify-dialog-search mt-4" data-testid="identify-search">
-				<div class="flex flex-wrap items-end gap-2">
-					<label class="field identify-dialog-field-wide">
-						<span class="field-label">Search title</span>
-						<input
-							bind:value={searchQuery}
-							type="text"
-							data-testid="identify-search-query"
-							disabled={submitting || searching}
-							onkeydown={onSearchKeydown}
-						/>
-					</label>
-					<label class="field flex-1">
-						<span class="field-label">Type</span>
-						<select bind:value={searchType} data-testid="identify-search-type" disabled={submitting || searching}>
-							<option value="movie">Movie</option>
-							<option value="tv">TV</option>
-						</select>
-					</label>
-					<button
-						type="button"
-						class="btn"
-						data-testid="identify-search-run"
-						onclick={runSearch}
-						disabled={submitting || searching || !searchQuery.trim()}
-					>
-						{searching ? 'Searching...' : 'Search'}
-					</button>
-				</div>
-				{#if searchError}
-					<p class="field-error mt-2" data-testid="identify-search-error">{searchError}</p>
-				{/if}
-				{#if candidates.length > 0}
-					<div class="identify-dialog-candidates mt-3">
-						{#each candidates as c, i (`${c.provider_id ?? i}-${c.title}-${c.year ?? ''}`)}
-							<button
-								type="button"
-								class="identify-dialog-candidate"
-								data-testid="identify-candidate"
-								aria-pressed={picked === c}
-								disabled={submitting}
-								onclick={() => pick(c)}
-							>
-								<PosterImage url={c.poster_url} alt={c.title} class="identify-dialog-candidate-poster" />
-								<span class="identify-dialog-candidate-title">
-									{c.title}{#if c.year}&nbsp;({c.year}){/if}
-								</span>
-							</button>
-						{/each}
-					</div>
-					<p class="field-help mt-2">Pick one to fill in the title and year, then check them below.</p>
-				{/if}
+			<div class="mt-4 mb-3">
+				<TitleSearch {job} onresolved={onidentified} />
 			</div>
+			<p class="field-help mt-4 mb-2">Or enter the title yourself</p>
 		{/if}
 
-		<form class="mt-4" onsubmit={submit}>
+		<form class={isCd ? 'mt-4' : 'mt-2'} onsubmit={submit}>
 			{#if isCd}
 				<div class="mb-3 flex gap-3">
 					<label class="field identify-dialog-field-wide">
@@ -322,7 +201,14 @@
 				<div class="mb-3 flex gap-3">
 					<label class="field identify-dialog-field-wide">
 						<span class="field-label">Title</span>
-						<input bind:value={title} type="text" required data-testid="identify-title" disabled={submitting} />
+						<input
+							bind:value={title}
+							oninput={() => (confirmNoMatch = false)}
+							type="text"
+							required
+							data-testid="identify-title"
+							disabled={submitting}
+						/>
 					</label>
 					<label class="field flex-1">
 						<span class="field-label">Year</span>
@@ -339,10 +225,22 @@
 				<IdentityFields bind:season bind:discNumber bind:discTotal {isCd} disabled={submitting} />
 			{/if}
 
+			{#if confirmNoMatch}
+				<p class="field-help mb-2" data-testid="identify-no-match-warning">
+					Without a search result ARM has no show id, so episodes can't be matched automatically.
+				</p>
+			{/if}
+
 			<div class="modal-actions">
 				<button type="button" onclick={onclose} disabled={submitting} class="btn"> Cancel </button>
 				<button type="submit" disabled={!canSubmit} data-testid="identify-submit" class="btn btn-primary">
-					{submitting ? 'Saving...' : isEditMode ? 'Edit identity' : 'Identify disc'}
+					{submitting
+						? 'Saving...'
+						: confirmNoMatch
+							? 'Save without a match'
+							: isEditMode
+								? 'Edit identity'
+								: 'Identify disc'}
 				</button>
 			</div>
 		</form>
@@ -372,53 +270,5 @@
 	}
 	.identify-dialog-field-wide {
 		flex: 2 1 0%;
-	}
-	.identify-dialog-search {
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-lg);
-		padding: 0.75rem;
-	}
-	.identify-dialog-candidates {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(6rem, 1fr));
-		gap: 0.5rem;
-		max-height: 18rem;
-		overflow-y: auto;
-	}
-	.identify-dialog-candidate {
-		display: flex;
-		flex-direction: column;
-		overflow: hidden;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		background: var(--color-surface);
-		text-align: left;
-		cursor: pointer;
-	}
-	.identify-dialog-candidate:hover {
-		border-color: var(--color-border-strong);
-	}
-	.identify-dialog-candidate[aria-pressed='true'] {
-		border-color: var(--color-primary);
-		box-shadow: 0 0 0 2px var(--color-primary-tint-1);
-	}
-	.identify-dialog-candidate :global(.identify-dialog-candidate-poster) {
-		aspect-ratio: 2 / 3;
-		width: 100%;
-		object-fit: cover;
-	}
-	.identify-dialog-candidate-title {
-		padding: 0.375rem;
-		font-size: 0.75rem;
-		line-height: 1rem;
-		font-weight: 500;
-		color: var(--color-text);
-	}
-	.identify-dialog-miss-list {
-		margin: 0.25rem 0 0;
-		padding-left: 1.125rem;
-		list-style: disc;
-		font-size: 0.75rem;
-		overflow-wrap: anywhere;
 	}
 </style>

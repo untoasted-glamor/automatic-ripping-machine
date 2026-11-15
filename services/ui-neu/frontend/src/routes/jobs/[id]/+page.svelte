@@ -386,6 +386,9 @@
 
 	onMount(() => {
 		let stopped = false;
+		// The review card's episode line links here as #episodes: the Identity
+		// panel holds the episode step.
+		if (window.location.hash === '#episodes') identityOpen = true;
 		startWS();
 		fetchSessions()
 			.then((s) => (sessionNames = new Map(s.map((x) => [x.id, x.name]))))

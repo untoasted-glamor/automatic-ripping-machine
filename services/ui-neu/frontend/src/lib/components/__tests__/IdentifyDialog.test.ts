@@ -2,30 +2,32 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderComponent, screen, fireEvent, cleanup, waitFor } from '$lib/test-utils';
 import IdentifyDialog from '../IdentifyDialog.svelte';
 import { createJob } from '../__fixtures__/job';
-import { resolveJob, searchMetadata, updateJobTitle } from '$lib/api/jobs';
-import type { MetadataCandidate, ResolveResponse } from '$lib/types/api.gen';
+import { resolveJob, searchMetadata } from '$lib/api/jobs';
+import type { ResolveResponse } from '$lib/types/api.gen';
+
+vi.mock('$lib/stores/auth', async () => {
+	const { derived, writable } = await import('svelte/store');
+	const _role = writable<string | null>('admin');
+	return { role: { subscribe: _role.subscribe }, isAdmin: derived(_role, (r) => r === 'admin') };
+});
+
+vi.mock('$lib/stores/config', async () => {
+	const { writable } = await import('svelte/store');
+	return {
+		searchProviders: writable({ movie: 'tmdb', tv: 'tmdb' }),
+		keyedSources: writable({ tmdb: true, omdb: true, tvdb: true })
+	};
+});
 
 vi.mock('$lib/api/jobs', () => ({
 	resolveJob: vi.fn(),
 	searchMetadata: vi.fn(),
-	updateJobTitle: vi.fn(() => Promise.resolve({}))
+	fetchMediaDetail: vi.fn(),
+	updateJobTitle: vi.fn(() => Promise.resolve())
 }));
 
 const resolveJobMock = vi.mocked(resolveJob);
 const searchMock = vi.mocked(searchMetadata);
-const updateJobTitleMock = vi.mocked(updateJobTitle);
-
-function candidate(overrides: Partial<MetadataCandidate> = {}): MetadataCandidate {
-	return {
-		title: 'ACCA: 13-Territory Inspection Dept.',
-		year: 2017,
-		kind: 'series',
-		poster_url: 'https://img/acca.jpg',
-		provider_id: 'tt6401396',
-		external_ids: { imdb: 'tt6401396', tmdb: '70881', tvdb: null },
-		...overrides
-	} as MetadataCandidate;
-}
 
 function makeResp(): ResolveResponse {
 	return { job: createJob({ status: 'identified' }), fan_out: [] };
@@ -72,127 +74,159 @@ describe('IdentifyDialog', () => {
 		});
 	});
 
-	describe('manual search', () => {
-		const held = () =>
-			createJob({
-				id: 'job_s',
-				disc_type: 'bluray',
-				status: 'awaiting_user_id',
-				title: 'ACCA_CS_D1',
-				year: null,
-				media_type: null,
-				poster_url_manual: null
-			});
+	describe('search first (video)', () => {
+		const warning = "Without a search result ARM has no show id, so episodes can't be matched automatically.";
 
-		it('searches, fills title and year from the pick, and resolves with its type, ids and poster', async () => {
-			searchMock.mockResolvedValue({ candidates: [candidate(), candidate({ title: 'Other', year: 1999 })] } as never);
-			resolveJobMock.mockResolvedValue(makeResp());
-			const onidentified = vi.fn();
-			renderComponent(IdentifyDialog, { props: { job: held(), onclose: vi.fn(), onidentified } });
-
-			await fireEvent.input(screen.getByTestId('identify-search-query'), { target: { value: 'ACCA' } });
-			await fireEvent.change(screen.getByTestId('identify-search-type'), { target: { value: 'tv' } });
-			await fireEvent.click(screen.getByTestId('identify-search-run'));
-			await waitFor(() => expect(screen.getAllByTestId('identify-candidate')).toHaveLength(2));
-			expect(searchMock).toHaveBeenCalledWith('ACCA', 'tv');
-
-			await fireEvent.click(screen.getAllByTestId('identify-candidate')[0]);
-			expect((screen.getByTestId('identify-title') as HTMLInputElement).value).toBe(
-				'ACCA: 13-Territory Inspection Dept.'
-			);
-			expect((screen.getByTestId('identify-year') as HTMLInputElement).value).toBe('2017');
-			await fireEvent.click(screen.getByTestId('identify-submit'));
-
-			await waitFor(() => expect(onidentified).toHaveBeenCalledTimes(1));
-			expect(resolveJobMock).toHaveBeenCalledWith('job_s', {
-				title: 'ACCA: 13-Territory Inspection Dept.',
-				year: 2017,
-				music: undefined,
-				media_type: 'tv',
-				external_ids: { imdb: 'tt6401396', tmdb: '70881' }
-			});
-			expect(updateJobTitleMock).toHaveBeenCalledWith('job_s', { poster_url_manual: 'https://img/acca.jpg' });
+		it('shows the search and the manual caption for a video disc', () => {
+			const job = createJob({ disc_type: 'bluray', status: 'awaiting_user_id' });
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+			expect(screen.getByRole('button', { name: 'Search' })).toBeInTheDocument();
+			expect(screen.getByText('Or enter the title yourself')).toBeInTheDocument();
+			expect(screen.getByTestId('identify-title')).toBeInTheDocument();
 		});
 
-		it('Enter in the search box searches instead of submitting', async () => {
+		it('applies a search result with ids and reports the response', async () => {
+			const resp = makeResp();
+			resolveJobMock.mockResolvedValue(resp);
+			searchMock.mockResolvedValue({
+				candidates: [
+					{
+						title: 'Firefly',
+						year: 2002,
+						kind: 'tv',
+						poster_url: null,
+						provider_id: '1437',
+						external_ids: { tmdb_series_id: 1437 }
+					}
+				]
+			} as never);
+			const onidentified = vi.fn();
+			const job = createJob({
+				id: 'job_s',
+				disc_type: 'dvd',
+				status: 'awaiting_user_id',
+				media_type: 'tv',
+				title: 'firefly'
+			});
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified } });
+			await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+			await waitFor(() => expect(screen.getByText('Firefly')).toBeInTheDocument());
+			await fireEvent.click(screen.getByText('Firefly'));
+			await fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+			await waitFor(() => expect(onidentified).toHaveBeenCalledWith(resp));
+			expect(onidentified).toHaveBeenCalledTimes(1);
+			expect(resolveJobMock).toHaveBeenCalledTimes(1);
+			expect(resolveJobMock).toHaveBeenCalledWith(
+				'job_s',
+				expect.objectContaining({ media_type: 'tv', external_ids: { tmdb_series_id: 1437 } })
+			);
+		});
+
+		it('Search on a movie job does not resolve', async () => {
 			searchMock.mockResolvedValue({ candidates: [] } as never);
-			renderComponent(IdentifyDialog, { props: { job: held(), onclose: vi.fn(), onidentified: vi.fn() } });
-
-			await fireEvent.keyDown(screen.getByTestId('identify-search-query'), { key: 'Enter' });
-
-			await waitFor(() => expect(screen.getByTestId('identify-search-error')).toHaveTextContent('No results found'));
+			const job = createJob({ disc_type: 'bluray', status: 'awaiting_user_id', media_type: 'movie', title: 'Alien' });
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+			await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+			await waitFor(() => expect(searchMock).toHaveBeenCalledTimes(1));
 			expect(resolveJobMock).not.toHaveBeenCalled();
 		});
 
-		it('retyping the title drops the pick', async () => {
-			searchMock.mockResolvedValue({ candidates: [candidate()] } as never);
-			resolveJobMock.mockResolvedValue(makeResp());
-			renderComponent(IdentifyDialog, { props: { job: held(), onclose: vi.fn(), onidentified: vi.fn() } });
-
-			await fireEvent.click(screen.getByTestId('identify-search-run'));
-			await fireEvent.click(await screen.findByTestId('identify-candidate'));
-			await fireEvent.input(screen.getByTestId('identify-title'), { target: { value: 'ACCA' } });
-			await fireEvent.click(screen.getByTestId('identify-submit'));
-
-			await waitFor(() =>
-				expect(resolveJobMock).toHaveBeenCalledWith('job_s', { title: 'ACCA', year: 2017, music: undefined })
-			);
-			expect(updateJobTitleMock).not.toHaveBeenCalled();
-		});
-
-		it('shows a failed search and no search for a CD', async () => {
-			searchMock.mockRejectedValue(new Error('TMDb API key is not configured'));
-			renderComponent(IdentifyDialog, { props: { job: held(), onclose: vi.fn(), onidentified: vi.fn() } });
-			await fireEvent.click(screen.getByTestId('identify-search-run'));
-			await waitFor(() =>
-				expect(screen.getByTestId('identify-search-error')).toHaveTextContent('TMDb API key is not configured')
-			);
-			cleanup();
-			renderComponent(IdentifyDialog, {
-				props: {
-					job: createJob({ disc_type: 'cd', status: 'awaiting_user_id' }),
-					onclose: vi.fn(),
-					onidentified: vi.fn()
-				}
+		it('Enter in the search title searches once and does not resolve', async () => {
+			searchMock.mockResolvedValue({ candidates: [] } as never);
+			const job = createJob({ disc_type: 'bluray', status: 'awaiting_user_id', media_type: 'movie', title: 'Alien' });
+			const { container } = renderComponent(IdentifyDialog, {
+				props: { job, onclose: vi.fn(), onidentified: vi.fn() }
 			});
-			expect(screen.queryByTestId('identify-search')).toBeNull();
+			const input = container.ownerDocument.querySelector('input[type="text"]') as HTMLInputElement;
+			expect(input.form).toBeNull();
+			await fireEvent.keyDown(input, { key: 'Enter' });
+			await waitFor(() => expect(searchMock).toHaveBeenCalledTimes(1));
+			expect(resolveJobMock).not.toHaveBeenCalled();
 		});
 
-		it('a poster that fails to save still identifies the disc', async () => {
-			searchMock.mockResolvedValue({ candidates: [candidate()] } as never);
+		it('episodic job: manual submit warns and resolves only on Save without a match', async () => {
 			resolveJobMock.mockResolvedValue(makeResp());
-			updateJobTitleMock.mockRejectedValueOnce(new Error('boom'));
 			const onidentified = vi.fn();
-			renderComponent(IdentifyDialog, { props: { job: held(), onclose: vi.fn(), onidentified } });
-			await fireEvent.click(screen.getByTestId('identify-search-run'));
-			await fireEvent.click(await screen.findByTestId('identify-candidate'));
+			const job = createJob({
+				id: 'job_e',
+				disc_type: 'dvd',
+				status: 'awaiting_user_id',
+				media_type: 'tv',
+				title: 'Firefly'
+			});
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified } });
+			expect(screen.queryByText(warning)).not.toBeInTheDocument();
 			await fireEvent.click(screen.getByTestId('identify-submit'));
-			await waitFor(() => expect(onidentified).toHaveBeenCalledTimes(1));
+			expect(screen.getByText(warning)).toBeInTheDocument();
+			expect(resolveJobMock).not.toHaveBeenCalled();
+			await fireEvent.click(screen.getByRole('button', { name: 'Save without a match' }));
+			await waitFor(() => expect(resolveJobMock).toHaveBeenCalledTimes(1));
+			expect(onidentified).toHaveBeenCalledTimes(1);
 		});
-	});
 
-	describe('identify miss reasons', () => {
-		it('lists why automatic identification missed', () => {
+		it('TV job with a show already identified resolves on the first submit', async () => {
+			resolveJobMock.mockResolvedValue(makeResp());
 			const job = createJob({
 				disc_type: 'dvd',
 				status: 'awaiting_user_id',
+				media_type: 'tv',
+				has_series: true,
+				title: 'Firefly'
+			});
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+			await fireEvent.click(screen.getByTestId('identify-submit'));
+			await waitFor(() => expect(resolveJobMock).toHaveBeenCalledTimes(1));
+			expect(screen.queryByText(warning)).not.toBeInTheDocument();
+		});
+
+		it('looks_episodic job warns too', async () => {
+			const job = createJob({ disc_type: 'dvd', status: 'awaiting_user_id', looks_episodic: true, title: 'X' });
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+			await fireEvent.click(screen.getByTestId('identify-submit'));
+			expect(screen.getByText(warning)).toBeInTheDocument();
+			expect(resolveJobMock).not.toHaveBeenCalled();
+		});
+
+		it('movie job: manual submit resolves on the first click', async () => {
+			resolveJobMock.mockResolvedValue(makeResp());
+			const job = createJob({
+				disc_type: 'bluray',
+				status: 'awaiting_user_id',
+				media_type: 'movie',
+				looks_episodic: false,
+				title: 'Alien'
+			});
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+			await fireEvent.click(screen.getByTestId('identify-submit'));
+			await waitFor(() => expect(resolveJobMock).toHaveBeenCalledTimes(1));
+		});
+
+		it('CD dialog has no search', () => {
+			const job = createJob({ disc_type: 'cd', status: 'awaiting_user_id' });
+			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
+			expect(screen.queryByRole('button', { name: 'Search' })).not.toBeInTheDocument();
+			expect(screen.queryByText('Or enter the title yourself')).not.toBeInTheDocument();
+		});
+	});
+
+	describe('identify miss line', () => {
+		it('says why automatic identification missed, from the identify attempts', () => {
+			const job = createJob({
+				disc_type: 'dvd',
+				status: 'awaiting_user_id',
+				title: 'DISC_1',
 				metadata_json: {
-					identify_miss_reasons: ['tmdb: no match for "DISC_1"', 'omdb: skipped (no API key)', 42 as unknown as string]
+					identify_attempts: [{ source: 'tmdb', step: 'title', detail: 'DISC_1', outcome: 'miss' }]
 				}
 			});
 			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
-			const box = screen.getByTestId('identify-miss-reasons');
-			const items = box.querySelectorAll('li');
-			expect(Array.from(items, (li) => li.textContent)).toEqual([
-				'tmdb: no match for "DISC_1"',
-				'omdb: skipped (no API key)'
-			]);
+			expect(screen.getByTestId('identify-miss-reason')).toHaveTextContent('No source found a close match for "DISC_1"');
 		});
 
-		it('shows nothing when there are none', () => {
+		it('shows nothing when there are no attempts', () => {
 			const job = createJob({ disc_type: 'dvd', status: 'awaiting_user_id', metadata_json: {} });
 			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
-			expect(screen.queryByTestId('identify-miss-reasons')).not.toBeInTheDocument();
+			expect(screen.queryByTestId('identify-miss-reason')).not.toBeInTheDocument();
 		});
 	});
 
