@@ -8,7 +8,7 @@ os.environ.setdefault("ARM_SERVICE_TOKEN", "tok")
 import pytest
 from arm_common.enums import JobStatus
 from arm_common.schemas.jobs import JobView
-from arm_ripper.main import maybe_reacquire_current_job
+from arm_ripper.main import maybe_pickup_remux, maybe_reacquire_current_job
 
 
 class _Ctrl:
@@ -151,3 +151,56 @@ async def test_errors_are_swallowed():
         ctrl, get_current_job=fake_get_current, drive_id="drv_1", device_path="/dev/sr0", seated=True
     )
     assert ctrl.picked is None
+
+
+# --- the remux lane's pickup ------------------------------------------------------
+
+
+class _RemuxCtrl:
+    def __init__(self, *, idle: bool):
+        self.remux_idle = idle
+        self.started: list[str] = []
+
+    def start_remux(self, job_id: str) -> None:
+        self.started.append(job_id)
+
+
+@pytest.mark.asyncio
+async def test_remux_pickup_starts_a_remuxing_job_when_the_lane_is_free():
+    ctrl = _RemuxCtrl(idle=True)
+
+    async def get_remux(drive_id):
+        return _jobview(JobStatus.REMUXING)
+
+    await maybe_pickup_remux(ctrl, get_remux_job=get_remux, drive_id="drv_1")
+    assert ctrl.started == ["job_x"]
+
+
+@pytest.mark.asyncio
+async def test_remux_pickup_leaves_a_busy_lane_alone():
+    ctrl = _RemuxCtrl(idle=False)
+    asked: list[str] = []
+
+    async def get_remux(drive_id):
+        asked.append(drive_id)
+        return _jobview(JobStatus.REMUXING)
+
+    await maybe_pickup_remux(ctrl, get_remux_job=get_remux, drive_id="drv_1")
+    assert asked == [] and ctrl.started == []
+
+
+@pytest.mark.asyncio
+async def test_remux_pickup_with_nothing_remuxing_or_errors_starts_nothing():
+    import httpx
+
+    ctrl = _RemuxCtrl(idle=True)
+
+    async def none(drive_id):
+        return None
+
+    async def boom(drive_id):
+        raise httpx.ConnectError("connection refused")
+
+    await maybe_pickup_remux(ctrl, get_remux_job=none, drive_id="drv_1")
+    await maybe_pickup_remux(ctrl, get_remux_job=boom, drive_id="drv_1")
+    assert ctrl.started == []

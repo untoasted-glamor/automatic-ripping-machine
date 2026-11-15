@@ -324,6 +324,7 @@ async def test_heartbeat_short_circuits_probe_for_iso_source(monkeypatch, tmp_pa
     controller.is_idle = MagicMock(return_value=True)
     controller.pickup = AsyncMock()
     client.get_current_job = AsyncMock(return_value=None)
+    client.get_remux_job = AsyncMock(return_value=None)
 
     # Cancel after one tick so the test doesn't hang on the loop.
     async def cancel_after_one_tick() -> None:

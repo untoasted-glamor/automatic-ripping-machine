@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 from arm_common.enums import (
     APPLY_OK_JOB_STATUSES,
     APPLY_PARK_JOB_STATUSES,
-    NON_TERMINAL_JOB_STATUSES,
+    LIVE_JOB_STATUSES,
     RESOLVABLE_JOB_STATUSES,
     TERMINAL_JOB_STATUSES,
     DiscType,
@@ -209,7 +209,7 @@ def job_actions_for(status: JobStatus) -> JobActions:
     return JobActions(
         can_resolve=status in RESOLVABLE_JOB_STATUSES,
         can_apply=status in APPLY_OK_JOB_STATUSES or status in APPLY_PARK_JOB_STATUSES,
-        can_abandon=status in NON_TERMINAL_JOB_STATUSES,
+        can_abandon=status in LIVE_JOB_STATUSES,
         can_delete=status in TERMINAL_JOB_STATUSES,
     )
 

@@ -147,6 +147,7 @@ async def rip_all(
     backup_dir: Path | None = None,
     on_backup_done: OnBackupDone | None = None,
     menu: MenuSink | None = None,
+    drive_free: bool = False,
 ) -> None:
     """Rip every kept track in `tracks` and invoke the lifecycle callbacks.
 
@@ -174,6 +175,10 @@ async def rip_all(
     into `<job raw>/menu/` (beside `backup_dir`) out of a disc backup, so a
     drive goes through backup-then-remux even when every title is kept, or
     straight out of an ISO or folder source; see `_rip_optical`.
+    `drive_free` (a remux from the job's kept disc backup): the drive is never
+    read, since it may hold the next disc. DVD/BD titles come only from the
+    finished backup in `backup_dir`, one remux each (never `mkv all`); with no
+    finished backup every kept title fails.
 
     Per disc_type:
     - DVD / BD, every title at or above `min_length_seconds` kept: one
@@ -266,6 +271,7 @@ async def rip_all(
             backup_dir=output_dir / SELECTION_BACKUP_DIRNAME if backup_dir is None else backup_dir,
             on_backup_done=on_backup_done,
             menu=run,
+            drive_free=drive_free,
         )
         return
 
@@ -352,6 +358,7 @@ async def _rip_optical(
     backup_dir: Path,
     on_backup_done: OnBackupDone | None = None,
     menu: _MenuRun | None = None,
+    drive_free: bool = False,
 ) -> None:
     """Pick the DVD/BD strategy: `mkv all` when it rips exactly what is kept,
     backup-then-remux otherwise (track-select plan D1). Tracks with a
@@ -365,7 +372,8 @@ async def _rip_optical(
     menu alone, and the titles are ripped with `mkv all` as they would have
     been. An ISO or folder source is copied from directly, after its titles.
     A menu with no titles (a retry of the menu alone) still needs the backup,
-    a kept one or a new read of the disc."""
+    a kept one or a new read of the disc. `drive_free`: only from a kept
+    backup (see `rip_all`)."""
     # Pre-compute source_ref → track lookup so the rip-side callbacks
     # are O(1). Skip and pre-fail tracks with malformed source_ref.
     track_by_index: dict[int, TrackView] = {}
@@ -428,6 +436,15 @@ async def _rip_optical(
         return
 
     file_source = is_file_source(device_path)
+    if drive_free and scan_titles is None:
+        # Nothing to find the titles in the backup by, and `mkv all` would read the drive.
+        for track in kept.values():
+            if track.id not in skip_track_ids:
+                await on_track_start(track)
+                await on_track_done(track, RipResult(ok=False, error=NO_SCAN_TO_REMUX_BY))
+        if menu is not None:
+            await menu.finish(menu_extract.failed(NO_SCAN_TO_REMUX_BY))
+        return
     menu_dir = backup_dir.parent / MENU_DIRNAME
     if menu is not None and scan_titles is None and not file_source:
         # Backup-then-remux finds the titles by the scan; a menu row is made from one, so this never happens.
@@ -443,7 +460,9 @@ async def _rip_optical(
     # from the job page; fork only) is remuxed even below the minimum, which
     # only the per-title path can do: `mkv all` never writes it.
     any_length = sorted(idx for idx, t in kept.items() if t.any_length and idx not in eligible_source_indexes)
-    titles_by_mkv_all = every_title_kept and not any_length and (file_source or not backup_full_selections)
+    titles_by_mkv_all = (
+        every_title_kept and not any_length and (file_source or not backup_full_selections) and not drive_free
+    )
     fall_back = False
     if scan_titles is not None and (menu_from_backup or not titles_by_mkv_all):
         fall_back = await _rip_kept_titles(
@@ -469,6 +488,7 @@ async def _rip_optical(
             menu=menu if menu_from_backup else None,
             menu_dir=menu_dir,
             menu_only=menu_from_backup and titles_by_mkv_all,
+            drive_free=drive_free,
         )
         if not fall_back:
             if menu is not None and file_source:
@@ -500,6 +520,9 @@ async def _rip_optical(
     if menu is not None and file_source:
         await _menu_from_file_source(device_path, menu_dir, menu)
 
+
+NO_SCAN_TO_REMUX_BY = "The job has no stored disc scan to find its titles in the disc backup by"
+NO_BACKUP_TO_REMUX_FROM = "No finished disc backup to remux from: put the disc back in to rip it"
 
 ENCRYPTED_SOURCE = (
     "The source is still encrypted, and MakeMKV backs up only a drive: rip the disc itself, "
@@ -861,6 +884,7 @@ async def _rip_kept_titles(
     menu: _MenuRun | None = None,
     menu_dir: Path | None = None,
     menu_only: bool = False,
+    drive_free: bool = False,
 ) -> bool:
     """Backup-then-remux (track-select plan D1): rip only the kept titles.
 
@@ -875,7 +899,10 @@ async def _rip_kept_titles(
        reads the disc again. Damage that can't be pinned to clips fails every
        kept title, as a failed backup does.
        A backup an earlier pass of this job finished is reused, so a resume
-       reads the drive no more. An ISO or folder source is read directly.
+       reads the drive no more, once `/raw` is shown to have room for the kept
+       titles. `drive_free` (a remux from the kept backup): with no finished
+       backup, every kept title fails and the drive isn't read. An ISO or
+       folder source is read directly.
     2. The disc menu (`menu`, design v5 A2), when wanted, is copied out of the
        backup into `menu_dir`, before any remux. It fails only when a file the
        copy needs is lost; a backup whose damage can't be named fails it.
@@ -967,10 +994,26 @@ async def _rip_kept_titles(
         reused = _complete_backup(backup_dir)
         if reused is not None:
             source_url = reused
+            # Room for the remuxes alone: the backup is already on disk.
+            shortfall = check_backup_space(
+                backup_dir.parent,
+                titles=[],
+                disc_type=disc_type,
+                kept_bytes=sum(
+                    scan_by_index[idx].size_bytes or pending[idx].expected_size_bytes or 0 for idx in to_rip
+                ),
+                backup_dirname=SELECTION_BACKUP_DIRNAME,
+            )
+            if shortfall is not None:
+                logger.warning("not remuxing from the disc backup: %s", shortfall)
+                return await backup_failed(shortfall)
             logger.info("remuxing %d title(s) from the finished disc backup %s; no drive read", len(to_rip), reused)
             if menu is not None:
                 assert menu_dir is not None
                 await menu.extract(_backup_tree(reused), menu_dir)
+        elif drive_free:
+            logger.warning("no finished disc backup in %s to remux from; the drive isn't read", backup_dir)
+            return await backup_failed(NO_BACKUP_TO_REMUX_FROM)
         else:
             # An unfinished backup from an earlier pass is no use; its space
             # counts as free for the check below.

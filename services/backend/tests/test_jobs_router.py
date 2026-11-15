@@ -228,6 +228,20 @@ def test_abandon_success_emits_with_delete_raw(signing_key: bytes) -> None:
     types = {e["event_type"] for e in hub.events}
     assert {"job.abandoned", "rip.abandoned"} <= types
     assert all(e["payload"]["delete_raw"] is True for e in hub.events)
+    assert all(e["payload"]["off_drive"] is False for e in hub.events)
+
+
+def test_abandon_of_a_remux_says_it_is_off_the_drive(signing_key: bytes) -> None:
+    """The ripper cancels the remux lane's run and never ejects: the drive may hold the next disc."""
+    db = FakeSession()
+    hub = _Hub()
+    app, token = _make_app(signing_key, db, hub)
+    db.rows["jobs"] = [_job(status=JobStatus.REMUXING)]
+    with TestClient(app) as client:
+        r = client.post("/api/jobs/job_01JZXR7K3M5Q8N4VWA00000001/abandon", headers=_auth(token))
+    assert r.status_code == 200
+    assert r.json()["status"] == "abandoned"
+    assert hub.events and all(e["payload"]["off_drive"] is True for e in hub.events)
 
 
 def test_abandon_cancels_parked_applications(signing_key: bytes) -> None:

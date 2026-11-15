@@ -1,6 +1,6 @@
 """Tests for the `rip_progress` summary attached to `JobView` by GET /api/jobs.
 
-Covers the dashboard "Track N of M" line: only ripping jobs get a summary,
+Covers the dashboard "Track N of M" line: only ripping (or remuxing) jobs get a summary,
 the current-track ordinal is 1-based among tracks sorted by `Track.index`,
 and DONE/FAILED counts come straight off the rows.
 """
@@ -85,10 +85,11 @@ def _make_track(track_id: str, *, job_id: str, index: int, status: TrackStatus) 
     )
 
 
-def test_ripping_job_with_in_progress_track_returns_summary(signing_key: bytes) -> None:
+@pytest.mark.parametrize("status", [JobStatus.RIPPING, JobStatus.REMUXING])
+def test_ripping_job_with_in_progress_track_returns_summary(signing_key: bytes, status: JobStatus) -> None:
     db = FakeSession()
     _seed_admin(db)
-    db.rows["jobs"] = [_make_job("job_01JZXR7K3M5Q8N4VWA00000002", status=JobStatus.RIPPING)]
+    db.rows["jobs"] = [_make_job("job_01JZXR7K3M5Q8N4VWA00000002", status=status)]
     # 8 tracks: 0..1 done, 2 in-progress, 3..7 queued. Indexes intentionally
     # out of insertion order to prove `_summarize_rip_progress` sorts by
     # `Track.index` before computing the ordinal.

@@ -3,6 +3,10 @@ from arm_common.enums import (
     TERMINAL_JOB_STATUSES,
     PRE_RIP_JOB_STATUSES,
     NON_TERMINAL_JOB_STATUSES,
+    LIVE_JOB_STATUSES,
+    OFF_DRIVE_JOB_STATUSES,
+    RIP_STARTED_JOB_STATUSES,
+    RIPPER_BUSY_JOB_STATUSES,
     APPLY_OK_JOB_STATUSES,
     APPLY_PARK_JOB_STATUSES,
     POST_RIP_JOB_STATUSES,
@@ -41,9 +45,17 @@ def test_non_terminal_is_pre_rip_plus_ripping():
 
 
 def test_groups_partition_all_statuses():
-    # every JobStatus is in exactly one of terminal / non-terminal
-    assert TERMINAL_JOB_STATUSES | NON_TERMINAL_JOB_STATUSES == frozenset(JobStatus)
+    # every JobStatus is exactly one of terminal / holding its drive / live off the drive
+    assert TERMINAL_JOB_STATUSES | NON_TERMINAL_JOB_STATUSES | OFF_DRIVE_JOB_STATUSES == frozenset(JobStatus)
     assert TERMINAL_JOB_STATUSES & NON_TERMINAL_JOB_STATUSES == frozenset()
+    assert OFF_DRIVE_JOB_STATUSES & (TERMINAL_JOB_STATUSES | NON_TERMINAL_JOB_STATUSES) == frozenset()
+
+
+def test_live_and_ripper_busy_groups():
+    assert OFF_DRIVE_JOB_STATUSES == {JobStatus.REMUXING}
+    assert LIVE_JOB_STATUSES == NON_TERMINAL_JOB_STATUSES | OFF_DRIVE_JOB_STATUSES
+    assert RIPPER_BUSY_JOB_STATUSES == {JobStatus.RIPPING, JobStatus.REMUXING}
+    assert RIP_STARTED_JOB_STATUSES == POST_RIP_JOB_STATUSES | RIPPER_BUSY_JOB_STATUSES
 
 
 def test_resolvable_groups() -> None:

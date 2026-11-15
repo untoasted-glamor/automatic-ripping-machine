@@ -118,14 +118,15 @@ def test_delete_without_a_backup_is_a_no_op(raw_root: Path) -> None:
     assert client.delete(f"/api/jobs/{JOB_ID}/backup", headers=auth).status_code == 204
 
 
-def test_delete_is_refused_while_ripping(raw_root: Path) -> None:
+@pytest.mark.parametrize("status", [JobStatus.RIPPING, JobStatus.REMUXING])
+def test_delete_is_refused_while_the_ripper_uses_it(raw_root: Path, status: JobStatus) -> None:
     backup = _blu_ray_backup(raw_root, complete=False)
-    client, auth = _client(FakeSession(), JobStatus.RIPPING)
+    client, auth = _client(FakeSession(), status)
 
     r = client.delete(f"/api/jobs/{JOB_ID}/backup", headers=auth)
 
     assert r.status_code == 409
-    assert "ripping" in r.json()["detail"]
+    assert f"job is {status.value}" in r.json()["detail"]
     assert backup.is_dir()
 
 

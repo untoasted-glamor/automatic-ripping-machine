@@ -85,6 +85,7 @@ export function statusAccentVar(status: string | null | undefined): string {
 			return 'var(--color-status-scanning)';
 		case 'identified': // queued to rip
 		case 'ripping':
+		case 'remuxing': // titles remuxed from the kept disc backup
 			return 'var(--color-status-ripping)';
 		case 'transcoding':
 			return 'var(--color-status-transcoding)';
@@ -128,6 +129,7 @@ export function statusColor(status: string | null | undefined): string {
 			return 'status-warning';
 		case 'identified': // identified, queued/ready to rip
 		case 'ripping':
+		case 'remuxing': // titles remuxed from the kept disc backup
 			return 'status-active';
 		case 'transcoding':
 			return 'status-processing';
@@ -151,6 +153,7 @@ const STATUS_LABELS: Record<string, string> = {
 	awaiting_review: 'Ready: review',
 	identified: 'Identified',
 	ripping: 'Ripping',
+	remuxing: 'Remuxing',
 	ripped: 'Ripped',
 	ripped_partial: 'Ripped (partial)',
 	ripped_awaiting_identify: 'Ripped (awaiting ID)',

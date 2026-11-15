@@ -48,7 +48,7 @@ from arm_common import (
     with_log_context,
 )
 from arm_common.config_metadata import CONFIG_FIELD_META
-from arm_common.enums import NON_TERMINAL_JOB_STATUSES, REDRAIN_JOB_STATUSES, PreviouslyRippedAction
+from arm_common.enums import LIVE_JOB_STATUSES, REDRAIN_JOB_STATUSES, PreviouslyRippedAction
 from arm_common.schemas import (
     ConfigUpdateRequest,
     ConfigView,
@@ -307,7 +307,7 @@ async def update_config(
 _IDENTITY_SOURCE_KEYS = ("episode_sources", "disc_hint_sources")
 # Ripped jobs are re-resolved only while no session has been applied: once
 # transcodes exist their output paths were built from the identity as it was.
-_RERESOLVE_JOB_STATUSES = NON_TERMINAL_JOB_STATUSES | {JobStatus.RIPPED_AWAITING_IDENTIFY}
+_RERESOLVE_JOB_STATUSES = LIVE_JOB_STATUSES | {JobStatus.RIPPED_AWAITING_IDENTIFY}
 _RERESOLVE_IF_UNAPPLIED_STATUSES = frozenset({JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL})
 
 

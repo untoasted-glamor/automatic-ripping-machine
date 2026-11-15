@@ -2,9 +2,10 @@
 
 Used by POST /api/jobs/{id}/retry-failed: which jobs can rip titles again,
 which titles are left, and arming the retry. With a finished disc backup kept
-in `/raw/<job_id>/.backup/`, the job's drive's ripper is told (`rip.retry`) to
-remux them from it, with no disc; otherwise the retry starts when the disc
-goes back in that drive.
+in `/raw/<job_id>/.backup/`, the job goes to `remuxing` and the job's drive's
+ripper is told (`rip.retry`) to remux them from it, with no disc, beside a rip
+of whatever disc is in the drive; otherwise the retry starts when the disc goes
+back in that drive.
 """
 
 from __future__ import annotations
@@ -33,9 +34,15 @@ class RetryRefused(Exception):
         self.detail = detail
 
 
+def _has_complete_backup(job: Job) -> bool:
+    backup = describe_backup(job.id)
+    return backup is not None and backup.complete
+
+
 async def check_retryable(db: AsyncSession, job: Job) -> None:
     """Raise RetryRefused (409) unless the job is ripped, ripped_partial or failed with a stored scan, ripped on a
-    physical drive that is still enrolled and isn't busy with another disc."""
+    physical drive that is still enrolled. A retry that needs the disc (no finished backup kept) also needs the drive
+    free of another disc; a remux from the backup runs beside one."""
     if job.status not in RETRYABLE_JOB_STATUSES:
         raise RetryRefused(
             status.HTTP_409_CONFLICT,
@@ -49,6 +56,8 @@ async def check_retryable(db: AsyncSession, job: Job) -> None:
             status.HTTP_409_CONFLICT,
             "the job wasn't ripped on a drive that is still enrolled; rip its source again instead",
         )
+    if _has_complete_backup(job):
+        return
     active = (
         (
             await db.execute(
@@ -80,16 +89,18 @@ def remaining_tracks(tracks: Sequence[Track]) -> list[Track]:
 
 async def arm_retry(db: AsyncSession, job: Job, hub: WSHub, remaining: Sequence[Track]) -> bool:
     """Queue `remaining` again (errors cleared), arm the job (`retry_armed`) and, with a finished disc backup
-    kept, tell the drive's ripper to remux them from it. Doesn't commit. Returns whether it rips from the
-    backup."""
+    kept, set it `remuxing` and tell the drive's ripper to remux them from it. Doesn't commit. Returns whether it
+    rips from the backup."""
     for track in remaining:
         track.status = TrackStatus.QUEUED
         track.last_error = None
         db.add(track)
     job.metadata_json = with_flags(job.metadata_json, retry_armed=True)
+    from_backup = _has_complete_backup(job)
+    if from_backup:
+        # Off the drive: the drive's next disc gets its own job meanwhile.
+        job.status = JobStatus.REMUXING
     db.add(job)
-    backup = describe_backup(job.id)
-    from_backup = backup is not None and backup.complete
     if from_backup:
         await hub.emit(
             topic=f"ripper.commands.{job.drive_id}",

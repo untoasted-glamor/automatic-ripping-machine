@@ -109,6 +109,11 @@ class JobStatus(StrEnum):
     # promotes this to RIPPED (not IDENTIFIED). Resolvable via the
     # /resolve endpoint just like AWAITING_USER_ID.
     RIPPED_AWAITING_IDENTIFY = "ripped_awaiting_identify"
+    # Remuxing titles from the job's kept disc backup (fork only): a retry of
+    # its failed or newly kept titles. The disc has left the drive, so the job
+    # doesn't hold it (not in NON_TERMINAL_JOB_STATUSES): the drive's ripper
+    # runs the remux in its own lane, beside a rip of the next disc.
+    REMUXING = "remuxing"
     ABANDONED = "abandoned"
     FAILED = "failed"
 
@@ -133,7 +138,15 @@ PRE_RIP_JOB_STATUSES: frozenset[JobStatus] = frozenset(
         JobStatus.AWAITING_REVIEW,
     }
 )
+# A job that holds its drive: at most one per drive.
 NON_TERMINAL_JOB_STATUSES: frozenset[JobStatus] = PRE_RIP_JOB_STATUSES | frozenset({JobStatus.RIPPING})
+# Live, but the disc has left the drive (fork only): the drive's next disc gets
+# its own job while this one finishes from the kept disc backup.
+OFF_DRIVE_JOB_STATUSES: frozenset[JobStatus] = frozenset({JobStatus.REMUXING})
+# Every job that isn't finished: abandonable, and its drive's ripper still works for it.
+LIVE_JOB_STATUSES: frozenset[JobStatus] = NON_TERMINAL_JOB_STATUSES | OFF_DRIVE_JOB_STATUSES
+# The ripper is ripping or remuxing for the job (a ripper doing so is busy).
+RIPPER_BUSY_JOB_STATUSES: frozenset[JobStatus] = frozenset({JobStatus.RIPPING, JobStatus.REMUXING})
 
 # Identity edits (POST /jobs/{id}/resolve). PROMOTE flips status (to IDENTIFIED,
 # or RIPPED for a ripped placeholder); PRESERVE edits identity in place.
@@ -166,7 +179,7 @@ POST_RIP_JOB_STATUSES: frozenset[JobStatus] = frozenset(
 )
 # The ripper has taken the job's keep/drop set (`Track.excluded`) at rip-start,
 # so re-including a title that has no file can no longer get it ripped.
-RIP_STARTED_JOB_STATUSES: frozenset[JobStatus] = POST_RIP_JOB_STATUSES | frozenset({JobStatus.RIPPING})
+RIP_STARTED_JOB_STATUSES: frozenset[JobStatus] = POST_RIP_JOB_STATUSES | RIPPER_BUSY_JOB_STATUSES
 # Jobs whose parked applications are re-drained when transcoding is re-enabled:
 # the rip is done and identity is known, so the only thing that held an encode
 # application parked was the toggle. Pre-rip jobs (identified, awaiting review)

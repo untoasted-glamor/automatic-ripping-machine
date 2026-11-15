@@ -1051,6 +1051,65 @@
         }
       }
     },
+    "/api/ripper/drives/{drive_id}/remux-job": {
+      "get": {
+        "tags": [
+          "ripper"
+        ],
+        "summary": "Get Remux Job",
+        "description": "The oldest job on this drive remuxing from its kept disc backup, if any.\n\nThe idle ripper's pickup for its remux lane: covers a missed `rip.retry`, a ripper restart mid-remux, and a\nretry started while the lane was busy. Off the drive, so it is answered with or without a disc seated. 404\nwhen the drive is unknown or nothing is remuxing.",
+        "operationId": "get_remux_job_api_ripper_drives__drive_id__remux_job_get",
+        "parameters": [
+          {
+            "name": "drive_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Drive Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/ripper/drives/{drive_id}/held-job": {
       "get": {
         "tags": [
@@ -1901,7 +1960,7 @@
           "jobs"
         ],
         "summary": "Retry Failed",
-        "description": "Rip the job's kept titles that have no file (track-select plan S15):\nthe ones that failed, and the ones left out before the rip and kept since.\n\nFailed titles go back to `queued` (their error cleared; `attempts` counts\non when the retry starts them), and the job is armed (`retry_armed`). Its\nDONE titles and their files are left as they are.\n\nWith a finished disc backup kept in `/raw/<job_id>/.backup/`, the job's\ndrive's ripper is told (`rip.retry`) to remux them from it, with no disc.\nOtherwise the retry starts when the disc goes back in that drive: identify\nfinds the armed job by fingerprint and rips it.\n\n409 unless the job is ripped, ripped_partial or failed with a stored scan,\nripped on a physical drive that isn't busy with another disc; 422 when\nevery kept title already has its file.",
+        "description": "Rip the job's kept titles that have no file (track-select plan S15):\nthe ones that failed, and the ones left out before the rip and kept since.\n\nFailed titles go back to `queued` (their error cleared; `attempts` counts\non when the retry starts them), and the job is armed (`retry_armed`). Its\nDONE titles and their files are left as they are.\n\nWith a finished disc backup kept in `/raw/<job_id>/.backup/`, the job goes\nto `remuxing` and its drive's ripper is told (`rip.retry`) to remux them\nfrom it, with no disc, beside a rip of whatever disc is in the drive.\nOtherwise the retry starts when the disc goes back in that drive: identify\nfinds the armed job by fingerprint and rips it.\n\n409 unless the job is ripped, ripped_partial or failed with a stored scan,\nripped on a physical drive still enrolled (and, for a retry that needs the\ndisc, not busy with another one); 422 when every kept title already has\nits file.",
         "operationId": "retry_failed_api_jobs__job_id__retry_failed_post",
         "parameters": [
           {
@@ -2091,7 +2150,7 @@
           "jobs"
         ],
         "summary": "Delete Job Backup",
-        "description": "Delete the job's raw disc backup (`/raw/{job_id}/.backup/`).\n\nThe ripper keeps it only when a kept title failed to remux, so a retry\nneeds no disc; deleting it frees the space (~25\u201350 GB for a Blu-ray) at\nthe cost of re-reading the disc for that retry. The rip files and the\njob stay. Refused while the job is ripping (the ripper is writing or\nreading the backup); a job with no backup is a no-op.",
+        "description": "Delete the job's raw disc backup (`/raw/{job_id}/.backup/`).\n\nThe ripper keeps it only when a kept title failed to remux, so a retry\nneeds no disc; deleting it frees the space (~25\u201350 GB for a Blu-ray) at\nthe cost of re-reading the disc for that retry. The rip files and the\njob stay. Refused while the job is ripping or remuxing (the ripper is\nwriting or reading the backup); a job with no backup is a no-op.",
         "operationId": "delete_job_backup_api_jobs__job_id__backup_delete",
         "parameters": [
           {
@@ -15245,6 +15304,7 @@
           "ripped_partial",
           "awaiting_review",
           "ripped_awaiting_identify",
+          "remuxing",
           "abandoned",
           "failed"
         ],

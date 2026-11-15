@@ -66,6 +66,18 @@ RESOLUTION_WS_FIRST_WAIT_SECONDS = 5.0
 MENU_NOT_COPIED = "The rip ended before the disc menu was copied"
 
 
+@dataclass
+class _RipRun:
+    """One running rip's own state. A disc rip and a remux from a kept disc
+    backup can run at once (the remux lane), so it isn't kept on the
+    controller. `drive_released`: the rip no longer uses the drive, from the
+    start for a remux, or once backup-then-remux has ejected its disc. The
+    drive is then the operator's: no drop detection, no second eject, and a
+    disc inserted meanwhile is the next one."""
+
+    drive_released: bool
+
+
 @dataclass(frozen=True)
 class _WaitSpec:
     """Parameterizes the park-and-wait machine for a held job.
@@ -227,11 +239,15 @@ class JobController:
         # sync); kept here so overlapping abandon signals don't stack
         # umount/eject subprocess retries. Set inside `_spawn_eject` only.
         self._eject_task: asyncio.Task[None] | None = None
-        # True from the moment a rip gave its disc back after the backup
-        # (backup-then-remux: the remuxes only read the backup) until that
-        # rip ends. The drive is then the operator's: no drop detection, no
-        # second eject, and a disc inserted meanwhile is the next one.
-        self._drive_released = False
+        # The disc lane's running rip (`_execute_rip`), for `drive_released`.
+        self._disc_run: _RipRun | None = None
+        # The remux lane (fork only): `rip.retry` remuxes a job's titles from
+        # its kept disc backup beside a rip of the disc in the drive, one
+        # remux at a time, with its own lock, task and job id.
+        self._remux_lock = asyncio.Lock()
+        self._remux_task: asyncio.Task[None] | None = None
+        self._remux_job_id: str | None = None
+        self._remux_spawned: set[asyncio.Task[None]] = set()
 
     @property
     def _device_path(self) -> str | None:
@@ -246,8 +262,19 @@ class JobController:
 
     @property
     def drive_released(self) -> bool:
-        """The running rip has ejected its disc and no longer uses the drive."""
-        return self._drive_released
+        """The disc lane's running rip has ejected its disc and no longer uses the drive."""
+        return self._disc_run is not None and self._disc_run.drive_released
+
+    @property
+    def remux_idle(self) -> bool:
+        """No remux from a kept disc backup is running (the remux lane is free)."""
+        return not self._remux_lock.locked()
+
+    def start_remux(self, job_id: str) -> None:
+        """Run `handle_retry` for `job_id` in the background (the WS `rip.retry`, and the heartbeat's idle pickup)."""
+        task = asyncio.create_task(self.handle_retry(job_id))
+        self._remux_spawned.add(task)
+        task.add_done_callback(self._remux_spawned.discard)
 
     @property
     def scan_activity(self) -> RipperScanActivity | None:
@@ -333,7 +360,7 @@ class JobController:
             if not isinstance(job_id, str):
                 logger.warning("rip.retry without job_id payload: %s", payload)
                 return
-            asyncio.create_task(self.handle_retry(job_id))
+            self.start_remux(job_id)
         elif envelope.event_type == "job.abandoned":
             payload = envelope.payload if isinstance(envelope.payload, dict) else {}
             job_id = payload.get("job_id")
@@ -341,7 +368,7 @@ class JobController:
             if not isinstance(job_id, str):
                 logger.warning("job.abandoned without job_id payload: %s", payload)
                 return
-            self._handle_abandon(job_id, delete_raw=delete_raw)
+            self._handle_abandon(job_id, delete_raw=delete_raw, off_drive=bool(payload.get("off_drive")))
             # Also wake any `_await_resolution` waiter — abandoning a parked
             # job needs to unstick the pipeline the same way `identify.resolved`
             # does. The waiter polls and decides based on the new job status.
@@ -351,11 +378,13 @@ class JobController:
         else:
             logger.debug("ws command ignored: type=%s", envelope.event_type)
 
-    def _handle_abandon(self, job_id: str, *, delete_raw: bool) -> None:
-        """Cancel the active pipeline if it owns this job, optionally wipe
-        `/raw/<job_id>/`, then give the disc back. Runs synchronously from
-        the WS handler; cancel + rmtree are both fast and don't need
-        awaitable plumbing (eject spawns as a task).
+    def _handle_abandon(self, job_id: str, *, delete_raw: bool, off_drive: bool = False) -> None:
+        """Cancel the active pipeline if it owns this job (or the remux lane's
+        run, if that does), optionally wipe `/raw/<job_id>/`, then give the
+        disc back. Runs synchronously from the WS handler; cancel + rmtree are
+        both fast and don't need awaitable plumbing (eject spawns as a task).
+        `off_drive`: the job was remuxing from its disc backup, its disc long
+        gone; whatever disc is in the drive now isn't its to eject.
 
         rmtree on Linux is safe even if makemkvcon still has file handles
         open: the directory entries are removed, existing fds keep working
@@ -366,6 +395,10 @@ class JobController:
         if active is not None and owns:
             logger.info("job.abandoned: cancelling active task for job_id=%s", job_id)
             active.cancel()
+        remux = self._remux_task
+        if remux is not None and self._remux_job_id == job_id and not remux.done():
+            logger.info("job.abandoned: cancelling the remux for job_id=%s", job_id)
+            remux.cancel()
         if delete_raw:
             target = RAW_ROOT / job_id
             try:
@@ -386,7 +419,9 @@ class JobController:
         idle = active is None or active.done()
         # A rip that already gave its disc back may have a new disc in the
         # tray by now; that one isn't this job's to eject.
-        if (owns and not self._drive_released) or (idle and self._disc_seated()):
+        if off_drive:
+            return
+        if (owns and not self.drive_released) or (idle and self._disc_seated()):
             self._spawn_eject()
 
     def _disc_seated(self) -> bool:
@@ -424,20 +459,21 @@ class JobController:
         await self._run_pipeline(self._device_path, pending_session_id=session_id)
 
     async def handle_retry(self, job_id: str) -> None:
-        """`rip.retry`: remux a ripped job's failed titles from the disc backup
-        it kept (POST /api/jobs/{id}/retry-failed, track-select plan S15). No
-        disc is read, so none has to be in the drive, and none is ejected. A
-        busy drive ignores it: the job stays armed, and its disc going back in
-        starts the retry instead."""
-        if self.is_active:
-            logger.info("rip.retry for job_id=%s ignored: drive busy", job_id)
+        """`rip.retry`: remux a `remuxing` job's titles from the disc backup it
+        kept (POST /api/jobs/{id}/retry-failed, track-select plan S15). No disc
+        is read, so none has to be in the drive, and none is ejected. It runs
+        in the remux lane, beside a rip of whatever disc is in the drive, one
+        remux at a time. A busy lane ignores it: the job stays `remuxing`, and
+        the heartbeat's idle pickup (`GET .../remux-job`) starts it later."""
+        if not self.remux_idle:
+            logger.info("rip.retry for job_id=%s waits: another remux is running", job_id)
             return
         if not (RAW_ROOT / job_id / SELECTION_BACKUP_DIRNAME / BACKUP_COMPLETE_MARKER).is_file():
             logger.warning("rip.retry for job_id=%s ignored: no finished disc backup", job_id)
             return
-        async with self._active_lock:
-            self._active_task = asyncio.current_task()
-            self._active_job_id = job_id
+        async with self._remux_lock:
+            self._remux_task = asyncio.current_task()
+            self._remux_job_id = job_id
             try:
                 with with_log_context(job_id=job_id):
                     await refresh_makemkv_key(key=await self._configured_makemkv_key())
@@ -454,8 +490,8 @@ class JobController:
             except httpx.HTTPStatusError as e:
                 logger.error("rip.retry for job_id=%s refused by the backend (%s)", job_id, e.response.status_code)
             finally:
-                self._active_task = None
-                self._active_job_id = None
+                self._remux_task = None
+                self._remux_job_id = None
 
     async def handle_disc_inserted(self, device_path: str) -> None:
         if self.is_active:
@@ -973,14 +1009,19 @@ class JobController:
         rip_start: RipStartResponse,
         drive_free: bool = False,
     ) -> None:
-        """`drive_free`: the rip reads no drive (a retry from a kept backup),
-        so the drive counts as given back from the start."""
-        self._drive_released = drive_free
+        """`drive_free`: the rip reads no drive (a remux from a kept backup, in
+        the remux lane), so the drive counts as given back from the start."""
+        run = _RipRun(drive_released=drive_free)
+        if not drive_free:
+            self._disc_run = run
         try:
-            await self._rip_and_eject(job_id=job_id, disc_type=disc_type, device_path=device_path, rip_start=rip_start)
+            await self._rip_and_eject(
+                job_id=job_id, disc_type=disc_type, device_path=device_path, rip_start=rip_start, run=run
+            )
         finally:
             # Also on an abandon (cancel): the next job owns the drive again.
-            self._drive_released = False
+            if self._disc_run is run:
+                self._disc_run = None
 
     async def _rip_and_eject(
         self,
@@ -989,8 +1030,11 @@ class JobController:
         disc_type: DiscType,
         device_path: str,
         rip_start: RipStartResponse,
+        run: _RipRun,
     ) -> None:
         output_dir = RAW_ROOT / job_id
+        # A remux from the kept disc backup: it never reads the drive.
+        drive_free = run.drive_released
         output_dir.mkdir(parents=True, exist_ok=True)
         tracks = list(rip_start.tracks)
         menu = _MenuRow(self, job_id, rip_start.extract_menu.track_id) if rip_start.extract_menu is not None else None
@@ -999,7 +1043,7 @@ class JobController:
         # remaining title (D-133). ISO and folder sources have no bus to drop.
         resumable = (
             disc_type in (DiscType.DVD, DiscType.BLURAY)
-            and not self._drive_released
+            and not drive_free
             and not is_file_source(device_path)
             and not all(t.kind in (TrackKind.DISC_BACKUP, TrackKind.DATA_DUMP) for t in tracks)
         )
@@ -1009,11 +1053,13 @@ class JobController:
         unfinished: set[str] = set()
         # A retry's DONE titles own their files from the first rip.
         kept: set[Path] = {Path(t.output_path) for t in tracks if t.status == TrackStatus.DONE and t.output_path}
-        if rip_start.retry:
+        if rip_start.retry or drive_free:
             # Retry the failed titles only (POST /api/jobs/{id}/retry-failed):
             # DONE tracks count as left out, so backup-then-remux rips just
             # the rest, into a folder of its own (a remux names its file by
             # disc title, which can clash with the first rip's `mkv all` names).
+            # So does any remux from the backup: one re-run after a ripper
+            # restart never redoes the titles it already finished.
             tracks = [t.model_copy(update={"excluded": True}) if t.status == TrackStatus.DONE else t for t in tracks]
         # IN_PROGRESS is sent once per track across every pass.
         started: set[str] = set()
@@ -1046,7 +1092,7 @@ class JobController:
                         result.size_bytes,
                         result.duration_seconds,
                     )
-                elif resumable and not self._drive_released and (lost.is_set() or self._drive_gone(rip_path)):
+                elif resumable and not run.drive_released and (lost.is_set() or self._drive_gone(rip_path)):
                     # Not this title's fault: the drive went away under it.
                     # Leave it for the resume rather than failing it.
                     lost.set()
@@ -1084,7 +1130,7 @@ class JobController:
             # Backup-then-remux has read the disc; the remuxes only read the
             # backup. Give the disc back now, and stop watching the drive so
             # an open tray or a new disc is never taken for a drop.
-            self._drive_released = True
+            run.drive_released = True
             if watcher is not None:
                 watcher.cancel()
             logger.info("disc backup finished; ejecting before the remuxes")
@@ -1114,6 +1160,7 @@ class JobController:
                     # Until a pass settles it: a resume after the drive
                     # dropped during the backup copies it then.
                     menu=menu if menu is not None and not menu.settled else None,
+                    drive_free=drive_free,
                 )
             finally:
                 if watcher is not None:
@@ -1153,8 +1200,9 @@ class JobController:
         completed = await self._rip_complete_with_retry(job_id)
         logger.info("rip-complete job_id=%s status=%s", job_id, completed.status.value)
 
-        if self._drive_released:
-            # Ejected after the backup; the tray may hold the next disc by now.
+        if run.drive_released:
+            # Ejected after the backup (or never read, for a remux); the tray
+            # may hold the next disc by now.
             return
         # Eject the node the drive is at NOW — it may have renumbered during
         # the rip (USB replug); the path captured at rip start is a hint only.

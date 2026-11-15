@@ -23,7 +23,13 @@ from typing import Literal, NamedTuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
-from arm_common.enums import JobStatus, NON_TERMINAL_JOB_STATUSES, POST_RIP_JOB_STATUSES, PRE_RIP_JOB_STATUSES
+from arm_common.enums import (
+    JobStatus,
+    NON_TERMINAL_JOB_STATUSES,
+    OFF_DRIVE_JOB_STATUSES,
+    POST_RIP_JOB_STATUSES,
+    PRE_RIP_JOB_STATUSES,
+)
 from arm_common.schemas.job_metadata import flag_is_set
 from arm_common.models.disc_fingerprint import DiscFingerprint
 from arm_common.models.job import Job
@@ -111,7 +117,8 @@ async def find_previous_rips(
     fingerprints: Sequence[tuple[str, str]],
 ) -> list[Job]:
     """Every earlier rip of this disc, newest first: jobs on any drive in
-    POST_RIP_JOB_STATUSES sharing any (algo, value) fingerprint with the scan.
+    POST_RIP_JOB_STATUSES, or finishing off the drive from their disc backup
+    (OFF_DRIVE_JOB_STATUSES), sharing any (algo, value) fingerprint with the scan.
     Failed and abandoned jobs never count; deleting a job deletes its
     fingerprints, so a deleted rip no longer matches.
     """
@@ -135,7 +142,7 @@ async def find_previous_rips(
             await session.execute(
                 select(Job)
                 .where(col(Job.id).in_(tuple(job_ids)))
-                .where(col(Job.status).in_(tuple(POST_RIP_JOB_STATUSES)))
+                .where(col(Job.status).in_((*POST_RIP_JOB_STATUSES, *OFF_DRIVE_JOB_STATUSES)))
             )
         )
         .scalars()

@@ -313,15 +313,14 @@ def test_delete_drive_404(signing_key: bytes) -> None:
     assert r.status_code == 404
 
 
-def test_delete_drive_with_active_job_409(signing_key: bytes) -> None:
+@pytest.mark.parametrize("job_status", [JobStatus.RIPPING, JobStatus.REMUXING])
+def test_delete_drive_with_active_job_409(signing_key: bytes, job_status: JobStatus) -> None:
     db = FakeSession()
     db.rows["users"] = [User(id="usr_admin", username="admin", password_hash="x", password_must_change=False)]
     db.rows.setdefault("drives", []).append(
         Drive(id="drv_1", device_path="/dev/sr0", hostname="h1", lifecycle=DriveLifecycle.DETECTED)
     )
-    db.rows.setdefault("jobs", []).append(
-        Job(id="job_1", drive_id="drv_1", status=JobStatus.RIPPING, disc_type=DiscType.DVD)
-    )
+    db.rows.setdefault("jobs", []).append(Job(id="job_1", drive_id="drv_1", status=job_status, disc_type=DiscType.DVD))
     app, token = _make_app(signing_key, db)
     with TestClient(app) as client:
         r = client.delete("/api/drives/drv_1", headers=_auth(token))

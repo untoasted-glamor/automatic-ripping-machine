@@ -171,6 +171,15 @@ class BackendClient:
         r.raise_for_status()
         return JobView.model_validate(r.json())
 
+    async def get_remux_job(self, drive_id: str) -> JobView | None:
+        """The oldest job on this drive remuxing from its kept disc backup (the remux lane's idle pickup). None on
+        404."""
+        r = await self._client.get(f"/api/ripper/drives/{drive_id}/remux-job")
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return JobView.model_validate(r.json())
+
     async def get_held_job(self, drive_id: str) -> HeldJobView | None:
         """Boot-probe lookup for a disc held in AWAITING_REVIEW (timed review
         gate). Returns the held job + its paused flag, or None on 404."""

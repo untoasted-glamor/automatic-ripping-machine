@@ -102,7 +102,8 @@ from arm_common.schemas import (
     TranscodeTaskView,
 )
 from arm_common.enums import (
-    NON_TERMINAL_JOB_STATUSES,
+    LIVE_JOB_STATUSES,
+    RIPPER_BUSY_JOB_STATUSES,
     POST_RIP_JOB_STATUSES,
     RESOLVABLE_JOB_STATUSES,
     RESOLVABLE_PROMOTE_JOB_STATUSES,
@@ -323,7 +324,7 @@ async def list_jobs(
     # dashboard's "Track N of M" line without an N+1 fetch. Skipped
     # entirely when no job in the page is ripping (which is the common
     # case on the recent-jobs slice).
-    ripping_ids = [j.id for j in jobs if j.status == JobStatus.RIPPING]
+    ripping_ids = [j.id for j in jobs if j.status in RIPPER_BUSY_JOB_STATUSES]
     tracks_by_job: dict[str, list[Track]] = {}
     if ripping_ids:
         track_rows = (
@@ -377,7 +378,7 @@ async def list_jobs(
     views: list[JobView] = []
     for j in jobs:
         view = JobView.model_validate(j)
-        if j.status == JobStatus.RIPPING:
+        if j.status in RIPPER_BUSY_JOB_STATUSES:
             view.rip_progress = _summarize_rip_progress(tracks_by_job.get(j.id, []))
         view.transcode_progress = _summarize_transcode_progress(
             sas_by_job.get(j.id, []), transcode_tasks_by_job.get(j.id, []), parked_settled=_parked_apps_are_settled(j)
@@ -550,7 +551,7 @@ async def abandon_job(
     job = (await db.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")
-    if job.status not in NON_TERMINAL_JOB_STATUSES:
+    if job.status not in LIVE_JOB_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"job already in terminal status {job.status.value}",
@@ -645,14 +646,16 @@ async def retry_failed(
     on when the retry starts them), and the job is armed (`retry_armed`). Its
     DONE titles and their files are left as they are.
 
-    With a finished disc backup kept in `/raw/<job_id>/.backup/`, the job's
-    drive's ripper is told (`rip.retry`) to remux them from it, with no disc.
+    With a finished disc backup kept in `/raw/<job_id>/.backup/`, the job goes
+    to `remuxing` and its drive's ripper is told (`rip.retry`) to remux them
+    from it, with no disc, beside a rip of whatever disc is in the drive.
     Otherwise the retry starts when the disc goes back in that drive: identify
     finds the armed job by fingerprint and rips it.
 
     409 unless the job is ripped, ripped_partial or failed with a stored scan,
-    ripped on a physical drive that isn't busy with another disc; 422 when
-    every kept title already has its file.
+    ripped on a physical drive still enrolled (and, for a retry that needs the
+    disc, not busy with another one); 422 when every kept title already has
+    its file.
     """
     job = (await db.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
     if job is None:
@@ -1023,16 +1026,16 @@ async def delete_job_backup(
     The ripper keeps it only when a kept title failed to remux, so a retry
     needs no disc; deleting it frees the space (~25–50 GB for a Blu-ray) at
     the cost of re-reading the disc for that retry. The rip files and the
-    job stay. Refused while the job is ripping (the ripper is writing or
-    reading the backup); a job with no backup is a no-op.
+    job stay. Refused while the job is ripping or remuxing (the ripper is
+    writing or reading the backup); a job with no backup is a no-op.
     """
     job = (await db.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")
-    if job.status == JobStatus.RIPPING:
+    if job.status in RIPPER_BUSY_JOB_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="job is ripping; the ripper is using its raw backup",
+            detail=f"job is {job.status.value}; the ripper is using its raw backup",
         )
     try:
         delete_backup(job.id)
@@ -1246,7 +1249,12 @@ async def update_job(
             # ("skip at transcode").
             if not is_title(track):
                 _check_menu_edit(edit, track)
-            if edit.excluded is False and track.excluded and job.status == JobStatus.RIPPING and not track.output_path:
+            if (
+                edit.excluded is False
+                and track.excluded
+                and job.status in RIPPER_BUSY_JOB_STATUSES
+                and not track.output_path
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=f"{_track_name(track)} has no ripped file; keep it once the rip ends to rip it then",

@@ -188,7 +188,8 @@ def test_with_a_finished_backup_the_ripper_is_told_to_remux(raw_root: Path) -> N
     assert by_id["trk_0"].status == TrackStatus.DONE
     assert by_id["trk_2"].status == TrackStatus.FAILED  # excluded: not kept, not retried
     assert flag_is_set(db.rows["jobs"][0].metadata_json, "retry_armed")
-    assert db.rows["jobs"][0].status == JobStatus.RIPPED_PARTIAL
+    assert db.rows["jobs"][0].status == JobStatus.REMUXING  # off the drive: the next disc gets its own job
+    assert body["job"]["status"] == "remuxing" and body["job"]["actions"]["can_abandon"] is True
     assert hub.events == [
         {
             "topic": "ripper.commands.drv_x",
@@ -209,6 +210,7 @@ def test_without_a_finished_backup_it_waits_for_the_disc(raw_root: Path, backup:
     assert body["from_backup"] is False and body["retried"] == 1
     assert hub.events == []
     assert flag_is_set(db.rows["jobs"][0].metadata_json, "retry_armed")
+    assert db.rows["jobs"][0].status == JobStatus.RIPPED_PARTIAL  # ripping again once the disc is back in
 
 
 def test_a_failed_job_can_retry_too(raw_root: Path) -> None:
@@ -266,9 +268,7 @@ def test_a_retired_drive_is_refused(raw_root: Path) -> None:
     assert _retry(db, _Hub()).status_code == 409
 
 
-def test_a_busy_drive_is_refused(raw_root: Path) -> None:
-    _backup(raw_root, complete=True)
-    db, hub = _db(), _Hub()
+def _busy(db: FakeSession) -> None:
     db.rows["jobs"].append(
         Job(
             id="job_01JZXR7K3M5Q8N4VWA00000002",
@@ -278,12 +278,31 @@ def test_a_busy_drive_is_refused(raw_root: Path) -> None:
         )
     )
 
+
+def test_a_retry_that_needs_the_disc_is_refused_while_the_drive_is_busy(raw_root: Path) -> None:
+    db, hub = _db(), _Hub()
+    _busy(db)
+
     r = _retry(db, hub)
 
     assert r.status_code == 409
     assert "busy with another disc (job job_01JZXR7K3M5Q8N4VWA00000002)" in r.json()["detail"]
     assert hub.events == []
     assert {t.id: t.status for t in db.rows["tracks"]}["trk_1"] == TrackStatus.FAILED
+
+
+def test_a_remux_from_the_backup_runs_beside_another_disc(raw_root: Path) -> None:
+    _backup(raw_root, complete=True)
+    db, hub = _db(), _Hub()
+    _busy(db)
+
+    r = _retry(db, hub)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["from_backup"] is True
+    assert db.rows["jobs"][0].status == JobStatus.REMUXING
+    assert db.rows["jobs"][1].status == JobStatus.AWAITING_REVIEW
+    assert [e["event_type"] for e in hub.events] == ["rip.retry"]
 
 
 def test_nothing_left_to_rip_is_422(raw_root: Path) -> None:
@@ -330,6 +349,18 @@ def test_rip_start_of_an_armed_job_is_a_retry_and_stays_one(raw_root: Path) -> N
     job = db.rows["jobs"][0]
     assert job.status == JobStatus.RIPPING
     assert not flag_is_set(job.metadata_json, "retry_armed")
+    assert flag_is_set(job.metadata_json, "retrying")
+
+
+def test_rip_start_of_a_remux_leaves_it_remuxing(raw_root: Path) -> None:
+    db = _armed_db(JobStatus.REMUXING)
+
+    r = _ripper(db, _Hub()).post(f"/api/ripper/jobs/{JOB_ID}/rip-start", headers=_SERVICE_AUTH)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["retry"] is True
+    job = db.rows["jobs"][0]
+    assert job.status == JobStatus.REMUXING  # never `ripping`: the drive may be ripping its next disc
     assert flag_is_set(job.metadata_json, "retrying")
 
 
@@ -480,10 +511,13 @@ async def test_no_session_applied_means_nothing_to_fan_out(tmp_path: Path) -> No
     assert await fan_out_retried_tracks(db, db.rows["jobs"][0], None) == 0  # type: ignore[arg-type]
 
 
-def test_rip_complete_of_a_retry_clears_it_and_fans_out(raw_root: Path, tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("status", [JobStatus.RIPPING, JobStatus.REMUXING])
+def test_rip_complete_of_a_retry_clears_it_and_fans_out(
+    raw_root: Path, tmp_path: Path, monkeypatch, status: JobStatus
+) -> None:
     backend_config.settings.MEDIA_ROOT = str(tmp_path)
     db = _armed_db()
-    db.rows["jobs"][0].status = JobStatus.RIPPING
+    db.rows["jobs"][0].status = status
     db.rows["jobs"][0].metadata_json = {"scan_result": _SCAN, "flags": {"retrying": True}}
     db.rows["tracks"][1].status = TrackStatus.DONE
     db.rows["tracks"][1].output_path = f"/raw/{JOB_ID}/retry-1/D1_t01.mkv"

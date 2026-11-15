@@ -30,7 +30,13 @@
 	import MakeTextSubtitlesButton from '$lib/components/MakeTextSubtitlesButton.svelte';
 	import TaskKindChip from '$lib/components/TaskKindChip.svelte';
 	import { effectiveJobStatus, isPartialComplete } from '$lib/utils/job-status';
-	import { isAwaitingIdentity, isLive, isPostRipStatus, isPreRipStatus } from '$lib/utils/job-status-groups';
+	import {
+		isAwaitingIdentity,
+		isLive,
+		isPostRipStatus,
+		isPreRipStatus,
+		isRipperBusyStatus
+	} from '$lib/utils/job-status-groups';
 	import {
 		isDiscMenu,
 		isRetryArmed,
@@ -339,8 +345,8 @@
 	});
 
 	// Live rip progress for this job (the same ripper.progress feed the
-	// dashboard uses): subscribed only while the job is ripping.
-	let ripping = $derived(detail?.job.status === 'ripping');
+	// dashboard uses): subscribed only while the job is ripping or remuxing.
+	let ripping = $derived(isRipperBusyStatus(detail?.job.status));
 	let liveProgress = $derived(detail ? (ripProgress.value[detail.job.id] ?? null) : null);
 	let liveTransfer = $derived(formatTransfer(liveProgress));
 	$effect(() => {
@@ -401,7 +407,7 @@
 		{@const tracks = d.tracks}
 		{@const keptCount = titleTracks(tracks).filter((t) => !t.excluded).length}
 		{@const preRip = isPreRipStatus(job.status)}
-		{@const ripStarted = job.status === 'ripping' || isPostRipStatus(job.status)}
+		{@const ripStarted = isRipperBusyStatus(job.status) || isPostRipStatus(job.status)}
 		{@const keepNoun = job.disc_type === 'cd' ? 'tracks' : 'titles'}
 		{@const remaining = tracks.filter(
 			(t) => !t.excluded && (t.status === 'failed' || (t.status === 'queued' && !t.output_path))
@@ -886,7 +892,7 @@
 					{/if}
 					{#if retryNote}
 						<p class="job-detail-retry-note" data-testid="retry-note">{retryNote}</p>
-					{:else if retryArmed && job.status !== 'ripping' && !d.raw_backup?.complete}
+					{:else if retryArmed && !isRipperBusyStatus(job.status) && !d.raw_backup?.complete}
 						<p class="job-detail-retry-note" data-testid="retry-armed">
 							Waiting for the disc: put it back in the drive to rip the remaining titles.
 						</p>
@@ -895,7 +901,7 @@
 						<RawBackupRow
 							jobId={d.job.id}
 							backup={d.raw_backup}
-							ripping={d.job.status === 'ripping'}
+							ripping={isRipperBusyStatus(d.job.status)}
 							canDelete={$isAdmin}
 							ondeleted={() => loadJob()}
 						/>

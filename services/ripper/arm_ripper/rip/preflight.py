@@ -112,7 +112,8 @@ def check_backup_space(
 ) -> str | None:
     """None if the filesystem of `job_dir` (`/raw/<job_id>`) has room for this
     disc's backup plus `kept_bytes` of remuxes, else the error to fail the
-    kept tracks with."""
+    kept tracks with. No `titles` counts no backup: the remuxes from one
+    already on disk."""
     backup_bytes = estimate_backup_bytes(titles, disc_type)
     need = int(backup_bytes * BACKUP_SIZE_MARGIN) + kept_bytes
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -121,10 +122,8 @@ def check_backup_space(
     if free >= need:
         logger.info("space for the backup: need ~%s, %s free on %s", _gb(need), _gb(free), raw_root)
         return None
-    message = (
-        f"not enough space on {raw_root}: need ~{_gb(need)} "
-        f"(disc backup ~{_gb(backup_bytes)} + kept titles ~{_gb(kept_bytes)}), have {_gb(free)} free"
-    )
+    parts = f"disc backup ~{_gb(backup_bytes)} + kept titles ~{_gb(kept_bytes)}" if backup_bytes else "kept titles"
+    message = f"not enough space on {raw_root}: need ~{_gb(need)} ({parts}), have {_gb(free)} free"
     others = kept_backups(raw_root, backup_dirname=backup_dirname, exclude=job_dir)
     if others:
         listed = ", ".join(f"{job} ({_gb(size)})" for job, size in sorted(others.items(), key=lambda kv: -kv[1]))

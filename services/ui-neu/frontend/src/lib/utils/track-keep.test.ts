@@ -64,8 +64,9 @@ describe('the disc menu row', () => {
 });
 
 describe('keepLockedReason', () => {
-	it('locks the boxes only while ripping', () => {
+	it('locks the boxes only while ripping or remuxing', () => {
 		expect(keepLockedReason('ripping')).toBe("Titles can't be changed while the disc is ripping");
+		expect(keepLockedReason('remuxing')).toBe("Titles can't be changed while they are remuxed from the disc backup");
 		expect(keepLockedReason('awaiting_review')).toBeNull();
 		expect(keepLockedReason('ripped')).toBeNull();
 	});

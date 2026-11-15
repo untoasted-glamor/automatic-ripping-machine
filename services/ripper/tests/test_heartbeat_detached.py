@@ -30,9 +30,13 @@ class _Client:
     async def get_current_job(self, drive_id: str):
         return None
 
+    async def get_remux_job(self, drive_id: str):
+        return None
+
 
 class _Controller:
     scan_activity: RipperScanActivity | None = None
+    remux_idle = True
 
     def is_idle(self) -> bool:
         return True
@@ -107,3 +111,26 @@ async def test_push_scan_activity_sends_one_heartbeat_under_the_lock(monkeypatch
     assert client.beats == [DriveMediaStatus.LOADED]
     assert client.scans == [None]
     assert not lock.locked()
+
+
+async def test_a_detached_drive_still_picks_up_a_remux(monkeypatch) -> None:
+    """A remux reads only the kept disc backup, so the lane is fed with no drive at all."""
+    started: list[str] = []
+    asked: list[str] = []
+
+    class _RemuxClient(_Client):
+        async def get_remux_job(self, drive_id: str):
+            asked.append(drive_id)
+            return type("J", (), {"id": "job_remux"})()
+
+    class _RemuxController(_Controller):
+        def start_remux(self, job_id: str) -> None:
+            started.append(job_id)
+
+    async def stop(_s: float) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(ripper_main.asyncio, "sleep", stop)
+    with pytest.raises(asyncio.CancelledError):
+        await ripper_main.heartbeat_loop(_RemuxClient(), "drv_1", DriveHandle(), _RemuxController())  # type: ignore[arg-type]
+    assert asked == ["drv_1"] and started == ["job_remux"]

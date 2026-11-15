@@ -101,7 +101,10 @@ async def test_blank_algo_or_value_fingerprints_short_circuit() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("st", [JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL, JobStatus.RIPPED_AWAITING_IDENTIFY])
+@pytest.mark.parametrize(
+    "st",
+    [JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL, JobStatus.RIPPED_AWAITING_IDENTIFY, JobStatus.REMUXING],
+)
 async def test_previous_rip_matches_a_ripped_job_on_any_drive(st):
     db = FakeSession()
     db.rows["jobs"] = [_job("job_a", drive_id="drv_OTHER", status=st)]

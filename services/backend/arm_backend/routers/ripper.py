@@ -56,6 +56,7 @@ from arm_common import (
 )
 from arm_common.enums import (
     NON_TERMINAL_JOB_STATUSES,
+    RIPPER_BUSY_JOB_STATUSES,
     POST_RIP_JOB_STATUSES,
     DriveKind,
     DriveSourceKind,
@@ -989,7 +990,9 @@ async def rip_start(
         if flag_is_set(job.metadata_json, "retry_armed"):
             job.metadata_json = with_flags(job.metadata_json, retry_armed=False, retrying=True)
             logger.info("rip-start job_id=%s: retrying its failed titles", job.id)
-        if job.status != JobStatus.RIPPING:
+        # A remux from the kept disc backup stays `remuxing`: the disc is gone,
+        # and the drive may be ripping its next one.
+        if job.status not in RIPPER_BUSY_JOB_STATUSES:
             job.status = JobStatus.RIPPING
             if job.started_at is None:
                 job.started_at = datetime.now(timezone.utc)
@@ -1230,6 +1233,35 @@ async def get_current_job(drive_id: str, session: AsyncSession = Depends(get_ses
 
 
 @router.get(
+    "/drives/{drive_id}/remux-job",
+    response_model=JobView,
+    dependencies=[Depends(require_service_token)],
+)
+async def get_remux_job(drive_id: str, session: AsyncSession = Depends(get_session)) -> Job:
+    """The oldest job on this drive remuxing from its kept disc backup, if any.
+
+    The idle ripper's pickup for its remux lane: covers a missed `rip.retry`, a ripper restart mid-remux, and a
+    retry started while the lane was busy. Off the drive, so it is answered with or without a disc seated. 404
+    when the drive is unknown or nothing is remuxing."""
+    drive = (await session.execute(select(Drive).where(col(Drive.id) == drive_id))).scalar_one_or_none()
+    if drive is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown drive_id: {drive_id}")
+    rows = (
+        (
+            await session.execute(
+                select(Job).where(col(Job.drive_id) == drive_id).where(col(Job.status) == JobStatus.REMUXING)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no remuxing job on this drive")
+    # ULIDs sort by creation: the oldest waiting remux goes first.
+    return min(rows, key=lambda j: j.id)
+
+
+@router.get(
     "/drives/{drive_id}/held-job",
     response_model=HeldJobView,
     dependencies=[Depends(require_service_token)],
@@ -1421,7 +1453,7 @@ async def rip_complete(
     session: AsyncSession = Depends(get_session),
     hub: WSHub = Depends(_get_hub),
 ) -> JobView:
-    if job.status != JobStatus.RIPPING:
+    if job.status not in RIPPER_BUSY_JOB_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"job not in ripping state: status={job.status.value}",

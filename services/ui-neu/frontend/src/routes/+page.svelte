@@ -22,6 +22,7 @@
 	import { fadeIn, fadeOut } from '$lib/transitions';
 	import { fade } from 'svelte/transition';
 	import { isAwaitingAction } from '$lib/utils/job-status';
+	import { isRipperBusyStatus } from '$lib/utils/job-status-groups';
 	import { transcoderEnabled } from '$lib/stores/config';
 	import { dashboard } from '$lib/stores/dashboard';
 	import { get } from 'svelte/store';
@@ -80,7 +81,7 @@
 		})
 	);
 	let waitingJobIds = $derived(new Set(waitingJobs.map((j) => j.id)));
-	let nonWaitingActiveJobs = $derived(activeJobs.filter((j: JobView) => j.status?.toLowerCase() === 'ripping'));
+	let nonWaitingActiveJobs = $derived(activeJobs.filter((j: JobView) => isRipperBusyStatus(j.status)));
 	// A sticky review card that promoted to `identified` shows in Waiting, not
 	// also in Finishing — exclude anything currently rendered as a review card.
 	let finishingJobs = $derived(activeJobs.filter((j: JobView) => isAwaitingAction(j) && !waitingJobIds.has(j.id)));

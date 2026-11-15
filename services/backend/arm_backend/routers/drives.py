@@ -14,7 +14,7 @@ from arm_backend.db import get_session
 from arm_backend.drive_scanner import PruneUnavailable, _tunables
 from arm_backend.ripper_manager import RipperManager, RipperManagerError
 from arm_common import Drive, DriveIdentityKind, DriveKind, DriveLifecycle, DriveStatus, Job, Session, User
-from arm_common.enums import NON_TERMINAL_JOB_STATUSES, TERMINAL_JOB_STATUSES
+from arm_common.enums import LIVE_JOB_STATUSES, TERMINAL_JOB_STATUSES
 from arm_common.models._columns import enum_value_str
 from arm_common.models.user import ADMIN_ROLE
 from arm_common.schemas import (
@@ -54,14 +54,11 @@ def _current_job(jobs_for_drive: list[Job]) -> DriveCurrentJobView | None:
 
 
 async def _live_job(db: AsyncSession, drive_id: str) -> Job | None:
-    """A job on this drive its ripper still owns (any non-terminal status)."""
+    """A job on this drive its ripper still owns (any live status, remuxing off the drive included)."""
     return (
         (
             await db.execute(
-                select(Job)
-                .where(col(Job.drive_id) == drive_id)
-                .where(col(Job.status).in_(NON_TERMINAL_JOB_STATUSES))
-                .limit(1)
+                select(Job).where(col(Job.drive_id) == drive_id).where(col(Job.status).in_(LIVE_JOB_STATUSES)).limit(1)
             )
         )
         .scalars()

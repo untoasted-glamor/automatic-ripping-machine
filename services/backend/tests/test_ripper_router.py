@@ -2084,6 +2084,36 @@ def test_current_job_404_unknown_drive() -> None:
     assert "unknown drive_id" in r.json()["detail"]
 
 
+# --- /remux-job (the remux lane's idle pickup) -----------------------------------
+
+
+def test_remux_job_returns_the_oldest_remuxing_job_beside_a_live_disc() -> None:
+    db = FakeSession()
+    db.rows["drives"] = [_drive()]
+    db.rows["jobs"] = [
+        _job("job_01JZXR7K3M5Q8N4VWA0000R02", status=JobStatus.REMUXING, disc_type=DiscType.BLURAY),
+        _job("job_01JZXR7K3M5Q8N4VWA0000R01", status=JobStatus.REMUXING, disc_type=DiscType.BLURAY),
+        _job("job_01JZXR7K3M5Q8N4VWA0000R03", status=JobStatus.RIPPING, disc_type=DiscType.DVD),
+    ]
+    with TestClient(_make_app(db)) as client:
+        r = client.get("/api/ripper/drives/drv_x/remux-job", headers=_SERVICE_AUTH)
+        current = client.get("/api/ripper/drives/drv_x/current-job", headers=_SERVICE_AUTH)
+    assert r.status_code == 200
+    assert r.json()["id"] == "job_01JZXR7K3M5Q8N4VWA0000R01"
+    # The disc in the drive is its own job: a remux never holds the drive.
+    assert current.json()["id"] == "job_01JZXR7K3M5Q8N4VWA0000R03"
+
+
+@pytest.mark.parametrize("drive_id", ["drv_x", "drv_UNKNOWN"])
+def test_remux_job_404_when_nothing_remuxes(drive_id: str) -> None:
+    db = FakeSession()
+    db.rows["drives"] = [_drive()]
+    db.rows["jobs"] = [_job("job_done", status=JobStatus.RIPPED, disc_type=DiscType.DVD)]
+    with TestClient(_make_app(db)) as client:
+        r = client.get(f"/api/ripper/drives/{drive_id}/remux-job", headers=_SERVICE_AUTH)
+    assert r.status_code == 404
+
+
 def test_sdf_status_persists_state() -> None:
     db = FakeSession()
     db.rows["config"] = [_config()]

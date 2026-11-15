@@ -38,7 +38,7 @@ export function isPartialComplete(job: JobLike): boolean {
 	return job.transcode_progress?.state === 'done_partial';
 }
 
-const RIPPING_STATUSES = new Set(['ripping']);
+const RIPPING_STATUSES = new Set(['ripping', 'remuxing']);
 
 /** Count jobs that are genuinely in the disc-rip phase (header "N ripping"). */
 export function countRipping(jobs: JobLike[]): number {

@@ -13,6 +13,7 @@ const FINAL: Record<JobStatus, boolean> = {
 	identified: false,
 	awaiting_review: false,
 	ripping: false,
+	remuxing: false,
 	ripped: false,
 	ripped_partial: false,
 	ripped_awaiting_identify: false,
@@ -45,6 +46,7 @@ const AWAITING_IDENTITY: Record<JobStatus, boolean> = {
 	identified: false,
 	awaiting_review: false,
 	ripping: false,
+	remuxing: false,
 	ripped: false,
 	ripped_partial: false,
 	ripped_awaiting_identify: true,
@@ -63,6 +65,7 @@ const STAGE_BY_STATUS: Record<JobStatus, LifecycleStageId | null> = {
 	identified: 'identifying',
 	awaiting_review: 'identifying',
 	ripping: 'ripping',
+	remuxing: 'ripping',
 	ripped: 'ripping',
 	ripped_partial: 'ripping',
 	ripped_awaiting_identify: 'ripping',
@@ -89,6 +92,7 @@ const POST_RIP: Record<JobStatus, boolean> = {
 	identified: false,
 	awaiting_review: false,
 	ripping: false,
+	remuxing: false,
 	ripped: true,
 	ripped_partial: true,
 	ripped_awaiting_identify: true,
@@ -102,12 +106,20 @@ const PRE_RIP: Record<JobStatus, boolean> = {
 	identified: true,
 	awaiting_review: true,
 	ripping: false,
+	remuxing: false,
 	ripped: false,
 	ripped_partial: false,
 	ripped_awaiting_identify: false,
 	abandoned: false,
 	failed: false
 };
+
+const RIPPER_BUSY = new Set<string>(['ripping', 'remuxing']);
+
+/** The ripper is ripping the disc, or remuxing titles from the job's kept disc backup (the disc already out). */
+export function isRipperBusyStatus(status: string | null | undefined): boolean {
+	return RIPPER_BUSY.has(status?.toLowerCase() ?? '');
+}
 
 /** The rip hasn't started: which titles get ripped can still change. */
 export function isPreRipStatus(status: string): boolean {

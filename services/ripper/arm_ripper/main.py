@@ -124,6 +124,30 @@ async def maybe_reacquire_current_job(
     await controller.pickup(job, device_path)
 
 
+async def maybe_pickup_remux(
+    controller: JobController,
+    *,
+    get_remux_job: Callable[[str], Awaitable[JobView | None]],
+    drive_id: str,
+) -> None:
+    """Idle re-probe for the remux lane: while no remux runs, ask the backend
+    for a job on this drive still `remuxing` from its kept disc backup, and
+    start it in the background. With or without a disc seated: a remux never
+    reads the drive. Covers a missed `rip.retry`, a ripper restart mid-remux,
+    and a retry started while another remux ran."""
+    if not controller.remux_idle:
+        return
+    try:
+        job = await get_remux_job(drive_id)
+    except (httpx.HTTPError, OSError) as exc:
+        logger.warning("remux-job reprobe failed: %s", exc)
+        return
+    if job is None or not controller.remux_idle:
+        return
+    logger.info("picking up job %s remuxing from its disc backup via heartbeat reprobe", job.id)
+    controller.start_remux(job.id)
+
+
 async def send_heartbeat(
     client: BackendClient, drive_id: str, handle: DriveHandle, controller: JobController
 ) -> tuple[DriveMediaStatus, str | None]:
@@ -169,7 +193,8 @@ async def heartbeat_loop(client: BackendClient, drive_id: str, handle: DriveHand
     After each successful heartbeat, maybe_reacquire_current_job checks
     whether the idle ripper should re-acquire a rip-ready job from the
     backend (handles the case where the in-memory wait timed out or the
-    backend restarted while a disc was seated).
+    backend restarted while a disc was seated), and maybe_pickup_remux
+    whether its remux lane should start a job remuxing from its backup.
 
     Each beat also carries the controller's scan activity; the controller
     pushes one at once on every change too (`push_scan_activity`).
@@ -177,6 +202,7 @@ async def heartbeat_loop(client: BackendClient, drive_id: str, handle: DriveHand
     while True:
         try:
             status, device_path = await send_heartbeat(client, drive_id, handle, controller)
+            await maybe_pickup_remux(controller, get_remux_job=client.get_remux_job, drive_id=drive_id)
             if device_path is not None:
                 await maybe_reacquire_current_job(
                     controller,

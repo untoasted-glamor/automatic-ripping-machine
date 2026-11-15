@@ -36,6 +36,11 @@ export function partitionDrives(all: DriveView[]): {
 	};
 }
 
+/** The drive's ripper is remuxing a job's titles from its kept disc backup: the drive itself is free for a disc. */
+export function isRemuxing(d: DriveView): boolean {
+	return d.current_job?.status === 'remuxing';
+}
+
 export function isRipping(d: DriveView): boolean {
 	return d.status === 'ripping' || d.current_job?.status === 'ripping';
 }
@@ -44,7 +49,7 @@ export function isRipping(d: DriveView): boolean {
  *  hides a report whose heartbeat went stale). A live job wins: its own status
  *  says more than "scanning". */
 export function isScanning(d: DriveView): boolean {
-	return d.scan_started_at != null && d.current_job == null;
+	return d.scan_started_at != null && (d.current_job == null || isRemuxing(d));
 }
 
 /** "retry, attempt 2/5" once the scan is past its first attempt, else null. */

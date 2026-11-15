@@ -5,6 +5,8 @@ import {
 	isInProgress,
 	isAwaitingIdentity,
 	isPostRipStatus,
+	isPreRipStatus,
+	isRipperBusyStatus,
 	lifecycleStageFor,
 	LIFECYCLE_FAILURE_STATUSES
 } from '../job-status-groups';
@@ -15,6 +17,7 @@ const ALL: JobStatus[] = [
 	'identified',
 	'awaiting_review',
 	'ripping',
+	'remuxing',
 	'ripped',
 	'ripped_partial',
 	'ripped_awaiting_identify',
@@ -23,7 +26,7 @@ const ALL: JobStatus[] = [
 ];
 
 describe('isInProgress', () => {
-	const IN_PROGRESS = ['created', 'awaiting_user_id', 'identified', 'awaiting_review', 'ripping'];
+	const IN_PROGRESS = ['created', 'awaiting_user_id', 'identified', 'awaiting_review', 'ripping', 'remuxing'];
 	it.each(ALL)('raw status %s with no transcode', (s) => {
 		expect(isInProgress({ status: s, transcode_progress: null })).toBe(IN_PROGRESS.includes(s));
 	});
@@ -83,6 +86,7 @@ describe('lifecycleStageFor', () => {
 		['identified', 'identifying'],
 		['awaiting_review', 'identifying'],
 		['ripping', 'ripping'],
+		['remuxing', 'ripping'],
 		['ripped', 'ripping'],
 		['ripped_partial', 'ripping'],
 		['ripped_awaiting_identify', 'ripping'],
@@ -99,5 +103,20 @@ describe('lifecycleStageFor', () => {
 describe('isPostRipStatus', () => {
 	it.each(ALL)('%s', (s) => {
 		expect(isPostRipStatus(s)).toBe(['ripped', 'ripped_partial', 'ripped_awaiting_identify'].includes(s));
+	});
+});
+
+describe('isPreRipStatus', () => {
+	it.each(ALL)('%s', (s) => {
+		expect(isPreRipStatus(s)).toBe(['created', 'awaiting_user_id', 'identified', 'awaiting_review'].includes(s));
+	});
+});
+
+describe('isRipperBusyStatus', () => {
+	it.each(ALL)('%s', (s) => {
+		expect(isRipperBusyStatus(s)).toBe(s === 'ripping' || s === 'remuxing');
+	});
+	it('takes a missing status', () => {
+		expect(isRipperBusyStatus(undefined)).toBe(false);
 	});
 });

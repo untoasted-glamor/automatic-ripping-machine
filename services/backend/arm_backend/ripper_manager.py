@@ -27,7 +27,8 @@ from sqlmodel import col, select
 from arm_backend.config import Settings
 from arm_backend.docker_probe import TtlProbe, probe_docker
 from arm_backend.iso_library import iso_host_path
-from arm_common import Drive, DriveKind, DriveLifecycle, DriveStatus, Job, JobStatus
+from arm_common import Drive, DriveKind, DriveLifecycle, DriveStatus, Job
+from arm_common.enums import RIPPER_BUSY_JOB_STATUSES
 
 if TYPE_CHECKING:
     from arm_backend.ws.hub import WSHub
@@ -385,7 +386,10 @@ async def reconcile_enrolled_rippers(
         enrolled = list(
             (await db.execute(select(Drive).where(col(Drive.lifecycle) == DriveLifecycle.ENROLLED))).scalars().all()
         )
-        ripping = (await db.execute(select(Job).where(col(Job.status) == JobStatus.RIPPING))).scalars().all()
+        # A ripper ripping or remuxing (from a disc backup) isn't recreated under it.
+        ripping = (
+            (await db.execute(select(Job).where(col(Job.status).in_(tuple(RIPPER_BUSY_JOB_STATUSES))))).scalars().all()
+        )
         busy = frozenset(j.drive_id for j in ripping if j.drive_id)
         try:
             summary = await asyncio.to_thread(manager.reconcile, enrolled, busy=busy)

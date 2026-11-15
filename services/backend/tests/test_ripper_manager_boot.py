@@ -115,10 +115,12 @@ async def test_boot_reconcile_passes_ripping_drives_as_busy() -> None:
     db.rows["jobs"] = [
         Job(id="job_1", drive_id="drv_a", status=JobStatus.RIPPING, disc_type=DiscType.DVD),
         Job(id="job_2", drive_id="drv_b", status=JobStatus.RIPPED, disc_type=DiscType.DVD),
+        # Remuxing from its disc backup: the ripper is busy, though its drive may be idle.
+        Job(id="job_3", drive_id="drv_c", status=JobStatus.REMUXING, disc_type=DiscType.DVD),
     ]
     manager = _StubManager(ReconcileSummary(adopted=["drv_a", "drv_b"]))
     await reconcile_enrolled_rippers(manager, _factory(db), hub=_StubHub())  # type: ignore[arg-type]
-    assert manager.busy == frozenset({"drv_a"})
+    assert manager.busy == frozenset({"drv_a", "drv_c"})
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from arm_backend.auto_session import cancel_parked_applications
 from arm_common import Job, JobStatus
+from arm_common.enums import OFF_DRIVE_JOB_STATUSES
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,12 +27,16 @@ async def abandon_job_transition(db: AsyncSession, hub: WSHub, job: Job, *, dele
       * RIPPING — the ripper has an active scan/identify/rip pipeline. The
         WS handler cancels the asyncio task, which kills the makemkvcon
         subprocess so file handles release on `/raw/<id>/`.
+      * REMUXING (`off_drive` in the payload) — the ripper's remux lane is
+        working from the job's disc backup; its task is cancelled the same
+        way, but the drive is never ejected (it may hold the next disc).
 
     `delete_raw` is plumbed in the WS payload because only the ripper has
     `/raw` mounted; doing the rmtree here would silently no-op. Even when
     there's no active task, the ripper still runs the rmtree against any
     orphaned partial-rip directory.
     """
+    off_drive = job.status in OFF_DRIVE_JOB_STATUSES
     job.status = JobStatus.ABANDONED
     db.add(job)
     # A parked application would otherwise promise "applies when the rip
@@ -44,6 +49,7 @@ async def abandon_job_transition(db: AsyncSession, hub: WSHub, job: Job, *, dele
         "drive_id": job.drive_id,
         "status": job.status.value,
         "delete_raw": delete_raw,
+        "off_drive": off_drive,
     }
     # Tell the ripper: cancel any active rip on this drive matching the
     # job, optionally rmtree /raw/<id>/. Also wakes a parked

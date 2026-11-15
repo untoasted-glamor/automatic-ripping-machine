@@ -508,6 +508,28 @@ describe('DriveCard', () => {
 			expect(screen.queryByTestId('drive-scanning')).not.toBeInTheDocument();
 		});
 
+		it('scans the next disc while an earlier job remuxes from its disc backup', () => {
+			renderDrive({
+				scan_started_at: new Date().toISOString(),
+				scan_attempt: 1,
+				scan_max_attempts: 5,
+				current_job: { id: 'job_1', status: 'remuxing', title: null }
+			});
+			expect(screen.getByTestId('drive-scanning')).toBeInTheDocument();
+		});
+
+		it('essentials variant says Remuxing, not Ripping, while it remuxes from a disc backup', () => {
+			renderComponent(DriveCard, {
+				props: {
+					drive: createDrive({ current_job: { id: 'job_1', status: 'remuxing', title: null } }),
+					variant: 'essentials'
+				}
+			});
+			expect(screen.getByText('Remuxing')).toBeInTheDocument();
+			expect(screen.getByText(/The drive can take the next disc/)).toBeInTheDocument();
+			expect(screen.queryByText('A disc is being ripped right now.')).not.toBeInTheDocument();
+		});
+
 		it('essentials variant says Scanning disc instead of Ready', () => {
 			renderComponent(DriveCard, {
 				props: {

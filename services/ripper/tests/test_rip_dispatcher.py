@@ -2620,7 +2620,12 @@ class _RetryClient:
         return self.job
 
 
-async def test_a_retry_remuxes_only_the_failed_title_from_the_kept_backup(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("disc_lane_busy", "retry"), [(False, True), (True, True), (False, False)], ids=["idle", "disc-busy", "no-retry"]
+)
+async def test_a_retry_remuxes_only_the_failed_title_from_the_kept_backup(monkeypatch, tmp_path, disc_lane_busy, retry):
+    """The remux lane runs beside a rip of the next disc (the disc lane held), never touching the drive.
+    Any remux leaves the DONE titles out, a retry or not; only a retry rips into a folder of its own."""
     import arm_ripper.job_controller as jc_module
     from arm_ripper.drive_handle import DriveHandle
     from arm_ripper.job_controller import JobController
@@ -2645,6 +2650,7 @@ async def test_a_retry_remuxes_only_the_failed_title_from_the_kept_backup(monkey
         for t in tracks
     ]
     client = _RetryClient(job_id, retry_tracks, scan)
+    client.start = client.start.model_copy(update={"retry": retry})
     monkeypatch.setattr(jc_module, "RAW_ROOT", tmp_path)
 
     async def no_key(**_kw: Any) -> None:
@@ -2659,21 +2665,25 @@ async def test_a_retry_remuxes_only_the_failed_title_from_the_kept_backup(monkey
     monkeypatch.setattr(JobController, "_eject_with_retry", eject)
     controller = JobController(client, "drv_x", device_path=DriveHandle("/dev/sr0"))  # type: ignore[arg-type]
 
-    await controller.handle_retry(job_id)
+    if disc_lane_busy:
+        async with controller._active_lock:
+            await controller.handle_retry(job_id)
+    else:
+        await controller.handle_retry(job_id)
 
     assert fake.drive_reads == []
     assert ejected == []
     assert {track_id for track_id, _ in client.patches} == {"trk_1"}
     final = [f for track_id, f in client.patches if track_id == "trk_1"][-1]
     assert final["status"] == TrackStatus.DONE
-    assert Path(final["output_path"]).parent == job / "retry-1"
+    assert Path(final["output_path"]).parent == (job / "retry-1" if retry else job)
     assert {track_id: done[track_id].output_path.read_bytes() for track_id in before} == before
     assert client.completed == [job_id]
     assert (job / ".backup" / ".complete").is_file()  # the play-all is still left out
     assert not controller.drive_released
 
 
-async def test_a_retry_with_no_finished_backup_or_a_busy_drive_does_nothing(monkeypatch, tmp_path):
+async def test_a_retry_with_no_finished_backup_or_a_busy_remux_lane_does_nothing(monkeypatch, tmp_path):
     import arm_ripper.job_controller as jc_module
     from arm_ripper.drive_handle import DriveHandle
     from arm_ripper.job_controller import JobController
@@ -2685,7 +2695,8 @@ async def test_a_retry_with_no_finished_backup_or_a_busy_drive_does_nothing(monk
     await controller.handle_retry("job_none")
     (tmp_path / "job_busy" / ".backup").mkdir(parents=True)
     (tmp_path / "job_busy" / ".backup" / ".complete").write_text("file:/x\n")
-    async with controller._active_lock:
+    async with controller._remux_lock:
+        assert not controller.remux_idle
         await controller.handle_retry("job_busy")
 
     client.rip_start.assert_not_called()
@@ -2723,6 +2734,79 @@ async def test_the_rip_retry_command_starts_the_retry(monkeypatch, tmp_path):
     await asyncio.sleep(0)
 
     assert started == ["job_retry"]
+
+
+async def _kept_backup(monkeypatch, tmp_path: Path) -> tuple[Any, ScanResult, Path]:
+    """A first rip of the Hanako-kun BD with the play-all left out: its backup stays, finished."""
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    job = tmp_path / "job"
+    await _rip_tracks(_exclude(_rip_start_tracks(scan), 7), job, scan_titles=scan.titles, backup_dir=job / ".backup")
+    assert (job / ".backup" / ".complete").is_file()
+    fake.invocations.clear()
+    return fake, scan, job
+
+
+async def test_a_remux_keeping_every_title_remuxes_each_from_the_backup(monkeypatch, tmp_path):
+    """`drive_free`: every eligible title kept would be one `mkv all`, which reads the
+    drive (it may hold the next disc by now); each is remuxed from the backup instead."""
+    fake, scan, job = await _kept_backup(monkeypatch, tmp_path)
+    tracks = _rip_start_tracks(scan)
+
+    reports, _ = await _rip_tracks(
+        tracks, job / "retry-1", scan_titles=scan.titles, backup_dir=job / ".backup", drive_free=True
+    )
+
+    assert set(_results(reports)) == {t.id for t in tracks}
+    assert all(r.ok for r in _results(reports).values())
+    assert fake.drive_reads == []
+    assert sum(inv.command == "mkv" for inv in fake.invocations) == len(tracks)
+
+
+async def test_a_remux_with_no_finished_backup_fails_its_titles_without_reading_the_drive(monkeypatch, tmp_path):
+    from arm_ripper.rip.dispatcher import NO_BACKUP_TO_REMUX_FROM
+
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+
+    reports, _ = await _rip_tracks(tracks, tmp_path / "job", scan_titles=scan.titles, drive_free=True)
+
+    results = _results(reports)
+    assert len(results) == 7 and all(r.error == NO_BACKUP_TO_REMUX_FROM for r in results.values())
+    assert fake.invocations == []
+
+
+async def test_a_remux_with_no_stored_scan_fails_its_titles_without_reading_the_drive(monkeypatch, tmp_path):
+    from arm_ripper.rip.dispatcher import NO_SCAN_TO_REMUX_BY
+
+    fake, scan = await _bd_job(monkeypatch, tmp_path)
+    tracks = _exclude(_rip_start_tracks(scan), 7)
+
+    reports, started = await _rip_tracks(tracks, tmp_path / "job", drive_free=True)
+
+    results = _results(reports)
+    assert len(results) == 7 and all(r.error == NO_SCAN_TO_REMUX_BY for r in results.values())
+    assert sorted(started) == sorted(results)
+    assert fake.invocations == []
+
+
+async def test_a_remux_from_a_kept_backup_checks_room_for_its_titles(monkeypatch, tmp_path):
+    """The backup is already on disk, so only the remuxes need room; short, the titles
+    fail with the numbers and the backup stays for a later retry."""
+    fake, scan, job = await _kept_backup(monkeypatch, tmp_path)
+    tracks = [
+        t if t.index == 7 else t.model_copy(update={"status": TrackStatus.DONE, "excluded": True})
+        for t in _rip_start_tracks(scan)
+    ]
+    _set_free_space(monkeypatch, 1 * _GB)
+
+    reports, _ = await _rip_tracks(
+        tracks, job / "retry-1", scan_titles=scan.titles, backup_dir=job / ".backup", drive_free=True
+    )
+
+    error = _results(reports)["trk_7"].error or ""
+    assert error.startswith(f"not enough space on {tmp_path}: need ~") and "(kept titles)" in error
+    assert fake.invocations == []
+    assert (job / ".backup" / ".complete").is_file()
 
 
 async def test_the_backup_goes_once_no_title_is_left_out_or_failed(monkeypatch, tmp_path):

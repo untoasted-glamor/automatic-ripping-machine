@@ -4,6 +4,7 @@ import {
 	DETACHED_LABEL,
 	NO_SERIAL_LABEL,
 	driveStatusLabel,
+	isRemuxing,
 	isRipping,
 	opticalOnly,
 	partitionDrives,
@@ -82,6 +83,11 @@ describe('utils/drives', () => {
 	it('isRipping reads status or the current job', () => {
 		expect(isRipping(drive({ status: 'ripping' }))).toBe(true);
 		expect(isRipping(drive({ current_job: { id: 'job_1', title: null, status: 'ripping' } }))).toBe(true);
+		// Remuxing from a kept disc backup reads no disc.
+		const remux = drive({ current_job: { id: 'job_1', title: null, status: 'remuxing' } });
+		expect(isRipping(remux)).toBe(false);
+		expect(isRemuxing(remux)).toBe(true);
+		expect(isRemuxing(drive())).toBe(false);
 		expect(isRipping(drive())).toBe(false);
 	});
 });

@@ -2593,7 +2593,7 @@ export type JobStatsResponse = {
 /**
  * JobStatus
  */
-export type JobStatus = 'created' | 'awaiting_user_id' | 'identified' | 'ripping' | 'ripped' | 'ripped_partial' | 'awaiting_review' | 'ripped_awaiting_identify' | 'abandoned' | 'failed';
+export type JobStatus = 'created' | 'awaiting_user_id' | 'identified' | 'ripping' | 'ripped' | 'ripped_partial' | 'awaiting_review' | 'ripped_awaiting_identify' | 'remuxing' | 'abandoned' | 'failed';
 
 /**
  * JobSubtitleOcrChoice
@@ -7183,6 +7183,42 @@ export type GetCurrentJobApiRipperDrivesDriveIdCurrentJobGetResponses = {
 };
 
 export type GetCurrentJobApiRipperDrivesDriveIdCurrentJobGetResponse = GetCurrentJobApiRipperDrivesDriveIdCurrentJobGetResponses[keyof GetCurrentJobApiRipperDrivesDriveIdCurrentJobGetResponses];
+
+export type GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+    };
+    path: {
+        /**
+         * Drive Id
+         */
+        drive_id: string;
+    };
+    query?: never;
+    url: '/api/ripper/drives/{drive_id}/remux-job';
+};
+
+export type GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetError = GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetErrors[keyof GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetErrors];
+
+export type GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: JobView;
+};
+
+export type GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetResponse = GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetResponses[keyof GetRemuxJobApiRipperDrivesDriveIdRemuxJobGetResponses];
 
 export type GetHeldJobApiRipperDrivesDriveIdHeldJobGetData = {
     body?: never;

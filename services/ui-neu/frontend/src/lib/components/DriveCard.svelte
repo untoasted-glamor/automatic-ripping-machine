@@ -9,6 +9,7 @@
 		driveStatusLabel,
 		driveTitle,
 		hasLiveJob,
+		isRemuxing,
 		isRipping,
 		isMediaUnavailable,
 		isScanning,
@@ -423,6 +424,12 @@
 			<StatusStrip tone="busy" title="Ripping" detail="A disc is being ripped right now." />
 		{:else if scanning}
 			<StatusStrip tone="busy" title="Scanning disc..." detail={scanRetry} />
+		{:else if isRemuxing(drive)}
+			<StatusStrip
+				tone="busy"
+				title="Remuxing"
+				detail="Titles are being remuxed from a disc backup. The drive can take the next disc."
+			/>
 		{:else if drive.notice}
 			<!-- e.g. on_previously_ripped = reject ejected a disc; cleared when the
 			     tray closes empty or the next disc is identified. -->

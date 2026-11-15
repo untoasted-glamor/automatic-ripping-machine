@@ -39,7 +39,9 @@ export function keepSummary(tracks: TrackView[], noun = 'titles'): string {
 
 /** Why a track's Keep box can't be changed for a job in `status`, or null. */
 export function keepLockedReason(status: string): string | null {
-	return status === 'ripping' ? "Titles can't be changed while the disc is ripping" : null;
+	if (status === 'ripping') return "Titles can't be changed while the disc is ripping";
+	if (status === 'remuxing') return "Titles can't be changed while they are remuxed from the disc backup";
+	return null;
 }
 
 /** A track never ripped because it was left out before the rip shows as skipped. */

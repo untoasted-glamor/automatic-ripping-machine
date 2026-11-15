@@ -664,6 +664,38 @@ async def test_abandon_stale_job_during_other_rip_does_not_eject(eject_spy):
     other.cancel()
 
 
+async def test_abandoning_a_remux_cancels_it_and_never_ejects(eject_spy, monkeypatch):
+    """`off_drive`: the remux lane's run for the job is cancelled; a disc seated in the
+    idle drive is the next one, not this job's, and the disc lane's rip is left alone."""
+    monkeypatch.setattr(jc_module, "read_drive_status", lambda _d: jc_module.DriveState.DISC_OK)
+    controller = JobController(FakeClient(), "drv_test", device_path="/dev/sr0")
+    remux = asyncio.create_task(asyncio.sleep(3600))
+    controller._remux_task = remux
+    controller._remux_job_id = "job_test"
+    envelope = _abandon_envelope().model_copy(
+        update={"payload": {"job_id": "job_test", "delete_raw": False, "off_drive": True}}
+    )
+
+    await controller.on_ws_command(envelope)
+    await asyncio.sleep(0.01)
+
+    assert remux.cancelled()
+    assert eject_spy == []
+
+
+async def test_abandoning_another_job_leaves_the_remux_running(eject_spy):
+    controller = JobController(FakeClient(), "drv_test", device_path="/dev/sr0")
+    remux = asyncio.create_task(asyncio.sleep(3600))
+    controller._remux_task = remux
+    controller._remux_job_id = "job_other"
+
+    controller._handle_abandon("job_test", delete_raw=False, off_drive=True)
+    await asyncio.sleep(0.01)
+
+    assert not remux.cancelled()
+    remux.cancel()
+
+
 async def test_ws_event_unblocks_resolution_faster_than_rest(monkeypatch, stub_scan, stub_eject):
     """An identify.resolved WS event makes _await_resolution return immediately.
 
