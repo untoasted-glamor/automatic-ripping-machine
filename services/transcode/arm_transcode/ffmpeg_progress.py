@@ -48,20 +48,40 @@ async def consume_progress(
             continue
         if not decoded.startswith("out_time_us="):
             continue
-        try:
-            us = int(decoded.partition("=")[2])
-        except ValueError:
+        us = _parse_out_time_us(decoded.partition("=")[2])
+        if us is None:
             continue
-        if duration_seconds is None or duration_seconds <= 0:
+        pct = _percent_complete(us, duration_seconds)
+        if pct is None:
             continue
-        pct = min(100, int(us / 1_000_000 / duration_seconds * 100))
         if pct == last_emitted:
             continue
         last_emitted = pct
-        try:
-            await cb(pct, None, "encoding", fps, None)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("progress_callback raised: %s", exc)
+        await _notify_progress(cb, pct, fps)
+
+
+async def _notify_progress(cb: ProgressCallback, pct: int, fps: float | None) -> None:
+    """Hand one percent tick to the callback; a raising callback is logged at debug and ignored."""
+    try:
+        await cb(pct, None, "encoding", fps, None)
+    except Exception as exc:  # noqa: BLE001
+        # Swallowing callback errors is current behaviour, tracked in issue #412.
+        logger.debug("progress_callback raised: %s", exc)
+
+
+def _percent_complete(us: int, duration_seconds: int | None) -> int | None:
+    """Percent of a `duration_seconds` encode done at `us` microseconds, capped at 100; None if duration is unusable."""
+    if duration_seconds is None or duration_seconds <= 0:
+        return None
+    return min(100, int(us / 1_000_000 / duration_seconds * 100))
+
+
+def _parse_out_time_us(value: str) -> int | None:
+    """ffmpeg's `out_time_us` value in microseconds, or None when it isn't a number."""
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 def _parse_fps(value: str) -> float | None:

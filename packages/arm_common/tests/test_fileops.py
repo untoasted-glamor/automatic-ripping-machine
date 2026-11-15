@@ -15,9 +15,7 @@ from arm_common.fileops import (
     INPROGRESS_SUFFIX,
     CopyCancelled,
     atomic_output,
-    is_within,
     move_tree,
-    safe_join,
     transcode_none,
     tree_size,
 )
@@ -184,6 +182,32 @@ def test_copy_fallback_goes_through_inprogress_then_renames(tmp_path: Path, monk
     assert seen == ["t0.mkv" + INPROGRESS_SUFFIX] and dst.read_bytes() == b"v" * 10 and not src.exists()
 
 
+def test_copy_fallback_keeps_the_source_when_the_post_copy_unlink_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A source that cannot be removed after a good copy is left in place, with a warning."""
+    src = tmp_path / "raw" / "t0.mkv"
+    src.parent.mkdir()
+    src.write_bytes(b"v" * 10)
+    dst = tmp_path / "media" / "t0.mkv"
+    _no_rename(monkeypatch)
+    real_unlink = Path.unlink
+
+    def _unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self == src:
+            raise PermissionError(13, "Permission denied")
+        real_unlink(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "unlink", _unlink)
+    with caplog.at_level("WARNING", logger="arm_common.fileops"):
+        size = transcode_none(src, dst)
+    assert size == 10
+    assert dst.read_bytes() == b"v" * 10
+    assert src.read_bytes() == b"v" * 10
+    assert "post-copy unlink failed" in caplog.text
+    assert "will leave source in /raw" in caplog.text
+
+
 def test_cancelled_copy_removes_the_partial_and_keeps_the_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -252,46 +276,6 @@ def test_tree_copy_reports_progress(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     done: list[int] = []
     move_tree(src, tmp_path / "media" / "T", on_bytes=done.append)
     assert sum(done) == 115
-
-
-def test_safe_join_returns_the_resolved_path_inside_base(tmp_path: Path) -> None:
-    assert safe_join(tmp_path, "a/./b/../c.txt") == tmp_path.resolve() / "a" / "c.txt"
-
-
-@pytest.mark.parametrize("relative", ["../x", "a/../../x", "/etc/passwd"])
-def test_safe_join_rejects_a_path_outside_base(tmp_path: Path, relative: str) -> None:
-    with pytest.raises(ValueError, match="escapes"):
-        safe_join(tmp_path / "base", relative)
-
-
-def test_safe_join_rejects_a_symlink_pointing_outward(tmp_path: Path) -> None:
-    base = tmp_path / "base"
-    base.mkdir()
-    (base / "link").symlink_to(tmp_path)
-    with pytest.raises(ValueError, match="escapes"):
-        safe_join(base, "link/x")
-
-
-def test_safe_join_rejects_base_itself_unless_allowed(tmp_path: Path) -> None:
-    for relative in ("", ".", "a/.."):
-        with pytest.raises(ValueError, match="escapes"):
-            safe_join(tmp_path, relative)
-        assert safe_join(tmp_path, relative, allow_root=True) == tmp_path.resolve()
-
-
-def test_safe_join_resolves_a_symlinked_base(tmp_path: Path) -> None:
-    real = tmp_path / "real"
-    real.mkdir()
-    (tmp_path / "alias").symlink_to(real)
-    assert safe_join(tmp_path / "alias", "x") == real / "x"
-
-
-def test_is_within(tmp_path: Path) -> None:
-    assert is_within(tmp_path / "a" / "b", tmp_path)
-    assert not is_within(tmp_path, tmp_path)
-    assert is_within(tmp_path, tmp_path, allow_root=True)
-    assert not is_within(tmp_path / ".." / "x", tmp_path)
-    assert not is_within(tmp_path.parent, tmp_path, allow_root=True)
 
 
 def _record_durability_ops(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:

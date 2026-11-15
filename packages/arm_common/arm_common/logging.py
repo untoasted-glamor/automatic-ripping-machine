@@ -75,6 +75,28 @@ _track_id: ContextVar[str | None] = ContextVar("arm_log_track_id", default=None)
 _session_application_id: ContextVar[str | None] = ContextVar("arm_log_session_application_id", default=None)
 
 
+def _correlation_ids(record: logging.LogRecord) -> dict[str, str | None]:
+    """The job/track/session-application ids for this record; an explicit `extra=` value wins over the ambient context."""
+    # `extra={"job_id": ...}` lands as `record.job_id`. Explicit overrides
+    # the ambient contextvar — single call sites win against ambient state.
+    return {
+        "job_id": getattr(record, "job_id", None) or _job_id.get(),
+        "track_id": getattr(record, "track_id", None) or _track_id.get(),
+        "session_application_id": getattr(record, "session_application_id", None) or _session_application_id.get(),
+    }
+
+
+def _extra_fields(record: logging.LogRecord) -> dict[str, Any]:
+    """The caller-supplied extra fields of this record, stamped with the source logger name."""
+    extra: dict[str, Any] = {
+        k: v for k, v in record.__dict__.items() if k not in _RESERVED_LOGRECORD_KEYS and not k.startswith("_")
+    }
+    # Stamp the source logger name so the LogTailer can self-filter records
+    # emitted from the WS hub during fan-out (loop guard).
+    extra.setdefault("logger", record.name)
+    return extra
+
+
 class JsonFormatter(logging.Formatter):
     """Serialise a `LogRecord` as one JSON line per the v3 logging schema."""
 
@@ -83,32 +105,41 @@ class JsonFormatter(logging.Formatter):
         self._service = service
 
     def format(self, record: logging.LogRecord) -> str:
-        # `extra={"job_id": ...}` lands as `record.job_id`. Explicit overrides
-        # the ambient contextvar — single call sites win against ambient state.
-        job_id = getattr(record, "job_id", None) or _job_id.get()
-        track_id = getattr(record, "track_id", None) or _track_id.get()
-        sap_id = getattr(record, "session_application_id", None) or _session_application_id.get()
-
-        extra: dict[str, Any] = {
-            k: v for k, v in record.__dict__.items() if k not in _RESERVED_LOGRECORD_KEYS and not k.startswith("_")
-        }
-        # Stamp the source logger name so the LogTailer can self-filter records
-        # emitted from the WS hub during fan-out (loop guard).
-        extra.setdefault("logger", record.name)
+        extra = _extra_fields(record)
 
         line: dict[str, Any] = {
             "ts": datetime.fromtimestamp(record.created, UTC).isoformat(),
             "level": record.levelname.lower(),
             "service": self._service,
-            "job_id": job_id,
-            "track_id": track_id,
-            "session_application_id": sap_id,
+            **_correlation_ids(record),
             "msg": record.getMessage(),
             "extra": extra,
         }
         if record.exc_info:
             line["extra"]["exc"] = self.formatException(record.exc_info)
         return json.dumps(line, default=str)
+
+
+def _build_file_handler(log_dir: str, service_name: str, formatter: logging.Formatter) -> logging.Handler | None:
+    """The rotating `<service>.log` handler under `log_dir`, or None when the directory can't be created or opened."""
+    # File handler is best-effort. Inside a container `/logs` is the
+    # bind-mounted shared volume; outside (CI / dev shell / openapi
+    # snapshot regen) it may not exist or not be writable. Drop the
+    # file handler in that case rather than failing import — stdout
+    # still carries every line.
+    log_path = Path(log_dir)
+    try:
+        log_path.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_path / f"{service_name}.log",
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+    except OSError:
+        return None
+    file_handler.setFormatter(formatter)
+    return file_handler
 
 
 def configure_service_logging(service_name: str, log_dir: str = "/logs", level: str = "info") -> None:
@@ -130,24 +161,9 @@ def configure_service_logging(service_name: str, log_dir: str = "/logs", level: 
     stream.setFormatter(formatter)
     root.addHandler(stream)
 
-    # File handler is best-effort. Inside a container `/logs` is the
-    # bind-mounted shared volume; outside (CI / dev shell / openapi
-    # snapshot regen) it may not exist or not be writable. Drop the
-    # file handler in that case rather than failing import — stdout
-    # still carries every line.
-    log_path = Path(log_dir)
-    try:
-        log_path.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.handlers.RotatingFileHandler(
-            log_path / f"{service_name}.log",
-            maxBytes=10 * 1024 * 1024,
-            backupCount=5,
-            encoding="utf-8",
-        )
-        file_handler.setFormatter(formatter)
+    file_handler = _build_file_handler(log_dir, service_name, formatter)
+    if file_handler is not None:
         root.addHandler(file_handler)
-    except OSError:
-        pass
 
 
 @contextmanager

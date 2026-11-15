@@ -69,7 +69,7 @@ from arm_common import (
     bind_log_context,
     User,
 )
-from arm_common.fileops import is_within
+from arm_common.path_containment import is_within
 from arm_common.models import Track, TranscodeTask
 from arm_common.models._columns import enum_value_str
 from arm_common.tracks import is_title, titles

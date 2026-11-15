@@ -32,11 +32,6 @@ refusal to overwrite an existing destination, the same `cancel` check
 durability of the copy: each file is fsynced as it lands, before
 `shutil.move` removes the source, and the destination directories are
 fsynced once the move returns.
-
-`safe_join` / `is_within`: the one containment guard for a path built from
-untrusted input (a request, a theme id, a name read off a disc). Both
-resolve symlinks before the check, so a link inside the root that points
-outward is caught, as are `..` and absolute names.
 """
 
 from __future__ import annotations
@@ -107,28 +102,6 @@ def atomic_output(final_path: Path) -> Iterator[Path]:
     logger.info("atomic rename → %s", final_path)
 
 
-def _contained(resolved: Path, base: Path, allow_root: bool) -> bool:
-    return allow_root if resolved == base else resolved.is_relative_to(base)
-
-
-def is_within(path: Path, root: Path, *, allow_root: bool = False) -> bool:
-    """True when `path` resolves inside `root`; `root` itself only with `allow_root`."""
-    return _contained(path.resolve(), root.resolve(), allow_root)
-
-
-def safe_join(base: Path, relative: str | Path, *, allow_root: bool = False) -> Path:
-    """Join `relative` onto `base` and return the resolved path, proven inside `base`.
-
-    Raises ValueError when the result lands outside `base` (`..`, an absolute
-    name, an outward symlink), or is `base` itself unless `allow_root`.
-    """
-    base = base.resolve()
-    target = (base / relative).resolve()
-    if not _contained(target, base, allow_root):
-        raise ValueError(f"path {str(relative)!r} escapes {base}")
-    return target
-
-
 def _copy_file(
     src: Path, dst: Path, cancel: threading.Event | None, on_bytes: Callable[[int], None] | None = None
 ) -> None:
@@ -159,6 +132,28 @@ def _same_device_hint(src: Path, dst_dir: Path) -> None:
         )
 
 
+def _copy_across_filesystems(
+    input_path: Path,
+    output_path: Path,
+    cancel: threading.Event | None,
+    on_bytes: Callable[[int], None] | None,
+) -> None:
+    """Copy through `.arm-inprogress`, rename into place, then remove the source (best effort)."""
+    _same_device_hint(input_path, output_path.parent)
+    tmp_path = output_path.with_name(output_path.name + INPROGRESS_SUFFIX)
+    try:
+        _copy_file(input_path, tmp_path, cancel, on_bytes)
+        _fsync_file(tmp_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    os.replace(tmp_path, output_path)
+    try:
+        input_path.unlink()
+    except OSError as cleanup_exc:
+        logger.warning("post-copy unlink failed: %s (will leave source in /raw)", cleanup_exc)
+
+
 def transcode_none(
     input_path: Path,
     output_path: Path,
@@ -178,19 +173,7 @@ def transcode_none(
         os.rename(input_path, output_path)
     except OSError as exc:
         logger.info("passthrough rename failed (%s); falling back to copy+remove", exc)
-        _same_device_hint(input_path, output_path.parent)
-        tmp_path = output_path.with_name(output_path.name + INPROGRESS_SUFFIX)
-        try:
-            _copy_file(input_path, tmp_path, cancel, on_bytes)
-            _fsync_file(tmp_path)
-        except BaseException:
-            tmp_path.unlink(missing_ok=True)
-            raise
-        os.replace(tmp_path, output_path)
-        try:
-            input_path.unlink()
-        except OSError as cleanup_exc:
-            logger.warning("post-copy unlink failed: %s (will leave source in /raw)", cleanup_exc)
+        _copy_across_filesystems(input_path, output_path, cancel, on_bytes)
     _fsync_dir(output_path.parent)
     size = output_path.stat().st_size
     logger.info("passthrough wrote %s (%d bytes)", output_path, size)
