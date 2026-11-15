@@ -138,11 +138,11 @@ describe('DiscMenuPanel', () => {
 		expect(await screen.findByTestId('dm-error')).toHaveTextContent('boom');
 	});
 
-	it("marks where a button's play lands: its title, and the whole playlist's when that differs", async () => {
+	it('marks the title a button starts on, and how many clips its playlist plays', async () => {
 		const view = menu();
 		const page2 = view.preview!.pages![1];
 		page2.buttons = [
-			{ ...page2.buttons![0], title_index: 14, clips: [51, 58], whole_title_index: 4 },
+			{ ...page2.buttons![0], title_index: 1, clip_titles: [0, 1, null], whole_title_index: 5 },
 			{ id: 13, box: [10, 70, 200, 120], visible: true, label: 'Gone', outcome: 'plays', title_index: 24 },
 			{ id: 15, box: [10, 130, 200, 180], visible: true, label: 'Unknown', outcome: 'plays' }
 		];
@@ -150,13 +150,13 @@ describe('DiscMenuPanel', () => {
 		render();
 		await fireEvent.click((await screen.findAllByTestId('dm-page-tab'))[1]);
 		const markers = screen.getAllByTestId('dm-marker');
-		expect(markers.map((m) => m.textContent)).toEqual(['14', '24']);
+		expect(markers.map((m) => m.textContent)).toEqual(['1', '24']);
 		expect(markers[0]).toHaveAttribute('data-untracked', 'false');
 		expect(markers[1]).toHaveAttribute('data-untracked', 'true'); // a title with no row
-		expect(screen.getAllByTestId('dm-marker-whole').map((m) => m.textContent)).toEqual(['whole: 4']);
+		expect(screen.getAllByTestId('dm-marker-clips').map((m) => m.textContent)).toEqual(['3 clips']);
 		expect(screen.getAllByTestId('dm-box')[0]).toHaveAttribute(
 			'title',
-			'"Promo Videos": plays 00023.mpls (clips 51 + 58), lands on title 14; the whole playlist is title 4'
+			'"Promo Videos": plays 00023.mpls, starts on title 1; its play-all title is title 5 (3 clips: titles 0 + 1 + –)'
 		);
 	});
 

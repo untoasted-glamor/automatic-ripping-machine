@@ -17,6 +17,7 @@ import pytest  # noqa: E402
 
 from arm_backend.disc_menus.proposals import (  # noqa: E402
     clean_label,
+    jumped_into,
     lead_number,
     make_proposals,
     match_bd,
@@ -96,17 +97,33 @@ def _plays(playlist: str, start: int = 0) -> dict[str, Any]:
 
 
 def test_match_bd() -> None:
-    assert match_bd(_PLAYLISTS, _TITLES, _plays("00008"), "Play All") == 5
-    # An episode button playing the play-all from a mark: the clip it starts in.
-    assert match_bd(_PLAYLISTS, _TITLES, _plays("00008"), "Spook 8") == 0
-    assert match_bd(_PLAYLISTS, _TITLES, _plays("00008", 1446 * T + 10), "Spook 9") == 1
+    jumped = frozenset({"00008"})
+    assert match_bd(_PLAYLISTS, _TITLES, _plays("00008"), "Play All", jumped) == 5
+    # The menu jumps into the play-all of episodes: each episode button plays the clip it starts in.
+    assert match_bd(_PLAYLISTS, _TITLES, _plays("00008"), "Spook 8", jumped) == 0
+    assert match_bd(_PLAYLISTS, _TITLES, _plays("00008", 1446 * T + 10), "Spook 9", jumped) == 1
+    # Not jumped into: the playlist is one program (an extra in parts), its whole title.
+    assert match_bd(_PLAYLISTS, _TITLES, _plays("00008"), "Outtakes") == 5
     # A multi-clip bonus with no single-clip title: the whole playlist.
-    assert match_bd(_PLAYLISTS, _TITLES, _plays("00023"), "Promo Videos") == 8
+    assert match_bd(_PLAYLISTS, _TITLES, _plays("00023"), "Promo Videos", frozenset({"00023"})) == 8
     assert match_bd(_PLAYLISTS, _TITLES, _plays("00022"), "Panel") == 7
     assert match_bd(_PLAYLISTS, _TITLES, _plays("00099"), "x") is None
     assert match_bd(_PLAYLISTS, [], _plays("00022"), "x") is None
+    # No title of the whole playlist: the clip the play starts in.
+    assert match_bd(_PLAYLISTS, [t for t in _TITLES if t["index"] != 5], _plays("00008"), "x") == 0
     # Past the playlist's end: no clip, the whole playlist.
-    assert match_bd(_PLAYLISTS, _TITLES, _plays("00008", 99999 * T), "x") == 5
+    assert match_bd(_PLAYLISTS, _TITLES, _plays("00008", 99999 * T), "x", jumped) == 5
+
+
+def test_jumped_into() -> None:
+    preview = _preview(
+        ("1", _button("1", 1, "Spook 8", _plays("00008"))),
+        ("1", _button("1", 2, "Spook 9", _plays("00008", 1446 * T + 10))),
+        ("1", _button("1", 3, "Promo", _plays("00023", 50 * T))),  # partway into its first clip only
+        ("2", _button("2", 4, "Gone", _plays("00099", 99 * T))),
+        ("2", {"id": 5, "outcome": {"kind": "menu", "at": "m p1"}}),
+    )
+    assert jumped_into(preview) == {"00008"}
 
 
 def test_match_bd_prefers_the_title_named_after_the_playlist() -> None:
@@ -278,7 +295,9 @@ async def test_a_rerun_replaces_undecided_rows_and_keeps_decisions() -> None:
 async def test_excluded_bonus_and_an_episode_with_no_number() -> None:
     db, job = _db(_track(0, role=TrackRole.EPISODE), _track(7, excluded=True))
     preview = _preview(
-        ("1", _button("1", 1, "Spook 8", _plays("00008"))), ("1", _button("1", 2, "Panel", _plays("00022")))
+        ("1", _button("1", 1, "Spook 8", _plays("00008"))),
+        ("1", _button("1", 3, "Spook 9", _plays("00008", 1446 * T + 10))),
+        ("1", _button("1", 2, "Panel", _plays("00022"))),
     )
     rows = {r.track_id: r for r in await make_proposals(db, job, preview)}  # type: ignore[arg-type]
     assert rows["trk_0"].note == "an episode button"

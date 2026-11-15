@@ -8,6 +8,7 @@ import os
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 os.environ.setdefault("DATABASE_URL", "postgresql://x:x@localhost/x")
 os.environ.setdefault("ARM_SERVICE_TOKEN", "tok-service")
@@ -295,23 +296,14 @@ def test_ws_hub_dependency(tmp_path: Path) -> None:
 
 
 def test_a_button_says_which_title_it_lands_on_and_what_its_playlist_plays() -> None:
-    """The markers on the menu picture: the title a button lands on (even one with no track), its playlist's clips,
-    and the title of the whole playlist when the button lands on a single clip of it."""
+    """The markers on the menu picture: the title a button lands on (even one with no track), the title of each of its
+    playlist's clips, and its play-all title when the button lands on one clip of it."""
     from arm_backend.disc_menus.views import _pages
 
-    preview = {
-        "pages": [{"id": "1", "at": "m p1", "language": "eng", "image": "pages/1.jpg", "size": [1920, 1080], "buttons": [
-            {"id": 1, "box": [0, 0, 5, 5], "visible": True, "label": "Making Of",
-             "outcome": {"kind": "plays", "playlist": "00008", "start": 0}},
-            {"id": 2, "box": [0, 0, 5, 5], "visible": True, "label": "Play All",
-             "outcome": {"kind": "plays", "playlist": "00008", "start": 0}},
-            {"id": 3, "box": [0, 0, 5, 5], "visible": True, "label": "PV",
-             "outcome": {"kind": "plays", "playlist": "00023", "start": 0}},
-            {"id": 4, "box": [0, 0, 5, 5], "visible": True, "label": "Gone",
-             "outcome": {"kind": "plays", "playlist": "00099", "start": 0}},
-        ]}],
-        "playlists": _PREVIEW["playlists"],
-    }  # fmt: skip
+    def button(bid: int, label: str, playlist: str, start: int = 0) -> dict[str, Any]:
+        return {"id": bid, "box": [0, 0, 5, 5], "visible": True, "label": label,
+                "outcome": {"kind": "plays", "playlist": playlist, "start": start}}  # fmt: skip
+
     job = Job(
         id=JOB,
         disc_type=DiscType.BLURAY,
@@ -324,12 +316,22 @@ def test_a_button_says_which_title_it_lands_on_and_what_its_playlist_plays() -> 
     )  # fmt: skip
     track = Track(id="trk_6", job_id=JOB, kind=TrackKind.VIDEO_TITLE, index=6, source_ref="6", attempts=0)
 
-    [page] = _pages(preview, job, [track], [])
+    def lands(*buttons: dict[str, Any]) -> list[tuple[Any, ...]]:
+        preview = {"pages": [{"id": "1", "at": "m p1", "language": "eng", "image": "pages/1.jpg",
+                              "size": [1920, 1080], "buttons": list(buttons)}],
+                   "playlists": _PREVIEW["playlists"]}  # fmt: skip
+        [page] = _pages(preview, job, [track], [])
+        return [(b.title_index, b.clip_titles, b.whole_title_index, b.track_id) for b in page.buttons]
 
-    got = [(b.title_index, b.clips, b.whole_title_index, b.track_id) for b in page.buttons]
-    assert got == [
-        (6, [14, 15], 5, "trk_6"),  # lands on clip 14's title; the whole playlist is title 5
-        (5, [14, 15], None, None),  # a Play All lands on the whole playlist (title 5, no track)
-        (8, [28], None, None),
+    # An extra in two clips: the whole playlist (title 5), its clips titles 6 and none.
+    assert lands(button(1, "Making Of", "00008"), button(3, "PV", "00023"), button(4, "Gone", "00099")) == [
+        (5, [6, None], None, None),
+        (8, [], None, None),  # one clip
         (None, [], None, None),  # a playlist the preview doesn't list
+    ]
+    # The menu jumps into it partway (a play-all of parts): a button lands on the clip it starts in.
+    assert lands(button(1, "Part 1", "00008"), button(2, "Part 2", "00008", 15), button(5, "Play All", "00008")) == [
+        (6, [6, None], 5, "trk_6"),
+        (5, [6, None], None, None),  # part 2's clip has no title of its own: the whole playlist
+        (5, [6, None], None, None),
     ]

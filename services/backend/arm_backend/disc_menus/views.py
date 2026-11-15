@@ -14,6 +14,8 @@ from arm_backend.disc_menus.proposals import (
     PLAY_ALL,
     scan_titles,
     clean_label,
+    jumped_into,
+    clip_title,
     match_bd,
     match_dvd,
     playlist_clips,
@@ -56,6 +58,7 @@ def _pages(
     by_track = {p.track_id: p for p in proposals if p.track_id}
     by_button = {(p.page, p.button): p for p in proposals}
     playlists = preview.get("playlists") or {}
+    jumped = jumped_into(preview)
     pages: list[MenuPreviewPageView] = []
     for page in preview.get("pages", []):
         buttons: list[MenuPreviewButtonView] = []
@@ -74,11 +77,12 @@ def _pages(
             )
             if kind in ("plays", "plays_title"):
                 view.outcome, view.plays = "plays", plays_text(o)
-                index = match_dvd(titles, o) if kind == "plays_title" else match_bd(playlists, titles, o, label)
+                index = match_dvd(titles, o) if kind == "plays_title" else match_bd(playlists, titles, o, label, jumped)
                 view.title_index = index
-                if kind == "plays":
-                    view.clips = playlist_clips(playlists, o.get("playlist"))
-                    whole = whole_title(titles, o.get("playlist"), view.clips)
+                clips = playlist_clips(playlists, o.get("playlist")) if kind == "plays" else []
+                if len(clips) > 1:
+                    view.clip_titles = [clip_title(titles, c) for c in clips]
+                    whole = whole_title(titles, o.get("playlist"), clips)
                     view.whole_title_index = whole if whole != index else None
                 track = by_ref.get(str(index)) if index is not None else None
                 view.track_id = track.id if track is not None else None

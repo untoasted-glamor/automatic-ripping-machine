@@ -27,11 +27,13 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
 from arm_backend.disc_menus.preview_tasks import preview_settled
+from arm_backend.disc_menus.proposals import scan_titles, title_clips
 from arm_backend.raw_backup import delete_backup
 from arm_backend.rip_retry import RetryRefused, arm_retry, check_retryable, has_complete_backup, remaining_tracks
 from arm_backend.seeders import CONFIG_SINGLETON_ID
@@ -86,20 +88,55 @@ async def drive_of(db: AsyncSession, job: Job) -> Drive | None:
     return (await db.execute(select(Drive).where(col(Drive.id) == job.drive_id))).scalar_one_or_none()
 
 
-def default_ticks(tracks: Sequence[Track], proposals: Sequence[MenuProposal], *, movie: bool) -> list[Track]:
+def default_ticks(
+    tracks: Sequence[Track],
+    proposals: Sequence[MenuProposal],
+    *,
+    movie: bool,
+    scan: Sequence[dict[str, Any]] = (),
+) -> list[Track]:
     """Stop 2's default keep/drop set, applied once when it opens. A title's roles are its own (identity) and those
     of its menu proposals (any but a rejected one). A play-all is left out; an episode, special, OP/ED (`other`) or
     trailer is kept, and so is a movie disc's main feature. Every other title keeps the rip preset's default (set at
-    identify). Returns the tracks whose `excluded` changed."""
+    identify).
+
+    A title of several clips that a menu button plays as one program (a proposal with a role other than play-all) is
+    not a play-all, even if identify tagged it one: an extra in parts. It is kept, and the titles of its clips
+    (`scan`'s segment maps), which would rip it in pieces, are left out unless a button plays them too. Not when its
+    clips are episodes: that is a play-all of episodes. Returns the tracks whose `excluded` changed."""
     menu_roles: dict[str, set[TrackRole]] = {}
     for p in proposals:
         if p.track_id is not None and p.role is not None and p.status != MenuProposalStatus.REJECTED:
             menu_roles.setdefault(p.track_id, set()).add(p.role)
+    linked = {tid for tid, roles in menu_roles.items() if roles - {TrackRole.PLAY_ALL}}
+    by_ref = {t.source_ref: t for t in titles(tracks)}
+    clips_by_ref = {str(t.get("index")): title_clips(t) for t in scan}
+    single_ref = {c[0]: ref for ref, c in clips_by_ref.items() if len(c) == 1}
+    # The menu's programs in several clips, and the titles of their clips. One whose clips are episodes is a
+    # play-all of episodes after all, whatever button lands on it.
+    programs: set[str] = set()
+    pieces: set[str] = set()
+    for track in titles(tracks):
+        clips = clips_by_ref.get(track.source_ref) or []
+        if track.id not in linked or len(clips) < 2:
+            continue
+        refs = {single_ref[c] for c in clips if c in single_ref}
+        if any(r in by_ref and by_ref[r].role == TrackRole.EPISODE for r in refs):
+            continue
+        programs.add(track.id)
+        pieces |= refs
     changed: list[Track] = []
     for track in titles(tracks):
-        roles = menu_roles.get(track.id, set()) | ({track.role} if track.role is not None else set())
-        if TrackRole.PLAY_ALL in roles:
+        own: set[TrackRole] = set() if track.role is None else {track.role}
+        if track.id in programs:
+            own.discard(TrackRole.PLAY_ALL)
+        roles = menu_roles.get(track.id, set()) | own
+        if track.source_ref in pieces and track.id not in linked:
             keep = False
+        elif TrackRole.PLAY_ALL in roles:
+            keep = False
+        elif track.id in programs:
+            keep = True
         elif roles & _TICKED_ROLES or (movie and TrackRole.MAIN in roles):
             keep = True
         else:
@@ -118,7 +155,7 @@ async def open_stop(db: AsyncSession, job: Job, now: datetime) -> None:
     """Apply the default ticks and open the stop (`wait_start_time`). Flushes; the caller commits."""
     tracks = await _job_tracks(db, job)
     proposals = (await db.execute(select(MenuProposal).where(col(MenuProposal.job_id) == job.id))).scalars().all()
-    changed = default_ticks(tracks, proposals, movie=job.media_type == MediaType.MOVIE)
+    changed = default_ticks(tracks, proposals, movie=job.media_type == MediaType.MOVIE, scan=scan_titles(job))
     for track in changed:
         db.add(track)
     job.wait_start_time = now

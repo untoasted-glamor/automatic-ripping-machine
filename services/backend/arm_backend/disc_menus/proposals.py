@@ -102,6 +102,11 @@ def _clips(value: object) -> list[int]:
     return []
 
 
+def title_clips(title: dict[str, Any]) -> list[int]:
+    """The clips a scan title plays (its segment map)."""
+    return _clips(title.get("segment_map"))
+
+
 def scan_titles(job: Job) -> list[dict[str, Any]]:
     scan = (job.metadata_json or {}).get("scan_result") or {}
     titles = scan.get("titles") if isinstance(scan, dict) else None
@@ -114,6 +119,12 @@ def playlist_clips(playlists: dict[str, Any], name: str | None) -> list[int]:
     return [int(it["clip"]) for it in (pl.get("items") or [])] if pl else []
 
 
+def clip_title(titles: list[dict[str, Any]], clip: int) -> int | None:
+    """The scan title of one clip on its own, or None."""
+    single = [t for t in titles if _clips(t.get("segment_map")) == [clip]]
+    return int(single[0]["index"]) if single else None
+
+
 def whole_title(titles: list[dict[str, Any]], name: str | None, clips: list[int]) -> int | None:
     """The scan title MakeMKV made of a whole playlist (the one named after it first, since MakeMKV merges
     identical playlists into one title), or None."""
@@ -122,27 +133,52 @@ def whole_title(titles: list[dict[str, Any]], name: str | None, clips: list[int]
     return int(whole[0]["index"]) if whole else None
 
 
+def _item_at(items: list[dict[str, Any]], start: int) -> int | None:
+    """Which of a playlist's items a play starting `start` ticks in lands on (None: past its end)."""
+    at = 0
+    for i, it in enumerate(items):
+        at += (int(it["out"]) - int(it["in"])) * int(it.get("repeat") or 1)
+        if start < at:
+            return i
+    return None
+
+
+def jumped_into(preview: dict[str, Any]) -> frozenset[str]:
+    """The playlists some button starts partway through (past its first clip): a play-all whose parts the menu
+    plays one by one, like a play-all of episodes with a button per episode."""
+    playlists = preview.get("playlists") or {}
+    out: set[str] = set()
+    for page in preview.get("pages", []):
+        for b in page.get("buttons", []):
+            o = b.get("outcome") or {}
+            pl = playlists.get(o.get("playlist") or "") if o.get("kind") == "plays" else None
+            if pl and (_item_at(pl.get("items") or [], int(o.get("start") or 0)) or 0) > 0:
+                out.add(str(o["playlist"]))
+    return frozenset(out)
+
+
 def match_bd(
-    playlists: dict[str, Any], titles: list[dict[str, Any]], outcome: dict[str, Any], label: str
+    playlists: dict[str, Any],
+    titles: list[dict[str, Any]],
+    outcome: dict[str, Any],
+    label: str,
+    jumped: frozenset[str] = frozenset(),
 ) -> int | None:
-    """The scan title index a Blu-ray button's play starts on, or None."""
+    """The scan title index a Blu-ray button's play starts on, or None. A playlist of several clips is one title
+    (the title MakeMKV made of it) unless the menu jumps into it partway (`jumped`): then each of its buttons plays the
+    clip it starts on, as an episode button does in a play-all of episodes. A "Play All" button plays the whole."""
     name = outcome.get("playlist")
     pl = playlists.get(name or "")
     if not pl:
         return None
     items = pl.get("items") or []
-    if len(items) > 1 and not PLAY_ALL.search(label):
-        start = int(outcome.get("start") or 0)
-        at = 0
-        for it in items:
-            span = (int(it["out"]) - int(it["in"])) * int(it.get("repeat") or 1)
-            if start < at + span:
-                single = [t for t in titles if _clips(t.get("segment_map")) == [int(it["clip"])]]
-                if single:
-                    return int(single[0]["index"])
-                break
-            at += span
-    return whole_title(titles, name, playlist_clips(playlists, name))
+    whole = whole_title(titles, name, playlist_clips(playlists, name))
+    if len(items) > 1 and not PLAY_ALL.search(label) and (name in jumped or whole is None):
+        i = _item_at(items, int(outcome.get("start") or 0))
+        single = clip_title(titles, int(items[i]["clip"])) if i is not None else None
+        if single is not None:
+            return single
+    return whole
 
 
 def match_dvd(titles: list[dict[str, Any]], outcome: dict[str, Any]) -> int | None:
@@ -254,6 +290,7 @@ async def make_proposals(
     titles_by_ref = {t.source_ref: t for t in tracks if t.kind == TrackKind.VIDEO_TITLE}
     scan = scan_titles(job)
     playlists = preview.get("playlists") or {}
+    jumped = jumped_into(preview)
     existing = (await db.execute(select(MenuProposal).where(col(MenuProposal.job_id) == job.id))).scalars().all()
     undecided = (MenuProposalStatus.PROPOSED, MenuProposalStatus.INFO)
     decided_tracks = {p.track_id for p in existing if p.track_id is not None and p.status not in undecided}
@@ -268,7 +305,7 @@ async def make_proposals(
         if b.outcome.get("kind") == "plays_title":
             index = match_dvd(scan, b.outcome)
         else:
-            index = match_bd(playlists, scan, b.outcome, b.label)
+            index = match_bd(playlists, scan, b.outcome, b.label, jumped)
         track = titles_by_ref.get(str(index)) if index is not None else None
         if track is not None:
             key = track.id

@@ -3329,9 +3329,9 @@ export type MenuPreviewButtonView = {
      */
     title_index?: number | null;
     /**
-     * Clips
+     * Clip Titles
      */
-    clips?: Array<number>;
+    clip_titles?: Array<number | null>;
     /**
      * Whole Title Index
      */

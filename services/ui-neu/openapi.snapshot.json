@@ -16731,12 +16731,19 @@
             ],
             "title": "Title Index"
           },
-          "clips": {
+          "clip_titles": {
             "items": {
-              "type": "integer"
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": "array",
-            "title": "Clips",
+            "title": "Clip Titles",
             "default": []
           },
           "whole_title_index": {

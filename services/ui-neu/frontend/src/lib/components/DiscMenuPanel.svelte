@@ -257,14 +257,14 @@
 							onclick={() => clickButton(b)}
 						>
 							{#if b.outcome === 'plays' && b.title_index != null}
-								<!-- Where the jump lands: the Tracks table's #, and the whole playlist's title when it differs. -->
+								<!-- Where the jump lands (the Tracks table's #), and how many clips its playlist plays. -->
 								<span class="disc-menu-markers">
 									<span class="disc-menu-marker" data-testid="dm-marker" data-untracked={b.track_id == null}
 										>{b.title_index}</span
 									>
-									{#if b.whole_title_index != null}
-										<span class="disc-menu-marker disc-menu-marker-whole" data-testid="dm-marker-whole"
-											>whole: {b.whole_title_index}</span
+									{#if (b.clip_titles ?? []).length > 1}
+										<span class="disc-menu-marker disc-menu-marker-clips" data-testid="dm-marker-clips"
+											>{b.clip_titles!.length} clips</span
 										>
 									{/if}
 								</span>
@@ -275,8 +275,8 @@
 			</div>
 			<p class="field-help">
 				Each box is a menu button. Click one that opens another page to go there, or one that plays a title to go to its
-				row in the Tracks table. A number is the title (the Tracks table's #) the button plays; "whole" is the title of
-				the button's whole playlist when the button lands on one clip of it.
+				row in the Tracks table. A number is the title (the Tracks table's #) the button starts on; "clips" says its
+				playlist plays several clips in a row (hover for their titles).
 			</p>
 			{#if (view?.preview?.unsupported ?? []).length > 0 || view?.preview?.truncated}
 				<p class="field-help" data-testid="dm-unsupported">
@@ -406,7 +406,7 @@
 		background: var(--color-surface-raised);
 		color: var(--color-text);
 	}
-	.disc-menu-marker-whole {
+	.disc-menu-marker-clips {
 		border: 1px solid var(--color-warning);
 		background: var(--color-surface-raised);
 		color: var(--color-text);

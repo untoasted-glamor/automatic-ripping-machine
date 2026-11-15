@@ -651,3 +651,48 @@ def test_a_retry_of_a_first_pass_that_left_nothing_backs_up_and_parks_again(raw_
         assert rs.json()["extract_menu"] is not None
     assert job.status == JobStatus.RIPPING
     assert not flag_is_set(job.metadata_json, "retry_armed") and not flag_is_set(job.metadata_json, "retrying")
+
+
+def test_default_ticks_keep_an_extra_in_parts_whole_and_leave_its_pieces_out() -> None:
+    """Identify tags a playlist of several clips a play-all; when a menu button plays it as one program (Outtakes),
+    stop 2 keeps it and leaves out the titles of its clips, unless a button plays one of them too."""
+    scan = [
+        {"index": 4, "segment_map": "51,58,59"},  # Outtakes, in three clips
+        {"index": 14, "segment_map": "51"},
+        {"index": 20, "segment_map": "58"},
+        {"index": 21, "segment_map": "59"},  # a button plays this part too
+        {"index": 9, "segment_map": "6,8"},  # a play-all of episodes
+        {"index": 0, "segment_map": "6"},
+        {"index": 1, "segment_map": "8"},
+    ]
+    tracks = [
+        _title(4, role=TrackRole.PLAY_ALL, excluded=True),
+        _title(14, role=TrackRole.EXTRA),
+        _title(20, role=TrackRole.EXTRA),
+        _title(21, role=TrackRole.EXTRA),
+        _title(9, role=TrackRole.PLAY_ALL, excluded=True),
+        _title(0, role=TrackRole.EPISODE),
+        _title(1, role=TrackRole.EPISODE),
+    ]
+    proposals = [
+        _proposal("trk_4", TrackRole.EXTRA),
+        _proposal("trk_21", TrackRole.EXTRA),
+        _proposal("trk_9", TrackRole.EPISODE, MenuProposalStatus.INFO),  # an episode button landing on the play-all
+    ]
+
+    changed = default_ticks(tracks, proposals, movie=False, scan=scan)
+
+    assert {t.id for t in changed} == {"trk_4", "trk_14", "trk_20"}
+    excluded = {t.id: t.excluded for t in tracks}
+    assert excluded == {
+        "trk_4": False,  # the whole program
+        "trk_14": True,  # its pieces
+        "trk_20": True,
+        "trk_21": False,  # a piece a button plays: as it was
+        "trk_9": True,  # its clips are episodes: still a play-all
+        "trk_0": False,
+        "trk_1": False,
+    }
+    # Without the scan nothing is known of the clips: identify's play-all tag stands.
+    fresh = [_title(4, role=TrackRole.PLAY_ALL, excluded=True), _title(14, role=TrackRole.EXTRA)]
+    assert default_ticks(fresh, proposals[:1], movie=False) == []

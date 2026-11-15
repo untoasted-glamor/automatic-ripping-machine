@@ -97,10 +97,12 @@ export function buttonHint(b: MenuPreviewButtonView, pageName: (id: string) => s
 	const label = b.label ? `"${b.label}"` : 'No label';
 	switch (b.outcome) {
 		case 'plays': {
-			const clips = (b.clips ?? []).length > 1 ? ` (clips ${b.clips!.join(' + ')})` : '';
-			const lands = b.title_index != null ? `, lands on title ${b.title_index}` : '';
-			const whole = b.whole_title_index != null ? `; the whole playlist is title ${b.whole_title_index}` : '';
-			return `${label}: plays ${b.plays ?? 'a title'}${clips}${lands}${whole}`;
+			const starts = b.title_index != null ? `, starts on title ${b.title_index}` : '';
+			const playAll = b.whole_title_index != null ? `; its play-all title is title ${b.whole_title_index}` : '';
+			const clips = b.clip_titles ?? [];
+			const parts =
+				clips.length > 1 ? ` (${clips.length} clips: titles ${clips.map((t) => t ?? '–').join(' + ')})` : '';
+			return `${label}: plays ${b.plays ?? 'a title'}${starts}${playAll}${parts}`;
 		}
 		case 'page':
 			return `${label}: ${b.goes_to ? `opens ${pageName(b.goes_to)}` : 'opens a page the walk did not reach'}`;
