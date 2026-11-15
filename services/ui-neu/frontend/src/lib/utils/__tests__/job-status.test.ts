@@ -72,6 +72,9 @@ describe('reviewPhaseBadge', () => {
 		expect(b.label).toBe('REVIEW');
 		expect(b.accent).toContain('--color-accent-1');
 	});
+	it('awaiting_titles -> CHOOSE TITLES', () => {
+		expect(reviewPhaseBadge(badgeJob('awaiting_titles')).label).toBe('CHOOSE TITLES');
+	});
 	it('awaiting_user_id -> IDENTIFY cyan', () => {
 		expect(reviewPhaseBadge(badgeJob('awaiting_user_id')).label).toBe('IDENTIFY');
 		expect(reviewPhaseBadge(badgeJob('awaiting_user_id')).accent).toContain('--color-accent-4');

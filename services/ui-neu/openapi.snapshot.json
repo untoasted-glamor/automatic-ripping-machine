@@ -15078,6 +15078,11 @@
                 "type": "null"
               }
             ]
+          },
+          "parks_after_backup": {
+            "type": "boolean",
+            "title": "Parks After Backup",
+            "default": false
           }
         },
         "type": "object",

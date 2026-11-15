@@ -2,9 +2,15 @@
 	import type { JobView, TrackView, ScanTitle } from '$lib/types/api.gen';
 	import { keepTracks, updateTrack } from '$lib/api/jobs';
 	import { isAdmin } from '$lib/stores/auth';
-	import { isPreRipStatus } from '$lib/utils/job-status-groups';
 	import { trackToRow, scanTitleToRow } from '$lib/utils/review-rows';
-	import { keepAllIds, keepLockedReason, keepSummary, titleTracks } from '$lib/utils/track-keep';
+	import {
+		CHOSEN_AFTER_BACKUP,
+		choosingTitles,
+		keepAllIds,
+		keepLockedReason,
+		keepSummary,
+		titleTracks
+	} from '$lib/utils/track-keep';
 	import PlayAllBadge from './PlayAllBadge.svelte';
 	import TrackKeepToggle from './TrackKeepToggle.svelte';
 	import TrackTitleSearch from './TrackTitleSearch.svelte';
@@ -15,9 +21,11 @@
 		scanTitles?: ScanTitle[];
 		isVideo: boolean;
 		isMusic: boolean;
+		/** The disc is backed up whole first (fork only): its titles are ticked at stop 2. */
+		parksAfterBackup?: boolean;
 		onrefresh?: () => void;
 	}
-	let { job, tracks, scanTitles = [], isVideo, isMusic, onrefresh }: Props = $props();
+	let { job, tracks, scanTitles = [], isVideo, isMusic, parksAfterBackup = false, onrefresh }: Props = $props();
 
 	// Materialized tracks always win; scanned titles are the pre-rip fallback.
 	let rows = $derived(tracks.length ? tracks.map(trackToRow) : scanTitles.map(scanTitleToRow));
@@ -30,7 +38,8 @@
 	// Titles only: the disc menu is never the "last kept" one.
 	let keptCount = $derived(titleTracks(tracks).filter((t) => !t.excluded).length);
 	let keepable = $derived(keepAllIds(tracks).length);
-	let preRip = $derived(isPreRipStatus(job.status));
+	let choosing = $derived(choosingTitles(job.status, parksAfterBackup));
+	let lockedReason = $derived(keepLockedReason(job.status, parksAfterBackup));
 
 	async function keepAll() {
 		errorMessage = null;
@@ -122,8 +131,8 @@
 												<TrackKeepToggle
 													jobId={job.id}
 													track={trackById.get(row.trackId)!}
-													lockedReason={keepLockedReason(job.status)}
-													lastKept={preRip && keptCount === 1}
+													{lockedReason}
+													lastKept={choosing && keptCount === 1}
 													onchanged={() => onrefresh?.()}
 													onerror={(message) => (errorMessage = message)}
 												/>
@@ -217,8 +226,12 @@
 			</div>
 			{#if tracks.length}
 				<div class="review-tracks-table-keep">
-					<span data-testid="review-keep-summary">{keepSummary(tracks, isMusic ? 'tracks' : 'titles')}</span>
-					{#if $isAdmin && preRip && keepable > 0}
+					<span data-testid="review-keep-summary"
+						>{lockedReason === CHOSEN_AFTER_BACKUP
+							? `${CHOSEN_AFTER_BACKUP}.`
+							: keepSummary(tracks, isMusic ? 'tracks' : 'titles')}</span
+					>
+					{#if $isAdmin && choosing && keepable > 0}
 						<button type="button" class="btn review-tracks-table-keep-all" onclick={keepAll}>Keep all</button>
 					{/if}
 				</div>

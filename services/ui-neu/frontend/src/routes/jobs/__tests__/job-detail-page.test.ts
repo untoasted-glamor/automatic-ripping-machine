@@ -145,6 +145,34 @@ describe('Job Detail Page', () => {
 			expect(screen.getByTestId('identify-manual')).toHaveTextContent('Edit by hand');
 		});
 
+		it('stop 1 of a disc backed up first locks the Keep boxes: its titles are chosen after the backup', async () => {
+			const { fetchJob } = await import('$lib/api/jobs');
+			const detail = buildDetail({ status: 'awaiting_review', wait_start_time: new Date().toISOString() });
+			detail.tracks = [createTrack({ id: 'trk_1', index: 1, source_ref: 't01', status: 'queued' })];
+			vi.mocked(fetchJob).mockResolvedValueOnce({ ...detail, parks_after_backup: true });
+			renderComponent(JobDetailPage);
+			await waitFor(() =>
+				expect(screen.getByTestId('keep-summary')).toHaveTextContent('Titles are chosen after the disc is backed up.')
+			);
+			expect(screen.getByTestId('review-gate-start')).toHaveTextContent('Begin ripping disc to backup/menu');
+			expect(screen.queryByRole('button', { name: 'Keep all' })).not.toBeInTheDocument();
+		});
+
+		it('stop 2 shows the choose-titles panel and keeps the Tracks table tickable', async () => {
+			const { fetchJob } = await import('$lib/api/jobs');
+			const detail = buildDetail({ status: 'awaiting_titles', wait_start_time: new Date().toISOString() });
+			detail.tracks = [
+				createTrack({ id: 'trk_1', index: 1, source_ref: 't01', status: 'queued' }),
+				createTrack({ id: 'trk_2', index: 2, source_ref: 't02', status: 'queued', excluded: true })
+			];
+			vi.mocked(fetchJob).mockResolvedValueOnce(detail);
+			renderComponent(JobDetailPage);
+			await waitFor(() => expect(screen.getByRole('heading', { name: 'Choose the titles' })).toBeInTheDocument());
+			expect(screen.getByTestId('review-gate-start')).toHaveTextContent('Rip titles');
+			expect(screen.getByTestId('keep-summary')).toHaveTextContent('Keeping 1 of 2 titles');
+			expect(screen.getByRole('button', { name: 'Keep all' })).toBeInTheDocument();
+		});
+
 		it('shows Apply session for a ripped disc awaiting identification', async () => {
 			const { fetchJob } = await import('$lib/api/jobs');
 			vi.mocked(fetchJob).mockResolvedValueOnce(buildDetail({ status: 'ripped_awaiting_identify' }));

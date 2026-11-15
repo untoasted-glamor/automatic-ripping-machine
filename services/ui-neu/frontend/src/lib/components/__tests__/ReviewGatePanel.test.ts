@@ -15,12 +15,19 @@ vi.mock('$lib/stores/auth', async () => {
 
 vi.mock('$lib/api/jobs', () => ({
 	startWaitingJob: vi.fn(() => Promise.resolve({})),
+	retryFailedTitles: vi.fn(() => Promise.resolve({ retried: 1, from_backup: true })),
 	pauseWaitingJob: vi.fn(() => Promise.resolve({})),
 	fetchTrackSelection: vi.fn(() => Promise.reject(new Error('not loaded'))),
 	saveTrackSelection: vi.fn()
 }));
 
-import { fetchTrackSelection, pauseWaitingJob, saveTrackSelection, startWaitingJob } from '$lib/api/jobs';
+import {
+	fetchTrackSelection,
+	pauseWaitingJob,
+	retryFailedTitles,
+	saveTrackSelection,
+	startWaitingJob
+} from '$lib/api/jobs';
 import { trackView } from '../__fixtures__/trackSelection';
 import * as authStore from '$lib/stores/auth';
 
@@ -130,5 +137,74 @@ describe('ReviewGatePanel track choice', () => {
 			props: { job: held({ disc_type: 'cd' }), requiresConfirm: true, waitSeconds: 60 }
 		});
 		expect(screen.queryByTestId('review-gate-tracks')).toBeNull();
+	});
+});
+
+describe('ReviewGatePanel, a disc backed up whole first (fork only)', () => {
+	it('stop 1 starts the backup, with no title to tick yet', async () => {
+		const onchanged = vi.fn();
+		renderComponent(ReviewGatePanel, {
+			props: { job: held(), requiresConfirm: true, waitSeconds: 60, keptCount: 0, parksAfterBackup: true, onchanged }
+		});
+		expect(screen.getByText(/its titles are chosen after the backup/)).toBeInTheDocument();
+		expect(screen.queryByTestId('review-gate-nothing-kept')).not.toBeInTheDocument();
+		const start = screen.getByTestId('review-gate-start');
+		expect(start).toHaveTextContent('Begin ripping disc to backup/menu');
+		await fireEvent.click(start);
+		await waitFor(() => expect(startWaitingJob).toHaveBeenCalledWith('job_7'));
+		expect(retryFailedTitles).not.toHaveBeenCalled();
+	});
+
+	it('stop 1 in timed mode says the backup starts when the countdown ends', () => {
+		renderComponent(ReviewGatePanel, {
+			props: { job: held(), requiresConfirm: false, waitSeconds: 60, parksAfterBackup: true }
+		});
+		expect(
+			screen.getByText('The disc is backed up when the countdown ends. Its titles are chosen after.')
+		).toBeInTheDocument();
+	});
+
+	const stop2 = (overrides = {}) => held({ status: 'awaiting_titles', ...overrides });
+
+	it('stop 2 reads the disc menu before it opens: no countdown and no start', () => {
+		renderComponent(ReviewGatePanel, {
+			props: { job: stop2({ wait_start_time: null }), requiresConfirm: false, waitSeconds: 60, keptCount: 2 }
+		});
+		expect(screen.getByRole('heading', { name: 'Choose the titles' })).toBeInTheDocument();
+		expect(screen.getByText(/Reading the disc menu/)).toBeInTheDocument();
+		expect(screen.queryByTestId('review-gate-start')).not.toBeInTheDocument();
+		expect(screen.queryByTitle('Pause timer')).not.toBeInTheDocument();
+	});
+
+	it('an open stop 2 rips the ticked titles from the backup, with no audio/subtitle picker', async () => {
+		const onchanged = vi.fn();
+		renderComponent(ReviewGatePanel, {
+			props: { job: stop2(), requiresConfirm: true, waitSeconds: 60, keptCount: 3, onchanged }
+		});
+		expect(screen.getByText(/Tick the ones to keep in the Tracks table/)).toBeInTheDocument();
+		expect(screen.queryByTestId('review-gate-tracks')).not.toBeInTheDocument();
+		const start = screen.getByTestId('review-gate-start');
+		expect(start).toHaveTextContent('Rip titles');
+		await fireEvent.click(start);
+		await waitFor(() => expect(retryFailedTitles).toHaveBeenCalledWith('job_7'));
+		expect(startWaitingJob).not.toHaveBeenCalled();
+		await waitFor(() => expect(onchanged).toHaveBeenCalled());
+	});
+
+	it('an open stop 2 counts down and pauses like stop 1', async () => {
+		renderComponent(ReviewGatePanel, {
+			props: { job: stop2(), requiresConfirm: false, waitSeconds: 60, keptCount: 1 }
+		});
+		expect(
+			screen.getByText('The ticked titles are ripped from the disc backup when the countdown ends.')
+		).toBeInTheDocument();
+		await fireEvent.click(screen.getByTitle('Pause timer'));
+		await waitFor(() => expect(pauseWaitingJob).toHaveBeenCalledWith('job_7', true));
+	});
+
+	it('stop 2 with nothing ticked waits for a title', () => {
+		renderComponent(ReviewGatePanel, { props: { job: stop2(), requiresConfirm: true, waitSeconds: 60, keptCount: 0 } });
+		expect(screen.getByTestId('review-gate-nothing-kept')).toBeInTheDocument();
+		expect(screen.getByTestId('review-gate-start')).toBeDisabled();
 	});
 });

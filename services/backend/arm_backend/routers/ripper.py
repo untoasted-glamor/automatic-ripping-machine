@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
 from arm_backend import iso_prepare
-from arm_backend.choose_titles import delete_parked_backup, mark_parked, parks_after_backup
+from arm_backend.choose_titles import delete_parked_backup, drive_of, mark_parked, parks_after_backup
 from arm_backend.disc_dedupe import find_previous_rips, find_reusable_job_for_disc
 from arm_backend.auth import (
     require_drive_owner_by_job,
@@ -1009,7 +1009,7 @@ async def rip_start(
             scan_titles=_stored_scan_titles(job),
             retry=retry,
             extract_menu=extract_menu,
-            park_after_backup=parks_after_backup(job, await _drive_of(session, job), existing, retry=retry),
+            park_after_backup=parks_after_backup(job, await drive_of(session, job), existing, retry=retry),
         )
 
     # IDENTIFIED is the normal pre-rip state; AWAITING_REVIEW reaches here only
@@ -1109,12 +1109,8 @@ async def rip_start(
         min_length_seconds=min_length_seconds,
         scan_titles=scan.titles,
         extract_menu=extract_menu,
-        park_after_backup=parks_after_backup(job, await _drive_of(session, job), refreshed, retry=False),
+        park_after_backup=parks_after_backup(job, await drive_of(session, job), refreshed, retry=False),
     )
-
-
-async def _drive_of(session: AsyncSession, job: Job) -> Drive | None:
-    return (await session.execute(select(Drive).where(col(Drive.id) == job.drive_id))).scalar_one_or_none()
 
 
 @router.post("/jobs/{job_id}/resume", response_model=RipStartResponse)

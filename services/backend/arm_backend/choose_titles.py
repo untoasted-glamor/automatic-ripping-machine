@@ -52,17 +52,25 @@ _TICKED_ROLES = frozenset({TrackRole.EPISODE, TrackRole.SPECIAL, TrackRole.OTHER
 PARKED_FLAG = "parked"
 
 
-def parks_after_backup(job: Job, drive: Drive | None, tracks: Sequence[Track], *, retry: bool) -> bool:
-    """Whether the ripper stops at stop 2 after backing this disc up: a DVD or Blu-ray from a physical drive, ripped
-    as titles, on its first pass (not a retry, nor a remux from a kept backup)."""
+def backs_up_first(job: Job, drive: Drive | None, tracks: Sequence[Track]) -> bool:
+    """A disc whose first pass is backed up whole and stops at stop 2: a DVD or Blu-ray from a physical drive,
+    ripped as titles. The job page reads it before the rip (`JobDetailView.parks_after_backup`)."""
     return (
-        not retry
-        and job.status == JobStatus.RIPPING
-        and job.disc_type in (DiscType.DVD, DiscType.BLURAY)
+        job.disc_type in (DiscType.DVD, DiscType.BLURAY)
         and drive is not None
         and drive.source_kind is None
         and any(t.kind == TrackKind.VIDEO_TITLE for t in tracks)
     )
+
+
+def parks_after_backup(job: Job, drive: Drive | None, tracks: Sequence[Track], *, retry: bool) -> bool:
+    """At rip-start: whether the ripper stops at stop 2 after backing this disc up. Its first pass only (not a
+    retry, nor a remux from a kept backup)."""
+    return not retry and job.status == JobStatus.RIPPING and backs_up_first(job, drive, tracks)
+
+
+async def drive_of(db: AsyncSession, job: Job) -> Drive | None:
+    return (await db.execute(select(Drive).where(col(Drive.id) == job.drive_id))).scalar_one_or_none()
 
 
 def default_ticks(tracks: Sequence[Track], proposals: Sequence[MenuProposal], *, movie: bool) -> list[Track]:

@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { createTrack } from '$lib/components/__fixtures__/job';
 import type { TrackView } from '$lib/types/api.gen';
 import {
+	CHOSEN_AFTER_BACKUP,
+	choosingTitles,
 	isDiscMenu,
 	isRetryArmed,
 	keepAllIds,
@@ -89,5 +91,23 @@ describe('isRetryArmed', () => {
 		expect(isRetryArmed({ flags: 'x' })).toBe(false);
 		expect(isRetryArmed({})).toBe(false);
 		expect(isRetryArmed(null)).toBe(false);
+	});
+});
+
+describe('titles chosen after the backup (fork only)', () => {
+	it('locks the boxes before the rip of a disc backed up first', () => {
+		expect(keepLockedReason('awaiting_review', true)).toBe(CHOSEN_AFTER_BACKUP);
+		expect(keepLockedReason('identified', true)).toBe(CHOSEN_AFTER_BACKUP);
+		expect(keepLockedReason('awaiting_review')).toBeNull();
+		expect(keepLockedReason('awaiting_titles', true)).toBeNull();
+	});
+	it.each([
+		['awaiting_review', false, true],
+		['awaiting_review', true, false],
+		['awaiting_titles', false, true],
+		['ripping', false, false],
+		['ripped', false, false]
+	])('choosingTitles(%s, parks=%s) = %s', (status, parks, choosing) => {
+		expect(choosingTitles(status, parks)).toBe(choosing);
 	});
 });

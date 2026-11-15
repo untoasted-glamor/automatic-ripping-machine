@@ -54,6 +54,10 @@ class JobDetailView(BaseModel):
     raw_backup: RawBackupView | None = None
     # None while text subtitles are off in Settings.
     subtitle_ocr: JobSubtitleOcrView | None = None
+    # Before the rip (fork only): the disc is backed up whole first and its
+    # titles are chosen at stop 2 (`awaiting_titles`), so stop 1 doesn't tick
+    # titles. False once the rip has started.
+    parks_after_backup: bool = False
 
 
 class ConfigView(BaseModel):

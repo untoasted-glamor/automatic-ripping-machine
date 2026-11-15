@@ -54,7 +54,12 @@
 		// on the review card (with Start rip), NOT in FINISHING. Keep it here so it
 		// shows the review widget even after a page reload, not only while sticky.
 		return (
-			s === 'awaiting_user_id' || s === 'ripped_awaiting_identify' || s === 'awaiting_review' || s === 'identified'
+			s === 'awaiting_user_id' ||
+			s === 'ripped_awaiting_identify' ||
+			s === 'awaiting_review' ||
+			s === 'identified' ||
+			// Stop 2 (fork only): backed up, its titles wait to be chosen.
+			s === 'awaiting_titles'
 		);
 	}
 

@@ -34,6 +34,7 @@ from arm_backend.job_abandon import abandon_job_transition
 from arm_backend.job_track_selection import default_for_job, disc_languages, edit_lock_reason, job_override
 from arm_backend.path_template import TemplateValidationError
 from arm_backend.raw_backup import delete_backup, describe_backup
+from arm_backend.choose_titles import backs_up_first, drive_of
 from arm_backend.rip_retry import RetryRefused, arm_retry, check_retryable, remaining_tracks
 from arm_backend.routers._params import JobIdParam
 from arm_backend.routers.logs import per_job_log_path
@@ -105,6 +106,7 @@ from arm_common.enums import (
     LIVE_JOB_STATUSES,
     RIPPER_BUSY_JOB_STATUSES,
     POST_RIP_JOB_STATUSES,
+    PRE_RIP_JOB_STATUSES,
     RESOLVABLE_JOB_STATUSES,
     RESOLVABLE_PROMOTE_JOB_STATUSES,
     TERMINAL_JOB_STATUSES,
@@ -482,6 +484,8 @@ async def get_job_detail(
         previous_rip=await _previous_rip_view(session, job),
         raw_backup=describe_backup(job.id),
         subtitle_ocr=await job_subtitle_ocr_view(session, job, Path(settings.MEDIA_ROOT)),
+        parks_after_backup=job.status in PRE_RIP_JOB_STATUSES
+        and backs_up_first(job, await drive_of(session, job), tracks),
     )
 
 
@@ -1040,6 +1044,11 @@ async def delete_job_backup(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"job is {job.status.value}; the ripper is using its raw backup",
+        )
+    if job.status == JobStatus.AWAITING_TITLES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="the job's titles are remuxed from this backup once they're chosen",
         )
     try:
         delete_backup(job.id)

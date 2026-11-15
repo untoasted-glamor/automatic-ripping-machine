@@ -39,6 +39,8 @@
 		isRetryArmed,
 		keepAllIds,
 		keepLockedReason,
+		choosingTitles,
+		CHOSEN_AFTER_BACKUP,
 		keepSummary,
 		menuSkippedReason,
 		titleTracks,
@@ -404,6 +406,8 @@
 		{@const tracks = d.tracks}
 		{@const keptCount = titleTracks(tracks).filter((t) => !t.excluded).length}
 		{@const preRip = isPreRipStatus(job.status)}
+		{@const parks = d.parks_after_backup ?? false}
+		{@const choosing = choosingTitles(job.status, parks)}
 		{@const ripStarted = isRipperBusyStatus(job.status) || isPostRipStatus(job.status)}
 		{@const keepNoun = job.disc_type === 'cd' ? 'tracks' : 'titles'}
 		{@const remaining = tracks.filter(
@@ -555,9 +559,10 @@
 				<JobLifecycle status={effectiveJobStatus(job)} sourceType={null} size="md" partial={isPartialComplete(job)} />
 			</div>
 
-			{#if job.status === 'awaiting_review'}
+			{#if job.status === 'awaiting_review' || job.status === 'awaiting_titles'}
 				<ReviewGatePanel
 					{job}
+					parksAfterBackup={parks}
 					requiresConfirm={$dashboard.review_requires_confirm ?? false}
 					waitSeconds={$dashboard.manual_wait_seconds ?? 60}
 					paused={!$dashboard.ripping_enabled}
@@ -734,8 +739,8 @@
 												<TrackKeepToggle
 													jobId={job.id}
 													{track}
-													lockedReason={keepLockedReason(job.status)}
-													lastKept={preRip && keptCount === 1}
+													lockedReason={keepLockedReason(job.status, parks)}
+													lastKept={choosing && keptCount === 1}
 													onchanged={() => loadJob()}
 													onerror={(message) => (trackError = message)}
 												/>
@@ -810,8 +815,10 @@
 						</table>
 					</div>
 					<div class="job-detail-keep-footer">
-						<span data-testid="keep-summary">{keepSummary(tracks, keepNoun)}</span>
-						{#if $isAdmin && preRip && keepAllIds(tracks).length > 0}
+						<span data-testid="keep-summary"
+							>{parks && preRip ? `${CHOSEN_AFTER_BACKUP}.` : keepSummary(tracks, keepNoun)}</span
+						>
+						{#if $isAdmin && choosing && keepAllIds(tracks).length > 0}
 							<button type="button" class="btn job-detail-keep-all" onclick={() => keepAll(keepAllIds(tracks))}>
 								Keep all
 							</button>
@@ -856,7 +863,7 @@
 						<RawBackupRow
 							jobId={d.job.id}
 							backup={d.raw_backup}
-							ripping={isRipperBusyStatus(d.job.status)}
+							ripping={isRipperBusyStatus(d.job.status) || d.job.status === 'awaiting_titles'}
 							canDelete={$isAdmin}
 							ondeleted={() => loadJob()}
 						/>

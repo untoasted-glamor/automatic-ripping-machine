@@ -2439,6 +2439,10 @@ export type JobDetailView = {
     previous_rip?: PreviousRipView | null;
     raw_backup?: RawBackupView | null;
     subtitle_ocr?: JobSubtitleOcrView | null;
+    /**
+     * Parks After Backup
+     */
+    parks_after_backup?: boolean;
 };
 
 /**
@@ -6475,6 +6479,10 @@ export type JobDetailViewWritable = {
     previous_rip?: PreviousRipView | null;
     raw_backup?: RawBackupView | null;
     subtitle_ocr?: JobSubtitleOcrView | null;
+    /**
+     * Parks After Backup
+     */
+    parks_after_backup?: boolean;
 };
 
 /**

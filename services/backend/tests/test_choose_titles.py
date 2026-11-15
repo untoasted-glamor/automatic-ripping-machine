@@ -541,3 +541,41 @@ def test_review_pause_at_stop_2(opened: bool) -> None:
         assert job.wait_start_time is not None and job.wait_start_time > old  # a fresh countdown
     else:
         assert job.wait_start_time is None  # left for the sweep to open
+
+
+# --- the job page learns whether the disc parks ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("status", "iso", "parks"),
+    [
+        (JobStatus.AWAITING_REVIEW, False, True),
+        (JobStatus.IDENTIFIED, False, True),
+        (JobStatus.AWAITING_REVIEW, True, False),
+        (JobStatus.AWAITING_TITLES, False, False),
+        (JobStatus.RIPPED, False, False),
+    ],
+)
+def test_the_job_detail_says_whether_stop_1_backs_the_disc_up_first(status: JobStatus, iso: bool, parks: bool) -> None:
+    db = _db(job=_job(status, metadata_json={"scan_result": _SCAN}))
+    db.rows["users"] = _users()
+    if iso:
+        db.rows["drives"][0].source_kind = DriveSourceKind.ISO
+    client, auth = _jobs(db, _Hub())
+
+    r = client.get(f"/api/jobs/{JOB_ID}", headers=auth)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["parks_after_backup"] is parks
+
+
+def test_the_backup_cant_be_deleted_while_its_titles_wait_to_be_chosen(raw_root: Path) -> None:
+    _backup(raw_root, complete=True)
+    db = _db()
+    db.rows["users"] = _users()
+    client, auth = _jobs(db, _Hub())
+
+    r = client.delete(f"/api/jobs/{JOB_ID}/backup", headers=auth)
+
+    assert r.status_code == 409 and "once they're chosen" in r.json()["detail"]
+    assert (raw_root / JOB_ID / ".backup").exists()

@@ -1,7 +1,15 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import type { JobView, JobDetailView, TrackView, SessionView } from '$lib/types/api.gen';
-	import { abandonJob, deleteJob, fetchJob, startWaitingJob, pauseWaitingJob, resolveJob } from '$lib/api/jobs';
+	import {
+		abandonJob,
+		deleteJob,
+		fetchJob,
+		startWaitingJob,
+		pauseWaitingJob,
+		resolveJob,
+		retryFailedTitles
+	} from '$lib/api/jobs';
 	import { cancelIsoRip } from '$lib/api/iso';
 	import { fetchSessions } from '$lib/api/sessions';
 	import { parkedSessionLine, readJobMetadata, videoTypeLabel } from '$lib/utils/job-fields';
@@ -64,6 +72,12 @@
 	let pauseBusy = $state(false);
 
 	let data = $state<JobDetailView | null>(null);
+	// Stop 2 (fork only): the disc is backed up; its titles are ticked here or on the job page, then ripped from the
+	// backup. It opens (its countdown starts) once the menu has named the titles.
+	let isChoosingTitles = $derived((data?.job ?? job)?.status === 'awaiting_titles');
+	let titlesOpen = $derived(isChoosingTitles && (data?.job ?? job)?.wait_start_time != null);
+	// Stop 1 of a disc backed up whole first: Start takes the backup, no title is ticked yet.
+	let parks = $derived(data?.parks_after_backup ?? false);
 	let initialLoading = $state(true);
 	let showInfo = $state(false);
 	let showTitleSearch = $state(false);
@@ -77,7 +91,7 @@
 	let tracks = $derived<TrackView[]>(data?.tracks ?? []);
 	// Every title left out: nothing to rip, so Start waits for one to be kept
 	// (the disc menu alone isn't a rip).
-	let nothingKept = $derived(titleTracks(tracks).length > 0 && titleTracks(tracks).every((t) => t.excluded));
+	let nothingKept = $derived(!parks && titleTracks(tracks).length > 0 && titleTracks(tracks).every((t) => t.excluded));
 	// Same cut as the backend's Track rows: titles under the scan's minimum are hidden.
 	let scanTitles = $derived(listedScanTitles(data?.job?.metadata_json?.scan_result));
 
@@ -248,6 +262,21 @@
 		}
 	}
 
+	async function handleRipTitles() {
+		if (!job) return;
+		starting = true;
+		errorMessage = null;
+		try {
+			await retryFailedTitles(job.id);
+			ondismiss?.();
+			onrefresh?.();
+		} catch (e) {
+			errorMessage = e instanceof Error ? e.message : 'Failed to rip the titles';
+		} finally {
+			starting = false;
+		}
+	}
+
 	async function handlePauseToggle(paused: boolean) {
 		if (!job) return;
 		pauseBusy = true;
@@ -308,13 +337,19 @@
 				<span class="disc-review-widget-status-label">
 					{previousId
 						? 'Already ripped: Rip again or Discard'
-						: awaitingConfirm
-							? 'Ready: Review & Confirm'
-							: isReviewGate
-								? 'Ready: Review & Start'
-								: isPostRip
-									? 'Ripped: Apply Session'
-									: 'Awaiting Review'}
+						: isChoosingTitles
+							? titlesOpen
+								? requiresConfirm
+									? 'Backed up: Choose titles & Confirm'
+									: 'Backed up: Choose titles'
+								: 'Backed up: Reading the disc menu'
+							: awaitingConfirm
+								? 'Ready: Review & Confirm'
+								: isReviewGate
+									? 'Ready: Review & Start'
+									: isPostRip
+										? 'Ripped: Apply Session'
+										: 'Awaiting Review'}
 				</span>
 			</div>
 			<!-- Review gate: "Waiting for your confirmation" in mandatory-confirm mode,
@@ -322,7 +357,7 @@
 		     clock). The timer's pause/resume toggles THIS disc only (per-job
 		     manual_pause); its controls are off while globally paused since one
 		     disc can't un-pause the whole machine. -->
-			{#if isReviewGate && !previousId}
+			{#if (isReviewGate && !previousId) || titlesOpen}
 				<ReviewWaitStatus
 					{job}
 					{requiresConfirm}
@@ -488,7 +523,26 @@
 							? 'Keep at least one title to start the rip'
 							: 'Save the metadata and start ripping this disc'}
 				>
-					{starting ? 'Starting...' : previousId ? 'Rip again' : awaitingConfirm ? 'Confirm & start rip' : 'Start rip'}
+					{starting
+						? 'Starting...'
+						: previousId
+							? 'Rip again'
+							: parks
+								? 'Begin ripping disc to backup/menu'
+								: awaitingConfirm
+									? 'Confirm & start rip'
+									: 'Start rip'}
+				</button>
+			{/if}
+			{#if titlesOpen && $isAdmin}
+				<button
+					onclick={handleRipTitles}
+					disabled={starting || nothingKept}
+					class="btn disc-review-widget-success-btn"
+					data-testid="disc-review-rip-titles"
+					title={nothingKept ? 'Keep at least one title to rip' : 'Rip the ticked titles from the disc backup'}
+				>
+					{starting ? 'Starting...' : 'Rip titles'}
 				</button>
 			{/if}
 		</div>
@@ -532,6 +586,7 @@
 						{scanTitles}
 						{isVideo}
 						{isMusic}
+						parksAfterBackup={parks}
 						onrefresh={() => {
 							onrefresh?.();
 							loadDetail();

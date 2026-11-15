@@ -24,6 +24,8 @@ vi.mock('$lib/api/jobs', () => ({
 	abandonJob: vi.fn(() => Promise.resolve(createJob())),
 	deleteJob: vi.fn(() => Promise.resolve()),
 	startWaitingJob: vi.fn(() => Promise.resolve(createJob())),
+	pauseWaitingJob: vi.fn(() => Promise.resolve(createJob())),
+	retryFailedTitles: vi.fn(() => Promise.resolve({ retried: 1, from_backup: true })),
 	resolveJob: vi.fn(() => Promise.resolve({ job: createJob(), fan_out: [] })),
 	updateTrack: vi.fn(() => Promise.resolve(createJob())),
 	updateJobTitle: vi.fn(() => Promise.resolve(createJob())),
@@ -310,5 +312,71 @@ describe('DiscReviewWidget', () => {
 			await waitFor(() => expect(screen.getByText('Start rip')).toBeInTheDocument());
 			expect(container.querySelector('.disc-review-widget-actions')).toHaveClass('flex-wrap');
 		});
+	});
+});
+
+describe('DiscReviewWidget, a disc backed up whole first (fork only)', () => {
+	afterEach(() => {
+		cleanup();
+		vi.clearAllMocks();
+	});
+
+	async function detailWith(job: ReturnType<typeof createJob>, parks = false, excluded = false) {
+		const { fetchJob } = await import('$lib/api/jobs');
+		vi.mocked(fetchJob).mockResolvedValue({
+			...createJobDetail({ tracks: [createTrack({ id: 'trk_1', title: 'Ep 1', excluded })] }),
+			job,
+			parks_after_backup: parks
+		});
+	}
+
+	it('stop 1 begins the backup, even with every title left out', async () => {
+		const held = createJob({ status: 'awaiting_review', wait_start_time: new Date().toISOString() });
+		await detailWith(held, true, true);
+		renderComponent(DiscReviewWidget, {
+			props: { job: held, driveNames: {}, paused: false, requiresConfirm: true }
+		});
+		const start = await screen.findByRole('button', { name: 'Begin ripping disc to backup/menu' });
+		await waitFor(() => expect(start).toBeEnabled());
+	});
+
+	it('stop 2 reads the disc menu before it opens: no Rip titles yet', async () => {
+		const job = createJob({ status: 'awaiting_titles', wait_start_time: null });
+		await detailWith(job);
+		renderComponent(DiscReviewWidget, { props: { job, driveNames: {}, paused: false } });
+		expect(await screen.findByText('Backed up: Reading the disc menu')).toBeInTheDocument();
+		expect(screen.queryByTestId('disc-review-rip-titles')).not.toBeInTheDocument();
+		expect(screen.getByText('CHOOSE TITLES')).toBeInTheDocument();
+	});
+
+	it('an open stop 2 rips the ticked titles from the backup', async () => {
+		const { retryFailedTitles } = await import('$lib/api/jobs');
+		const job = createJob({ status: 'awaiting_titles', wait_start_time: new Date().toISOString() });
+		await detailWith(job);
+		const ondismiss = vi.fn();
+		renderComponent(DiscReviewWidget, {
+			props: { job, driveNames: {}, paused: false, requiresConfirm: true, ondismiss }
+		});
+		expect(await screen.findByText('Backed up: Choose titles & Confirm')).toBeInTheDocument();
+		await fireEvent.click(screen.getByTestId('disc-review-rip-titles'));
+		await waitFor(() => expect(retryFailedTitles).toHaveBeenCalledWith(job.id));
+		expect(ondismiss).toHaveBeenCalled();
+	});
+
+	it('an open stop 2 with nothing ticked waits for a title, and says why Rip titles failed', async () => {
+		const { retryFailedTitles } = await import('$lib/api/jobs');
+		const job = createJob({ status: 'awaiting_titles', wait_start_time: new Date().toISOString() });
+		await detailWith(job, false, true);
+		renderComponent(DiscReviewWidget, { props: { job, driveNames: {}, paused: false } });
+		await waitFor(() => expect(screen.getByTestId('disc-review-rip-titles')).toBeDisabled());
+
+		cleanup();
+		await detailWith(job);
+		vi.mocked(retryFailedTitles).mockRejectedValueOnce(new Error('409 Conflict'));
+		renderComponent(DiscReviewWidget, { props: { job, driveNames: {}, paused: false } });
+		const rip = await screen.findByTestId('disc-review-rip-titles');
+		await waitFor(() => expect(rip).toBeEnabled());
+		await fireEvent.click(rip);
+		expect(await screen.findByText('409 Conflict')).toBeInTheDocument();
 	});
 });

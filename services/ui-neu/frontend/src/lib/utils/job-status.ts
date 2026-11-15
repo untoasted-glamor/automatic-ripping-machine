@@ -99,6 +99,7 @@ export function reviewPhaseBadge(job: BadgeJob): { label: string; accent: string
 	if (s === 'awaiting_review' && previouslyRippedJobId(job))
 		return { label: 'ALREADY RIPPED', accent: 'var(--color-accent-4)' };
 	if (s === 'awaiting_review') return { label: 'REVIEW', accent: 'var(--color-accent-1)' };
+	if (s === 'awaiting_titles') return { label: 'CHOOSE TITLES', accent: 'var(--color-accent-1)' };
 	if (s === 'awaiting_user_id' || s === 'ripped_awaiting_identify')
 		return { label: 'IDENTIFY', accent: 'var(--color-accent-4)' };
 	if (s === 'identified') return { label: 'READY', accent: 'var(--color-primary)' };

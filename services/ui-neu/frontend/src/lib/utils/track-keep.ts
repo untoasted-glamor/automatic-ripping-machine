@@ -1,6 +1,10 @@
 import type { TrackView } from '$lib/types/api.gen';
 import { formatDuration } from './duration';
 import { formatBytes } from './format';
+import { isPreRipStatus } from './job-status-groups';
+
+// Stop 1 of a disc backed up whole first (fork only): its titles are ticked at stop 2.
+export const CHOSEN_AFTER_BACKUP = 'Titles are chosen after the disc is backed up';
 
 /** The "Disc menu" row (fork only): a line item of its own, not a title. */
 export function isDiscMenu(track: Pick<TrackView, 'kind'>): boolean {
@@ -37,8 +41,15 @@ export function keepSummary(tracks: TrackView[], noun = 'titles'): string {
 	return parts.join(', ');
 }
 
+/** Whether the operator ticks the titles now: before the rip, or at stop 2 (`awaiting_titles`) for a disc
+ *  backed up whole first (`parksAfterBackup`, from the job detail). */
+export function choosingTitles(status: string, parksAfterBackup = false): boolean {
+	return status === 'awaiting_titles' || (isPreRipStatus(status) && !parksAfterBackup);
+}
+
 /** Why a track's Keep box can't be changed for a job in `status`, or null. */
-export function keepLockedReason(status: string): string | null {
+export function keepLockedReason(status: string, parksAfterBackup = false): string | null {
+	if (parksAfterBackup && isPreRipStatus(status)) return CHOSEN_AFTER_BACKUP;
 	if (status === 'ripping') return "Titles can't be changed while the disc is ripping";
 	if (status === 'remuxing') return "Titles can't be changed while they are remuxed from the disc backup";
 	return null;
