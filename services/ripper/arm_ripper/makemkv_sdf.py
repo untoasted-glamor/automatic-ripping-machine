@@ -14,13 +14,14 @@ Non-fatal by design: a missing SDF surfaces downstream as a slow makemkvcon
 scan, never a pipeline abort.
 """
 
-import asyncio
 import logging
 import os
 import re
 from dataclasses import dataclass
 
 from arm_common import MakemkvSdfState
+
+from arm_ripper.refresh_script import ScriptOutcome, int_field, last_status, run_refresh_script
 
 logger = logging.getLogger("arm_ripper.makemkv_sdf")
 
@@ -40,18 +41,11 @@ class SdfResult:
 
 def _parse(text: str) -> SdfResult:
     """Parse the last `sdf-status:` line. Unknown/absent → PROBE_FAILED."""
-    last = None
-    for line in text.splitlines():
-        if _STATE_RE.search(line):
-            last = line
-    if last is None:
+    found = last_status(text, _STATE_RE, MakemkvSdfState)
+    if found is None:
         return SdfResult(state=MakemkvSdfState.PROBE_FAILED)
-    try:
-        state = MakemkvSdfState(_STATE_RE.search(last).group("state"))  # type: ignore[union-attr]
-    except ValueError:
-        return SdfResult(state=MakemkvSdfState.PROBE_FAILED)
-    age = _AGE_RE.search(last)
-    return SdfResult(state=state, age_days=int(age.group("age")) if age else None)
+    state, last = found
+    return SdfResult(state=state, age_days=int_field(_AGE_RE, last))
 
 
 async def refresh_makemkv_sdf(script_path: str = UPDATE_SDF_SCRIPT, enabled: bool = True) -> SdfResult | None:
@@ -61,37 +55,13 @@ async def refresh_makemkv_sdf(script_path: str = UPDATE_SDF_SCRIPT, enabled: boo
     non-makemkv image or unit-test host). Otherwise returns an SdfResult;
     PROBE_FAILED when the script can't run cleanly or its output can't be parsed.
     """
-    if not os.access(script_path, os.X_OK):
-        logger.debug("SDF refresh skipped: %s not executable", script_path)
-        return None
-
     env = {**os.environ, "ARM_MAKEMKV_SDF": "true" if enabled else "false"}
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            script_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env=env,
-        )
-    except OSError as exc:
-        logger.warning("SDF refresh could not start (%s): %s", script_path, exc)
+    run = await run_refresh_script(
+        script_path, env=env, timeout=REFRESH_TIMEOUT_SECONDS, label="SDF refresh", logger=logger
+    )
+    if run.outcome in (ScriptOutcome.SKIPPED, ScriptOutcome.NOT_STARTED):
         return None
-
-    try:
-        stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=REFRESH_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        logger.warning("SDF refresh timed out after %.0fs", REFRESH_TIMEOUT_SECONDS)
+    if run.outcome is not ScriptOutcome.SUCCEEDED:
         return SdfResult(state=MakemkvSdfState.PROBE_FAILED)
-
-    text = stdout_b.decode(errors="replace").strip()
-    if proc.returncode != 0:
-        logger.warning("SDF refresh exited %s: %s", proc.returncode, text or "<no output>")
-        return SdfResult(state=MakemkvSdfState.PROBE_FAILED)
-
-    result = _parse(text)
-    if text:
-        logger.info("SDF refresh: %s", text.replace("\n", " | "))
-    return result
+    return _parse(run.text)

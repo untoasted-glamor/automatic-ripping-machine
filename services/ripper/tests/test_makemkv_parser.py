@@ -2,9 +2,9 @@ from pathlib import Path
 
 from arm_common import DiscType
 from arm_common.schemas import ScanResult, ScanTitle
-from arm_ripper.scan.makemkv import (
+from arm_ripper.scan.makemkv import _classify_from_titles
+from arm_ripper.scan.makemkv_info import (
     _TINFO_FIELDS,
-    _classify_from_titles,
     _InfoParser,
     _scan_title,
     _split_robot_line,
@@ -49,7 +49,7 @@ def test_includes_titles_without_duration(caplog):
     # (duration unknown) rather than vanish, so MakeMKV can't rip a file that
     # no Track accounts for.
     lines = ['TINFO:5,8,0,"4"', 'TINFO:5,27,0,"title05.mkv"']
-    with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv"):
+    with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv_info"):
         _, titles, _ = parse_makemkvcon_info(lines)
 
     assert titles == [ScanTitle(index=5, duration_seconds=None, chapter_count=4, source_file="title05.mkv")]
@@ -66,7 +66,7 @@ def test_warns_about_and_includes_title_missing_duration(caplog):
         'TINFO:1,9,0,"garbled"',
         'TINFO:1,27,0,"title01.mkv"',
     ]
-    with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv"):
+    with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv_info"):
         _, titles, _ = parse_makemkvcon_info(lines)
 
     assert [(t.index, t.duration_seconds) for t in titles] == [(0, 90 * 60), (1, None)]
@@ -83,7 +83,7 @@ def test_does_not_invent_a_title_that_emitted_no_tinfo_at_all(caplog):
     # output). A made-up title would have no duration, so the rip would count
     # it eligible though MakeMKV never writes it. Warn, scan what is there.
     lines = ["TCOUNT:3", 'TINFO:0,9,0,"1:30:00"', 'TINFO:1,9,0,"0:05:00"']
-    with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv"):
+    with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv_info"):
         _, titles, _ = parse_makemkvcon_info(lines)
 
     assert [t.index for t in titles] == [0, 1]
@@ -93,7 +93,7 @@ def test_does_not_invent_a_title_that_emitted_no_tinfo_at_all(caplog):
 
 def test_warning_when_tcount_lower_than_observed_titles(caplog):
     lines = ["TCOUNT:1", 'TINFO:0,9,0,"1:30:00"', 'TINFO:1,9,0,"0:05:00"']
-    with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv"):
+    with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv_info"):
         _, titles, _ = parse_makemkvcon_info(lines)
 
     assert len(titles) == 2
@@ -103,7 +103,7 @@ def test_warning_when_tcount_lower_than_observed_titles(caplog):
 
 def test_no_warning_when_tcount_matches_parsed_titles(caplog):
     lines = ["TCOUNT:1", 'TINFO:0,9,0,"1:30:00"']
-    with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv"):
+    with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv_info"):
         _, titles, _ = parse_makemkvcon_info(lines)
 
     assert len(titles) == 1
@@ -112,7 +112,7 @@ def test_no_warning_when_tcount_matches_parsed_titles(caplog):
 
 def test_unparsable_tcount_is_ignored(caplog):
     lines = ["TCOUNT:", 'TINFO:0,9,0,"1:30:00"']
-    with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv"):
+    with caplog.at_level("WARNING", logger="arm_ripper.scan.makemkv_info"):
         _, titles, _ = parse_makemkvcon_info(lines)
 
     assert len(titles) == 1
