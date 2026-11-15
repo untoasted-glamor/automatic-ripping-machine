@@ -548,6 +548,40 @@ async def _wait_for_exit(proc: asyncio.subprocess.Process, stop: asyncio.Event |
     return exited not in done
 
 
+async def _kill_if_running(proc: asyncio.subprocess.Process) -> None:
+    """Kill makemkvcon and reap it if it is still running."""
+    # Cancel-safe cleanup: parent abandon → CancelledError. Kill the
+    # subprocess so /raw can be wiped without orphan fds.
+    if proc.returncode is not None:
+        return
+    proc.kill()
+    try:
+        await proc.wait()
+    except BaseException:
+        pass
+
+
+async def _exit_error(proc: asyncio.subprocess.Process, state: _ParserState) -> str | None:
+    """The error text for a makemkvcon run that wasn't stopped: the expired-binary refusal, or the end of stderr on a
+    non-zero exit; None for a clean exit.
+    """
+    if state.binary_expired:
+        return _compose_error(
+            "makemkvcon refused: binary is past its hard-coded expiry "
+            "(MSG:5021). MakeMKV beta binaries carry a 60-day kill-switch; "
+            "rebuild the ripper image after upstream ships a fresher tarball. "
+            "See docs/user/MakeMKV-Ripper.md § Failure modes.",
+            state.diagnostics,
+        )
+    if proc.returncode != 0:
+        stderr = b""
+        if proc.stderr is not None:
+            stderr = await proc.stderr.read()
+        msg = stderr.decode(errors="replace").strip()[-400:] or f"exit={proc.returncode}"
+        return _compose_error(f"makemkvcon failed: {msg}", state.diagnostics)
+    return None
+
+
 async def _run_makemkvcon(
     cmd: list[str],
     state: _ParserState,
@@ -595,14 +629,7 @@ async def _run_makemkvcon(
         streamer.cancel()
         return _compose_error(f"makemkvcon timed out after {RIP_TIMEOUT_SECONDS}s", state.diagnostics)
     finally:
-        # Cancel-safe cleanup: parent abandon → CancelledError. Kill the
-        # subprocess so /raw can be wiped without orphan fds.
-        if proc.returncode is None:
-            proc.kill()
-            try:
-                await proc.wait()
-            except BaseException:
-                pass
+        await _kill_if_running(proc)
         streamer.cancel()
 
     # Drain the streamer so every line after EOF is processed before callers read `state`.
@@ -614,22 +641,64 @@ async def _run_makemkvcon(
     if stopped:
         return STOPPED_ERROR
 
-    if state.binary_expired:
-        return _compose_error(
-            "makemkvcon refused: binary is past its hard-coded expiry "
-            "(MSG:5021). MakeMKV beta binaries carry a 60-day kill-switch; "
-            "rebuild the ripper image after upstream ships a fresher tarball. "
-            "See docs/user/MakeMKV-Ripper.md § Failure modes.",
-            state.diagnostics,
-        )
+    return await _exit_error(proc, state)
 
-    if proc.returncode != 0:
-        stderr = b""
-        if proc.stderr is not None:
-            stderr = await proc.stderr.read()
-        msg = stderr.decode(errors="replace").strip()[-400:] or f"exit={proc.returncode}"
-        return _compose_error(f"makemkvcon failed: {msg}", state.diagnostics)
-    return None
+
+def _mkv_all_command(device_path: str, output_dir: Path, minlength_seconds: int) -> list[str]:
+    """The single `makemkvcon mkv … all` argv that rips every title of the disc in one invocation."""
+    return [
+        "makemkvcon",
+        "mkv",
+        "--robot",
+        "--progress=-stdout",
+        f"--minlength={minlength_seconds}",
+        makemkv_source_url(device_path),
+        "all",
+        str(output_dir),
+    ]
+
+
+async def _finish_pending_titles(state: _ParserState, on_title_done: OnTitleDone | None) -> None:
+    """Emit on_title_done for every title that started but never got its done, in source-index order."""
+    # Final title's on_title_done — the streamer fires done at PRGC
+    # transitions, but the last title in the rip never gets a follow-up
+    # PRGC:5017,N+1. Catch any started-but-not-yet-done title here so
+    # the dispatcher PATCHes it DONE before rip_disc returns.
+    for source_idx in sorted(state.titles):
+        ts = state.titles[source_idx]
+        if ts.started_emitted and not ts.done_emitted:
+            await _emit_title_done(state, source_idx, on_title_done)
+
+
+async def _attribute_outputs(output_dir: Path, eligible: list[int], hash_outputs: bool) -> dict[int, RipResult]:
+    """Pair each eligible source index with the output file in its rip position.
+
+    Files past the eligible list stay unclaimed.
+    """
+    # Attribute output files to source title indexes.
+    #
+    # MakeMKV's `mkv all` mode is opaque per-title — the stream emits
+    # only overall PRGT/MSG (5014 start, 5005/5036 summary). We get
+    # back to per-title outcomes from the files' `_tNN` suffixes (fork):
+    # file NN belongs to `eligible[NN]`. A suffix past the eligible list is a
+    # straggler (e.g. user lowered minlength mid-disc, MakeMKV picked up
+    # extras we didn't expect) and we simply don't claim it — it
+    # remains on disk for inspection.
+    titles_out: dict[int, RipResult] = {}
+    for position, file_path in sorted(_output_files_by_position(output_dir).items()):
+        if position >= len(eligible):
+            logger.warning("output file %s has no eligible title (eligible has %d)", file_path.name, len(eligible))
+            continue
+        source_idx = eligible[position]
+        size = file_path.stat().st_size
+        digest = await sha256_file(file_path) if hash_outputs else None
+        titles_out[source_idx] = RipResult(
+            ok=True,
+            output_path=file_path,
+            size_bytes=size,
+            sha256=digest,
+        )
+    return titles_out
 
 
 async def rip_disc(
@@ -681,16 +750,7 @@ async def rip_disc(
     and are FAILED.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "makemkvcon",
-        "mkv",
-        "--robot",
-        "--progress=-stdout",
-        f"--minlength={minlength_seconds}",
-        makemkv_source_url(device_path),
-        "all",
-        str(output_dir),
-    ]
+    cmd = _mkv_all_command(device_path, output_dir, minlength_seconds)
     logger.info(
         "makemkvcon mkv all device=%s outdir=%s minlength=%ds",
         device_path,
@@ -712,40 +772,10 @@ async def rip_disc(
     if error is not None:
         return RipDiscResult(overall_error=error, titles={})
 
-    # Final title's on_title_done — the streamer fires done at PRGC
-    # transitions, but the last title in the rip never gets a follow-up
-    # PRGC:5017,N+1. Catch any started-but-not-yet-done title here so
-    # the dispatcher PATCHes it DONE before rip_disc returns.
-    for source_idx in sorted(state.titles):
-        ts = state.titles[source_idx]
-        if ts.started_emitted and not ts.done_emitted:
-            await _emit_title_done(state, source_idx, on_title_done)
+    await _finish_pending_titles(state, on_title_done)
 
-    # Attribute output files to source title indexes.
-    #
-    # MakeMKV's `mkv all` mode is opaque per-title — the stream emits
-    # only overall PRGT/MSG (5014 start, 5005/5036 summary). We get
-    # back to per-title outcomes from the files' `_tNN` suffixes: file
-    # NN belongs to `eligible[NN]`. A suffix past the eligible list is a
-    # straggler (e.g. user lowered minlength mid-disc, MakeMKV picked up
-    # extras we didn't expect) and we simply don't claim it — it
-    # remains on disk for inspection.
-    titles_out: dict[int, RipResult] = {}
     eligible = eligible_source_indexes or []
-
-    for position, file_path in sorted(_output_files_by_position(output_dir).items()):
-        if position >= len(eligible):
-            logger.warning("output file %s has no eligible title (eligible has %d)", file_path.name, len(eligible))
-            continue
-        source_idx = eligible[position]
-        size = file_path.stat().st_size
-        digest = await sha256_file(file_path) if hash_outputs else None
-        titles_out[source_idx] = RipResult(
-            ok=True,
-            output_path=file_path,
-            size_bytes=size,
-            sha256=digest,
-        )
+    titles_out = await _attribute_outputs(output_dir, eligible, hash_outputs)
 
     # If MSG:5003 captured a per-title failure reason and we didn't
     # produce a file for it, surface that reason via a FAILED entry. Cheap belt-and-braces — most of the time

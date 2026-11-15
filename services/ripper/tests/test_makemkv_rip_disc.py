@@ -943,3 +943,196 @@ async def test_wait_for_exit_with_stop_times_out_when_neither_happens(monkeypatc
     monkeypatch.setattr(makemkv_rip, "RIP_TIMEOUT_SECONDS", 0.01)
     with pytest.raises(asyncio.TimeoutError):
         await makemkv_rip._wait_for_exit(_as_process(_HangingProc()), asyncio.Event())
+
+
+async def test_kill_if_running_leaves_a_finished_proc_alone():
+    proc = _ScriptedHangingProc([])
+    proc.returncode = 0
+    await makemkv_rip._kill_if_running(_as_process(proc))
+    assert proc.kill_count == 0
+    assert proc.waits_after_kill == 0
+
+
+async def test_kill_if_running_kills_then_waits_for_a_running_proc():
+    proc = _ScriptedHangingProc([])
+    await makemkv_rip._kill_if_running(_as_process(proc))
+    assert proc.kill_count == 1
+    assert proc.waits_after_kill == 1
+
+
+@pytest.mark.parametrize("error", [RuntimeError("reap failed"), asyncio.CancelledError()], ids=["exception", "cancel"])
+async def test_kill_if_running_swallows_a_wait_that_raises(error):
+    class _Proc(_FakeProc):
+        async def wait(self) -> int:
+            raise error
+
+    proc = _Proc([])
+    await makemkv_rip._kill_if_running(_as_process(proc))
+    assert proc.returncode == -9
+
+
+class _StderrStream:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    async def read(self) -> bytes:
+        return self._data
+
+
+def _exited_proc(returncode: int, stderr: bytes | None) -> Any:
+    proc = _FakeProc([], returncode=returncode)
+    proc.returncode = returncode
+    proc.stderr = None if stderr is None else _StderrStream(stderr)  # type: ignore[assignment]
+    return proc
+
+
+async def test_exit_error_binary_expired_wins_over_a_nonzero_exit():
+    state = makemkv_rip._ParserState()
+    state.binary_expired = True
+    state.diagnostics.append("diag line")
+    error = await makemkv_rip._exit_error(_exited_proc(1, b"boom"), state)
+    assert error is not None
+    assert error.startswith("makemkvcon refused: binary is past its hard-coded expiry (MSG:5021).")
+    assert error.endswith(": diag line")
+    assert "boom" not in error
+
+
+async def test_exit_error_clean_exit_is_none():
+    assert await makemkv_rip._exit_error(_exited_proc(0, b"ignored"), makemkv_rip._ParserState()) is None
+
+
+async def test_exit_error_nonzero_reports_the_stripped_last_400_chars_of_stderr():
+    stderr = b"HEAD" + b"x" * 500 + b"TAIL  \n"
+    state = makemkv_rip._ParserState()
+    error = await makemkv_rip._exit_error(_exited_proc(1, stderr), state)
+    assert error == makemkv_rip._compose_error("makemkvcon failed: " + "x" * 396 + "TAIL", state.diagnostics)
+
+
+@pytest.mark.parametrize("stderr", [b"", None], ids=["empty_stderr", "no_stderr"])
+async def test_exit_error_nonzero_without_stderr_reports_the_exit_code(stderr):
+    state = makemkv_rip._ParserState()
+    error = await makemkv_rip._exit_error(_exited_proc(3, stderr), state)
+    assert error == makemkv_rip._compose_error("makemkvcon failed: exit=3", state.diagnostics)
+
+
+def test_mkv_all_command_for_a_device(tmp_path):
+    assert makemkv_rip._mkv_all_command("/dev/sr0", tmp_path, 120) == [
+        "makemkvcon",
+        "mkv",
+        "--robot",
+        "--progress=-stdout",
+        "--minlength=120",
+        "dev:/dev/sr0",
+        "all",
+        str(tmp_path),
+    ]
+
+
+def test_mkv_all_command_for_an_iso_file(tmp_path):
+    iso = tmp_path / "movie.iso"
+    iso.write_bytes(b"")
+    assert makemkv_rip._mkv_all_command(str(iso), tmp_path, 300) == [
+        "makemkvcon",
+        "mkv",
+        "--robot",
+        "--progress=-stdout",
+        "--minlength=300",
+        f"iso:{iso}",
+        "all",
+        str(tmp_path),
+    ]
+
+
+def test_mkv_all_command_has_all_exactly_once_right_before_the_output_dir(tmp_path):
+    cmd = makemkv_rip._mkv_all_command("/dev/sr0", tmp_path, 120)
+    assert cmd.count("all") == 1
+    assert cmd[-2:] == ["all", str(tmp_path)]
+
+
+def _pending_state(**titles: tuple[bool, bool]) -> makemkv_rip._ParserState:
+    """Titles keyed `t<idx>` -> (started_emitted, done_emitted)."""
+    state = makemkv_rip._ParserState()
+    for name, (started, done) in titles.items():
+        state.titles[int(name[1:])] = makemkv_rip._TitleState(started_emitted=started, done_emitted=done)
+    return state
+
+
+async def test_finish_pending_titles_emits_done_once_for_a_started_title():
+    state = _pending_state(t3=(True, False))
+    seen: list[int] = []
+
+    async def on_done(idx: int) -> None:
+        seen.append(idx)
+
+    await makemkv_rip._finish_pending_titles(state, on_done)
+    assert seen == [3]
+    assert state.titles[3].done_emitted
+
+
+async def test_finish_pending_titles_skips_done_and_never_started_titles():
+    state = _pending_state(t1=(True, True), t2=(False, False))
+    seen: list[int] = []
+
+    async def on_done(idx: int) -> None:
+        seen.append(idx)
+
+    await makemkv_rip._finish_pending_titles(state, on_done)
+    assert seen == []
+    assert not state.titles[2].done_emitted
+
+
+async def test_finish_pending_titles_emits_in_ascending_source_index_order():
+    state = _pending_state(t5=(True, False), t0=(True, False), t2=(True, False))
+    seen: list[int] = []
+
+    async def on_done(idx: int) -> None:
+        seen.append(idx)
+
+    await makemkv_rip._finish_pending_titles(state, on_done)
+    assert seen == [0, 2, 5]
+
+
+async def test_finish_pending_titles_without_a_callback_still_marks_done():
+    state = _pending_state(t1=(True, False))
+    await makemkv_rip._finish_pending_titles(state, None)
+    assert state.titles[1].done_emitted
+
+
+async def test_attribute_outputs_pairs_eligible_indexes_with_files_in_rip_order(tmp_path):
+    first = _write_title_file(tmp_path, 0, b"a" * 10)
+    second = _write_title_file(tmp_path, 1, b"b" * 20)
+    out = await makemkv_rip._attribute_outputs(tmp_path, [4, 7], hash_outputs=False)
+    assert set(out) == {4, 7}
+    assert out[4].ok and out[4].output_path == first and out[4].size_bytes == 10
+    assert out[7].ok and out[7].output_path == second and out[7].size_bytes == 20
+
+
+async def test_attribute_outputs_leaves_extra_files_unclaimed(tmp_path):
+    _write_title_file(tmp_path, 0)
+    _write_title_file(tmp_path, 1)
+    out = await makemkv_rip._attribute_outputs(tmp_path, [3], hash_outputs=False)
+    assert list(out) == [3]
+
+
+async def test_attribute_outputs_omits_eligible_indexes_without_a_file(tmp_path):
+    _write_title_file(tmp_path, 0)
+    out = await makemkv_rip._attribute_outputs(tmp_path, [3, 5], hash_outputs=False)
+    assert list(out) == [3]
+
+
+async def test_attribute_outputs_hashes_when_asked(tmp_path):
+    path = _write_title_file(tmp_path, 0, b"hash me")
+    out = await makemkv_rip._attribute_outputs(tmp_path, [0], hash_outputs=True)
+    assert out[0].sha256 == await makemkv_rip.sha256_file(path)
+    assert out[0].sha256 is not None
+
+
+async def test_attribute_outputs_leaves_sha256_unset_without_hashing(tmp_path):
+    _write_title_file(tmp_path, 0)
+    out = await makemkv_rip._attribute_outputs(tmp_path, [0], hash_outputs=False)
+    assert out[0].sha256 is None
+
+
+async def test_attribute_outputs_with_no_eligible_indexes_is_empty(tmp_path):
+    _write_title_file(tmp_path, 0)
+    assert await makemkv_rip._attribute_outputs(tmp_path, [], hash_outputs=True) == {}
