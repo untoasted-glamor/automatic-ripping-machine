@@ -2,7 +2,15 @@ from pathlib import Path
 
 from arm_common import DiscType
 from arm_common.schemas import ScanResult, ScanTitle
-from arm_ripper.scan.makemkv import _classify_from_titles, _split_robot_line, parse_makemkvcon_info
+from arm_ripper.scan.makemkv import (
+    _TINFO_FIELDS,
+    _classify_from_titles,
+    _InfoParser,
+    _scan_title,
+    _split_robot_line,
+    _to_int,
+    parse_makemkvcon_info,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -340,3 +348,120 @@ def test_split_robot_line_strips_the_line_and_each_field():
 
 def test_split_robot_line_with_nothing_after_the_colon_gives_one_empty_field():
     assert _split_robot_line("MSG:") == ("MSG", [""])
+
+
+def test_to_int_parses_ints_and_returns_none_otherwise():
+    assert _to_int("12") == 12
+    assert _to_int(" 7 ") == 7
+    assert _to_int("x") is None
+    assert _to_int("") is None
+
+
+def test_tinfo_fields_covers_exactly_the_known_codes():
+    # Fork: 16 (playlist), 24 (DVD title number), 25 / 26 (segments) too.
+    assert set(_TINFO_FIELDS) == {8, 9, 11, 16, 24, 25, 26, 27}
+
+
+def test_later_unparseable_chapter_count_keeps_the_earlier_valid_one():
+    lines = ['TINFO:0,9,0,"0:01:00"', 'TINFO:0,8,0,"4"', 'TINFO:0,8,0,"many"']
+    _, titles, _ = parse_makemkvcon_info(lines)
+    assert titles[0].chapter_count == 4
+
+
+def test_scan_title_without_a_duration_keeps_the_title():
+    # Fork: an untimed title is kept, so it still gets a Track row.
+    assert _scan_title(0, {"chapter_count": 4}) == ScanTitle(index=0, duration_seconds=None, chapter_count=4)
+
+
+def test_scan_title_with_a_non_int_duration_has_no_duration():
+    assert _scan_title(0, {"duration_seconds": "60"}) == ScanTitle(index=0, duration_seconds=None)
+
+
+def test_scan_title_builds_the_exact_scan_title_from_a_full_entry():
+    entry: dict[str, object] = {
+        "duration_seconds": 60,
+        "chapter_count": 4,
+        "size_bytes": 2048,
+        "source_file": "title02.mkv",
+    }
+    assert _scan_title(2, entry) == ScanTitle(
+        index=2, duration_seconds=60, chapter_count=4, size_bytes=2048, source_file="title02.mkv"
+    )
+
+
+def test_scan_title_maps_wrongly_typed_optional_values_to_none():
+    entry: dict[str, object] = {"duration_seconds": 60, "chapter_count": "4", "size_bytes": "2048", "source_file": 7}
+    assert _scan_title(1, entry) == ScanTitle(index=1, duration_seconds=60)
+
+
+def test_on_cinfo_code_1_sets_disc_type_only_while_unset():
+    parser = _InfoParser()
+    parser.on_cinfo(["1", "0", '"Blu-ray disc"'])
+    parser.on_cinfo(["1", "0", '"DVD"'])
+    assert parser.mkv_disc_type == DiscType.BLURAY
+
+
+def test_on_cinfo_code_1_with_unclassified_value_leaves_type_unset_for_a_later_one():
+    parser = _InfoParser()
+    parser.on_cinfo(["1", "0", '"???"'])
+    assert parser.mkv_disc_type is None
+    parser.on_cinfo(["1", "0", '"DVD"'])
+    assert parser.mkv_disc_type == DiscType.DVD
+
+
+def test_on_cinfo_codes_2_and_30_set_the_label_only_while_empty():
+    parser = _InfoParser()
+    parser.on_cinfo(["2", "0", '""'])
+    assert parser.volume_label == ""
+    parser.on_cinfo(["30", "0", '"FIRST"'])
+    parser.on_cinfo(["2", "0", '"SECOND"'])
+    assert parser.volume_label == "FIRST"
+
+
+def test_on_cinfo_with_non_int_code_changes_nothing():
+    parser = _InfoParser()
+    parser.on_cinfo(["x", "0", '"DVD"'])
+    assert (parser.volume_label, parser.mkv_disc_type) == (None, None)
+
+
+def test_on_tinfo_fills_the_entry_via_the_table():
+    parser = _InfoParser()
+    parser.on_tinfo(["3", "27", "0", '"title03.mkv"'])
+    parser.on_tinfo(["3", "8", "0", '"12"'])
+    assert parser.titles == {3: {"source_file": "title03.mkv", "chapter_count": 12}}
+
+
+def test_on_tinfo_with_non_int_index_or_code_changes_nothing():
+    parser = _InfoParser()
+    parser.on_tinfo(["x", "8", "0", '"1"'])
+    parser.on_tinfo(["0", "y", "0", '"1"'])
+    assert parser.titles == {}
+
+
+def test_on_tinfo_with_unknown_code_creates_the_empty_entry():
+    parser = _InfoParser()
+    parser.on_tinfo(["4", "99", "0", '"v"'])
+    assert parser.titles == {4: {}}
+
+
+def test_feed_routes_cinfo_and_tinfo_and_ignores_everything_else():
+    parser = _InfoParser()
+    parser.feed('CINFO:2,0,"LABEL"')
+    parser.feed('TINFO:0,8,0,"5"')
+    parser.feed("CINFO:2,0")
+    parser.feed("TINFO:0,8,0")
+    parser.feed('MSG:1005,0,1,"x"')
+    parser.feed("")
+    parser.feed("no colon")
+    assert parser.volume_label == "LABEL"
+    assert parser.titles == {0: {"chapter_count": 5}}
+
+
+def test_scan_titles_sorts_by_index_and_keeps_titles_without_duration():
+    parser = _InfoParser()
+    parser.titles = {2: {"duration_seconds": 30}, 1: {"chapter_count": 3}, 0: {"duration_seconds": 10}}
+    assert parser.scan_titles() == [
+        ScanTitle(index=0, duration_seconds=10),
+        ScanTitle(index=1, duration_seconds=None, chapter_count=3),
+        ScanTitle(index=2, duration_seconds=30),
+    ]

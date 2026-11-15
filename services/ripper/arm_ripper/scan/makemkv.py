@@ -2,12 +2,12 @@ import asyncio
 import csv
 import logging
 import re
-from typing import Iterable
+from typing import Callable, Iterable, NamedTuple
 
-from arm_common import DiscType, MakemkvKeyState
+from arm_common import DiscType
 from arm_common.languages import canonical_language
 from arm_common.schemas import DiscFingerprintInput, ScanResult, ScanStream, ScanTitle
-from arm_ripper.scan.disc_probe import probe_disc
+from arm_ripper.scan.disc_probe import DiscProbe, probe_disc
 from arm_ripper.source import is_file_source, makemkv_source_url
 
 logger = logging.getLogger("arm_ripper.scan.makemkv")
@@ -18,21 +18,10 @@ SCAN_TIMEOUT_SECONDS = 300.0
 # No registration key overrides it; the binary refuses all protected-disc
 # work and the only fix is rebuilding against a fresher upstream tarball.
 # See docs/user/MakeMKV-Ripper.md § Failure modes.
-_MAKEMKV_EXPIRED_PREFIX = b"MSG:5021,"
+MAKEMKV_EXPIRED_PREFIX = b"MSG:5021,"
 
 _DURATION_RE = re.compile(r"^(\d+):(\d{1,2}):(\d{1,2})$")
 _QUOTED_RE = re.compile(r'^"(.*)"$')
-
-_MAKEMKV_EVAL_PREFIXES = (b"MSG:5052,", b"MSG:5055,")
-_MAKEMKV_SERIAL_RE = re.compile(r"^[A-Z]-.+$")
-PROBE_TIMEOUT_SECONDS = 30.0
-_PROBE_DETAILS: dict[MakemkvKeyState, str] = {
-    MakemkvKeyState.VALID: "makemkv key accepted",
-    MakemkvKeyState.BINARY_EXPIRED: (
-        "makemkvcon binary expired (MSG:5021); no key overrides — rebuild the ripper image"
-    ),
-    MakemkvKeyState.UNREGISTERED_OR_EXPIRED: "no valid makemkv key in effect (MSG:5052/5055)",
-}
 
 
 class ScanError(Exception):
@@ -55,6 +44,27 @@ def _parse_duration(value: str) -> int | None:
         return None
     h, mn, s = (int(g) for g in m.groups())
     return h * 3600 + mn * 60 + s
+
+
+def _to_int(value: str) -> int | None:
+    """The value as an int, or None when it isn't one."""
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+# TINFO attribute code -> (title field, parser). A field is set only when its parser returns a value.
+_TINFO_FIELDS: dict[int, tuple[str, Callable[[str], int | str | None]]] = {
+    8: ("chapter_count", _to_int),
+    9: ("duration_seconds", _parse_duration),
+    11: ("size_bytes", _to_int),
+    16: ("source_playlist", str),
+    24: ("original_title_id", _to_int),
+    25: ("segment_count", _to_int),
+    26: ("segment_map", str),
+    27: ("source_file", str),
+}
 
 
 def _classify_from_cinfo(disc_type_text: str) -> DiscType | None:
@@ -149,6 +159,96 @@ def _split_robot_line(raw: str) -> tuple[str, list[str]] | None:
     return msg_type, [f.strip() for f in rest.split(",")]
 
 
+def _scan_title(
+    idx: int, entry: dict[str, object], sinfo: dict[int, dict[int, tuple[int, str]]] | None = None
+) -> ScanTitle:
+    """The ScanTitle for one title's collected TINFO fields and SINFO streams.
+
+    Fork: a title with no usable duration is kept with duration_seconds=None
+    (see `parse_makemkvcon_info`)."""
+    return ScanTitle(
+        index=idx,
+        duration_seconds=_int_field(entry, "duration_seconds"),
+        chapter_count=_int_field(entry, "chapter_count"),
+        size_bytes=_int_field(entry, "size_bytes"),
+        source_file=_str_field(entry, "source_file"),
+        source_playlist=_str_field(entry, "source_playlist"),
+        original_title_id=_int_field(entry, "original_title_id"),
+        segment_count=_int_field(entry, "segment_count"),
+        segment_map=_str_field(entry, "segment_map"),
+        streams=[
+            stream
+            for stream_idx, attrs in sorted((sinfo or {}).items())
+            if (stream := _stream_from_sinfo(stream_idx, attrs)) is not None
+        ],
+    )
+
+
+class _InfoParser:
+    """Accumulates the disc label, the disc type and each title's TINFO fields from robot-mode lines.
+
+    Fork: also MakeMKV's TCOUNT and each title's SINFO stream attributes."""
+
+    def __init__(self) -> None:
+        self.volume_label: str | None = None
+        self.mkv_disc_type: DiscType | None = None
+        self.titles: dict[int, dict[str, object]] = {}
+        self.tcount: int | None = None
+        self.sinfo: dict[int, dict[int, dict[int, tuple[int, str]]]] = {}
+
+    def feed(self, raw: str) -> None:
+        """Route one line to its handler; other lines are ignored."""
+        split = _split_robot_line(raw)
+        if split is None:
+            return
+        msg_type, fields = split
+        if msg_type == "TCOUNT":
+            self.tcount = _to_int(fields[0])
+        elif msg_type == "CINFO" and len(fields) >= 3:
+            self.on_cinfo(fields)
+        elif msg_type == "TINFO" and len(fields) >= 4:
+            self.on_tinfo(fields)
+        elif msg_type == "SINFO" and len(fields) >= 5:
+            self.on_sinfo(fields)
+
+    def on_cinfo(self, fields: list[str]) -> None:
+        try:
+            code = int(fields[0])
+        except ValueError:
+            return
+        if code == 1 and self.mkv_disc_type is None:
+            self.mkv_disc_type = _classify_from_cinfo(_strip_quotes(",".join(fields[2:])))
+        elif code in (2, 30) and not self.volume_label:
+            self.volume_label = _strip_quotes(",".join(fields[2:]))
+
+    def on_tinfo(self, fields: list[str]) -> None:
+        try:
+            track_idx = int(fields[0])
+            code = int(fields[1])
+        except ValueError:
+            return
+        value = _strip_quotes(",".join(fields[3:]))
+        entry = self.titles.setdefault(track_idx, {})
+        field = _TINFO_FIELDS.get(code)
+        if field is not None:
+            name, parse = field
+            field_value = parse(value)
+            if field_value is not None:
+                entry[name] = field_value
+
+    def on_sinfo(self, fields: list[str]) -> None:
+        try:
+            title_idx, stream_idx, attr, value_code = (int(f) for f in fields[:4])
+        except ValueError:
+            return
+        streams = self.sinfo.setdefault(title_idx, {})
+        streams.setdefault(stream_idx, {})[attr] = (value_code, _strip_quotes(",".join(fields[4:])))
+
+    def scan_titles(self) -> list[ScanTitle]:
+        """Every title MakeMKV described, in index order (fork: untimed ones too)."""
+        return [_scan_title(idx, self.titles[idx], self.sinfo.get(idx)) for idx in sorted(self.titles)]
+
+
 def parse_makemkvcon_info(
     lines: Iterable[str],
 ) -> tuple[str | None, list[ScanTitle], DiscType | None]:
@@ -189,108 +289,12 @@ def parse_makemkvcon_info(
 
     Reference: https://github.com/automatic-ripping-machine/automatic-ripping-machine/wiki/MakeMKV-Codes
     """
-    volume_label: str | None = None
-    mkv_disc_type: DiscType | None = None
-    tcount: int | None = None
-    titles: dict[int, dict[str, object]] = {}
-    sinfo: dict[int, dict[int, dict[int, tuple[int, str]]]] = {}
-
+    parser = _InfoParser()
     for raw in lines:
-        split = _split_robot_line(raw)
-        if split is None:
-            continue
-        msg_type, fields = split
-
-        if msg_type == "TCOUNT":
-            try:
-                tcount = int(fields[0])
-            except ValueError:
-                pass
-
-        elif msg_type == "CINFO" and len(fields) >= 3:
-            try:
-                code = int(fields[0])
-            except ValueError:
-                continue
-            if code == 1 and mkv_disc_type is None:
-                mkv_disc_type = _classify_from_cinfo(_strip_quotes(",".join(fields[2:])))
-            elif code in (2, 30) and not volume_label:
-                volume_label = _strip_quotes(",".join(fields[2:]))
-
-        elif msg_type == "TINFO" and len(fields) >= 4:
-            try:
-                track_idx = int(fields[0])
-                code = int(fields[1])
-            except ValueError:
-                continue
-            value = _strip_quotes(",".join(fields[3:]))
-            entry = titles.setdefault(track_idx, {})
-            if code == 8:
-                try:
-                    entry["chapter_count"] = int(value)
-                except ValueError:
-                    pass
-            elif code == 9:
-                duration = _parse_duration(value)
-                if duration is not None:
-                    entry["duration_seconds"] = duration
-            elif code == 11:
-                try:
-                    entry["size_bytes"] = int(value)
-                except ValueError:
-                    pass
-            elif code == 16:
-                entry["source_playlist"] = value
-            elif code == 24:
-                try:
-                    entry["original_title_id"] = int(value)
-                except ValueError:
-                    pass
-            elif code == 25:
-                try:
-                    entry["segment_count"] = int(value)
-                except ValueError:
-                    pass
-            elif code == 26:
-                entry["segment_map"] = value
-            elif code == 27:
-                entry["source_file"] = value
-
-        elif msg_type == "SINFO" and len(fields) >= 5:
-            try:
-                title_idx, stream_idx, attr, value_code = (int(f) for f in fields[:4])
-            except ValueError:
-                continue
-            streams = sinfo.setdefault(title_idx, {})
-            streams.setdefault(stream_idx, {})[attr] = (value_code, _strip_quotes(",".join(fields[4:])))
-
-    parsed: list[ScanTitle] = []
-    missing_duration: list[int] = []
-    for idx in sorted(titles):
-        entry = titles[idx]
-        duration_obj = entry.get("duration_seconds")
-        duration = duration_obj if isinstance(duration_obj, int) else None
-        if duration is None:
-            missing_duration.append(idx)
-        parsed.append(
-            ScanTitle(
-                index=idx,
-                duration_seconds=duration,
-                chapter_count=_int_field(entry, "chapter_count"),
-                size_bytes=_int_field(entry, "size_bytes"),
-                source_file=_str_field(entry, "source_file"),
-                source_playlist=_str_field(entry, "source_playlist"),
-                original_title_id=_int_field(entry, "original_title_id"),
-                segment_count=_int_field(entry, "segment_count"),
-                segment_map=_str_field(entry, "segment_map"),
-                streams=[
-                    stream
-                    for stream_idx, attrs in sorted(sinfo.get(idx, {}).items())
-                    if (stream := _stream_from_sinfo(stream_idx, attrs)) is not None
-                ],
-            )
-        )
-
+        parser.feed(raw)
+    parsed = parser.scan_titles()
+    tcount = parser.tcount
+    missing_duration = [t.index for t in parsed if t.duration_seconds is None]
     if missing_duration:
         logger.warning(
             "makemkvcon gave no usable duration (TINFO:t,9) for %d title(s); kept with an unknown "
@@ -317,7 +321,7 @@ def parse_makemkvcon_info(
             len(parsed),
         )
 
-    return volume_label, parsed, mkv_disc_type
+    return parser.volume_label, parsed, parser.mkv_disc_type
 
 
 _EMPTY_SCAN_MAX_MESSAGES = 15
@@ -380,6 +384,33 @@ def _classify_from_titles(titles: list[ScanTitle]) -> DiscType:
     )
 
 
+async def _read_info_stdout(proc: asyncio.subprocess.Process) -> tuple[bytes, bool]:
+    """Read makemkvcon's stdout to EOF; return it and whether MSG:5021 (expired binary) appeared.
+
+    The first MSG:5021 line kills makemkvcon; the pipe is still drained to EOF.
+    """
+    assert proc.stdout is not None
+    chunks: list[bytes] = []
+    expired = False
+    async for raw in proc.stdout:
+        chunks.append(raw)
+        if not expired and raw.startswith(MAKEMKV_EXPIRED_PREFIX):
+            expired = True
+            proc.kill()
+            # Keep draining the pipe so the kernel doesn't block on
+            # buffered writes between SIGKILL and process teardown.
+    return b"".join(chunks), expired
+
+
+async def _read_info_stderr(proc: asyncio.subprocess.Process) -> bytes:
+    """Read makemkvcon's stderr to EOF."""
+    assert proc.stderr is not None
+    chunks: list[bytes] = []
+    async for chunk in proc.stderr:
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 async def _read_makemkvcon_stream(proc: asyncio.subprocess.Process) -> tuple[bytes, bytes, bool]:
     """Drain stdout + stderr concurrently. Returns (stdout, stderr, expired).
 
@@ -392,116 +423,27 @@ async def _read_makemkvcon_stream(proc: asyncio.subprocess.Process) -> tuple[byt
     """
     assert proc.stdout is not None
     assert proc.stderr is not None
-    stdout_chunks: list[bytes] = []
-    expired = False
-
-    async def _read_stdout() -> None:
-        nonlocal expired
-        assert proc.stdout is not None
-        async for raw in proc.stdout:
-            stdout_chunks.append(raw)
-            if not expired and raw.startswith(_MAKEMKV_EXPIRED_PREFIX):
-                expired = True
-                proc.kill()
-                # Keep draining the pipe so the kernel doesn't block on
-                # buffered writes between SIGKILL and process teardown.
-
-    async def _drain_stderr() -> bytes:
-        assert proc.stderr is not None
-        chunks: list[bytes] = []
-        async for chunk in proc.stderr:
-            chunks.append(chunk)
-        return b"".join(chunks)
-
-    stdout_task = asyncio.create_task(_read_stdout())
-    stderr_task = asyncio.create_task(_drain_stderr())
-    await stdout_task
+    stdout_task = asyncio.create_task(_read_info_stdout(proc))
+    stderr_task = asyncio.create_task(_read_info_stderr(proc))
+    stdout_bytes, expired = await stdout_task
     stderr_bytes = await stderr_task
-    return b"".join(stdout_chunks), stderr_bytes, expired
+    return stdout_bytes, stderr_bytes, expired
 
 
-def _is_malformed_key(key: str | None) -> bool:
-    """A configured key that is set but isn't a MakeMKV serial; no key at all is not malformed."""
-    return bool(key and key.strip() and not _MAKEMKV_SERIAL_RE.match(key.strip()))
+class _InfoRun(NamedTuple):
+    """What one `makemkvcon info` run printed, and how it exited."""
+
+    stdout: bytes
+    stderr: bytes
+    expired: bool
+    returncode: int | None
 
 
-def _probe_line_state(raw: bytes, state: MakemkvKeyState) -> MakemkvKeyState | None:
-    """The key state a makemkvcon stdout line reports, or None when the line says nothing about the key."""
-    if raw.startswith(_MAKEMKV_EXPIRED_PREFIX):
-        return MakemkvKeyState.BINARY_EXPIRED
-    # BINARY_EXPIRED wins: real MakeMKV never emits both, but guard
-    # the assignment so a pathological stream can't downgrade it.
-    if any(raw.startswith(p) for p in _MAKEMKV_EVAL_PREFIXES) and state != MakemkvKeyState.BINARY_EXPIRED:
-        return MakemkvKeyState.UNREGISTERED_OR_EXPIRED
-    return None
+async def _run_info(device_path: str) -> _InfoRun:
+    """Run `makemkvcon info` on the device under the scan timeout, at
+    `--minlength=0` (see `scan_disc`).
 
-
-async def _scan_probe_stdout(proc: asyncio.subprocess.Process) -> MakemkvKeyState:
-    """Read the probe's stdout to EOF and return the key state it reports, killing makemkvcon on every key message."""
-    assert proc.stdout is not None
-    state = MakemkvKeyState.VALID
-    async for raw in proc.stdout:
-        line_state = _probe_line_state(raw, state)
-        if line_state is not None:
-            state = line_state
-            proc.kill()
-    return state
-
-
-async def _discard_stderr(proc: asyncio.subprocess.Process) -> None:
-    """Drain the probe's stderr so makemkvcon never blocks on a full pipe."""
-    assert proc.stderr is not None
-    async for _ in proc.stderr:
-        pass
-
-
-def _probe_outcome(state: MakemkvKeyState, returncode: int | None) -> tuple[MakemkvKeyState, str | None]:
-    """The probe's result from the state stdout reported and makemkvcon's exit code."""
-    if state == MakemkvKeyState.VALID and returncode not in (0, None):
-        return MakemkvKeyState.PROBE_FAILED, f"makemkvcon exited {returncode} with no key message"
-    return state, _PROBE_DETAILS.get(state)
-
-
-async def probe_makemkv_key(key: str | None) -> tuple[MakemkvKeyState, str | None]:
-    """Disc-free makemkv key probe. Runs `makemkvcon -r --cache=1 info disc:9999`
-    (no disc, no hardware) and classifies the startup MSG codes. NEVER raises —
-    every failure maps to a state. See the 2026-06-12 makemkv-key-validity spec."""
-    if _is_malformed_key(key):
-        return MakemkvKeyState.FORMAT_INVALID, "configured key is not a MakeMKV serial (expected M-…/T-…)"
-
-    cmd = ["makemkvcon", "-r", "--cache=1", "info", "disc:9999"]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-    except FileNotFoundError:
-        return MakemkvKeyState.PROBE_FAILED, "makemkvcon binary not found on PATH"
-    except OSError as exc:
-        return MakemkvKeyState.PROBE_FAILED, f"could not start makemkvcon: {exc}"
-
-    try:
-        state, _ = await asyncio.wait_for(
-            asyncio.gather(_scan_probe_stdout(proc), _discard_stderr(proc)), timeout=PROBE_TIMEOUT_SECONDS
-        )
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        return MakemkvKeyState.PROBE_FAILED, f"makemkvcon probe timed out after {PROBE_TIMEOUT_SECONDS:.0f}s"
-
-    await proc.wait()
-
-    return _probe_outcome(state, proc.returncode)
-
-
-async def scan_disc(device_path: str) -> ScanResult:
-    """List every title on the disc, however short.
-
-    Runs `info` at `--minlength=0`: MakeMKV numbers titles densely over the
-    ones that pass its minimum, so a scan at its built-in 120 s would number
-    titles differently from a rip run at any other minimum (a session
-    override). Scanning everything lets the rip's minimum be applied
-    afterwards, to titles whose ids are known. The caller records which
-    titles are worth a Track row in `ScanResult.min_length_seconds`.
+    Raises ScanError when makemkvcon is not on PATH or times out.
     """
     cmd = ["makemkvcon", "-r", "--cache=1", "--minlength=0", "info", makemkv_source_url(device_path)]
     logger.info("makemkvcon info device=%s", device_path)
@@ -523,8 +465,15 @@ async def scan_disc(device_path: str) -> ScanResult:
         raise ScanError(f"makemkvcon timed out after {SCAN_TIMEOUT_SECONDS}s") from None
 
     await proc.wait()
+    return _InfoRun(stdout, stderr, expired, proc.returncode)
 
-    if expired:
+
+def _raise_for_failure(run: _InfoRun) -> None:
+    """Raise when the info run failed.
+
+    MakemkvBinaryExpiredError for an expired binary, else ScanError on a non-zero exit.
+    """
+    if run.expired:
         raise MakemkvBinaryExpiredError(
             "makemkvcon refused: binary is past its hard-coded expiry "
             "(MSG:5021 'application version is too old'). MakeMKV beta "
@@ -534,11 +483,38 @@ async def scan_disc(device_path: str) -> ScanResult:
             "docs/user/MakeMKV-Ripper.md § Failure modes."
         )
 
-    if proc.returncode != 0:
-        msg = stderr.decode(errors="replace").strip() or stdout.decode(errors="replace")[:200]
-        raise ScanError(f"makemkvcon exited {proc.returncode}: {msg}")
+    if run.returncode != 0:
+        msg = run.stderr.decode(errors="replace").strip() or run.stdout.decode(errors="replace")[:200]
+        raise ScanError(f"makemkvcon exited {run.returncode}: {msg}")
 
-    lines = stdout.decode(errors="replace").splitlines()
+
+def _fingerprints(probe: DiscProbe) -> list[DiscFingerprintInput]:
+    """The disc fingerprints the probe found, in the order crc64, thediscdb, matrix256; empty values are skipped."""
+    fingerprints: list[DiscFingerprintInput] = []
+    if probe.crc64:
+        fingerprints.append(DiscFingerprintInput(algo="crc64", value=probe.crc64))
+    if probe.thediscdb:
+        fingerprints.append(DiscFingerprintInput(algo="thediscdb", value=probe.thediscdb))
+    if probe.matrix256:
+        fingerprints.append(DiscFingerprintInput(algo="matrix256", value=probe.matrix256))
+    return fingerprints
+
+
+async def scan_disc(device_path: str) -> ScanResult:
+    """List every title on the disc, however short.
+
+    Runs `info` at `--minlength=0`: MakeMKV numbers titles densely over the
+    ones that pass its minimum, so a scan at its built-in 120 s would number
+    titles differently from a rip run at any other minimum (a session
+    override). Scanning everything lets the rip's minimum be applied
+    afterwards, to titles whose ids are known. The caller records which
+    titles are worth a Track row in `ScanResult.min_length_seconds`.
+    """
+    run = await _run_info(device_path)
+
+    _raise_for_failure(run)
+
+    lines = run.stdout.decode(errors="replace").splitlines()
     volume_label, titles, mkv_disc_type = parse_makemkvcon_info(lines)
     if not titles:
         # Without this MakeMKV's reason (no drive found, AACS failure, read
@@ -562,19 +538,11 @@ async def scan_disc(device_path: str) -> ScanResult:
         device_path, bluray=disc_type == DiscType.BLURAY, menus=disc_type in (DiscType.DVD, DiscType.BLURAY)
     )
 
-    fingerprints: list[DiscFingerprintInput] = []
-    if probe.crc64:
-        fingerprints.append(DiscFingerprintInput(algo="crc64", value=probe.crc64))
-    if probe.thediscdb:
-        fingerprints.append(DiscFingerprintInput(algo="thediscdb", value=probe.thediscdb))
-    if probe.matrix256:
-        fingerprints.append(DiscFingerprintInput(algo="matrix256", value=probe.matrix256))
-
     return ScanResult(
         disc_type=disc_type,
         volume_label=volume_label,
         titles=titles,
-        fingerprints=fingerprints,
+        fingerprints=_fingerprints(probe),
         bd_meta=probe.bd_meta,
         menu_kind=probe.menu_kind,
     )
