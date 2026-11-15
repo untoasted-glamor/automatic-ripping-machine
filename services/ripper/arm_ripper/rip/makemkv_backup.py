@@ -33,7 +33,14 @@ from arm_common import DiscType
 from arm_common.fileops import tree_size
 from arm_common.schemas import ScanTitle
 
-from arm_ripper.rip.makemkv_rip import OnDiscProgress, RipResult, _compose_error, _ParserState, _run_makemkvcon
+from arm_ripper.rip.makemkv_rip import (
+    OnDiscProgress,
+    RipCallbacks,
+    RipResult,
+    _compose_error,
+    _ParserState,
+    _run_makemkvcon,
+)
 from arm_ripper.rip.preflight import title_clips
 from arm_ripper.source import is_file_source, makemkv_source_url
 
@@ -252,7 +259,9 @@ async def rip_backup(
     logger.info("makemkvcon backup source=%s target=%s decrypt=%s", source, target, decrypt)
 
     state = _ParserState()
-    error = await _run_makemkvcon(cmd, state, on_disc_progress=on_progress, gate_disc_progress=False, stop=stop)
+    error = await _run_makemkvcon(
+        cmd, state, callbacks=RipCallbacks(on_disc_progress=on_progress), gate_disc_progress=False, stop=stop
+    )
     if error is not None:
         return BackupResult(ok=False, error=error)
     if not _backup_written(target):

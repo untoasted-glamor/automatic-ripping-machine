@@ -47,6 +47,7 @@ import shutil
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from arm_ripper.rip.hashing import sha256_file
 from arm_ripper.source import makemkv_source_url
@@ -74,6 +75,19 @@ OnTitleDone = Callable[[int], Awaitable[None]]
 # the dashboard ever gets during the rip phase. See dispatcher's
 # `_on_disc_progress` for attribution to a track id.
 OnDiscProgress = Callable[[float], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class RipCallbacks:
+    """The progress callbacks a makemkvcon run reports through; each is optional."""
+
+    on_title_start: OnTitleStart | None = None
+    on_title_progress: OnTitleProgress | None = None
+    on_disc_progress: OnDiscProgress | None = None
+    on_title_done: OnTitleDone | None = None
+
+
+_NO_CALLBACKS = RipCallbacks()
 
 _PRGV_RE = re.compile(r"^PRGV:(\d+),(\d+),(\d+)$")
 _PRGT_RE = re.compile(r'^PRGT:(\d+),(\d+),"(.*)"$')
@@ -280,6 +294,14 @@ def _extract_title_index_from_msg5003(args: list[str]) -> int | None:
     return None
 
 
+async def _call_safely(label: str, callback: Callable[..., Awaitable[None]], *args: Any) -> None:
+    """Await `callback(*args)`; a raise is logged at debug as "<label> callback raised: <exc>" and swallowed."""
+    try:
+        await callback(*args)
+    except Exception as exc:
+        logger.debug("%s callback raised: %s", label, exc)
+
+
 async def _emit_title_start(
     state: _ParserState,
     title_idx: int,
@@ -292,10 +314,7 @@ async def _emit_title_start(
         return
     ts.started_emitted = True
     if on_title_start is not None:
-        try:
-            await on_title_start(title_idx)
-        except Exception as exc:
-            logger.debug("title start callback raised: %s", exc)
+        await _call_safely("title start", on_title_start, title_idx)
 
 
 async def _emit_title_done(
@@ -309,19 +328,13 @@ async def _emit_title_done(
         return
     ts.done_emitted = True
     if on_title_done is not None:
-        try:
-            await on_title_done(title_idx)
-        except Exception as exc:
-            logger.debug("title done callback raised: %s", exc)
+        await _call_safely("title done", on_title_done, title_idx)
 
 
 async def _stream_output(
     proc: asyncio.subprocess.Process,
     state: _ParserState,
-    on_title_start: OnTitleStart | None,
-    on_title_progress: OnTitleProgress | None,
-    on_disc_progress: OnDiscProgress | None,
-    on_title_done: OnTitleDone | None = None,
+    callbacks: RipCallbacks,
     eligible_source_indexes: list[int] | None = None,
     gate_disc_progress: bool = True,
 ) -> None:
@@ -366,16 +379,10 @@ async def _stream_output(
         totals = parse_progress_totals(line)
         if totals is not None:
             cur_frac, tot_frac = totals
-            if state.current_title is not None and on_title_progress is not None:
-                try:
-                    await on_title_progress(state.current_title, cur_frac)
-                except Exception as exc:
-                    logger.debug("title progress callback raised: %s", exc)
-            elif (state.save_phase_started or not gate_disc_progress) and on_disc_progress is not None:
-                try:
-                    await on_disc_progress(tot_frac)
-                except Exception as exc:
-                    logger.debug("disc progress callback raised: %s", exc)
+            if state.current_title is not None and callbacks.on_title_progress is not None:
+                await _call_safely("title progress", callbacks.on_title_progress, state.current_title, cur_frac)
+            elif (state.save_phase_started or not gate_disc_progress) and callbacks.on_disc_progress is not None:
+                await _call_safely("disc progress", callbacks.on_disc_progress, tot_frac)
             continue
 
         # PRGC:5017 — primary per-title signal in `mkv all` mode. The
@@ -391,8 +398,8 @@ async def _stream_output(
                 # the dispatcher can PATCH N=DONE before N+1 goes
                 # IN_PROGRESS, keeping the lifecycle ordering clean.
                 if state.current_title is not None and state.current_title != source_idx:
-                    await _emit_title_done(state, state.current_title, on_title_done)
-                await _emit_title_start(state, source_idx, on_title_start)
+                    await _emit_title_done(state, state.current_title, callbacks.on_title_done)
+                await _emit_title_start(state, source_idx, callbacks.on_title_start)
             else:
                 logger.warning(
                     "PRGC:5017 output position %d out of range (eligible has %d entries)",
@@ -408,7 +415,7 @@ async def _stream_output(
         # opened.
         title_idx = parse_prgt_title(line)
         if title_idx is not None:
-            await _emit_title_start(state, title_idx, on_title_start)
+            await _emit_title_start(state, title_idx, callbacks.on_title_start)
             continue
 
         # Generic PRGT (other milestones) — log; also detect the save
@@ -586,10 +593,7 @@ async def _run_makemkvcon(
     cmd: list[str],
     state: _ParserState,
     *,
-    on_title_start: OnTitleStart | None = None,
-    on_title_progress: OnTitleProgress | None = None,
-    on_disc_progress: OnDiscProgress | None = None,
-    on_title_done: OnTitleDone | None = None,
+    callbacks: RipCallbacks = _NO_CALLBACKS,
     eligible_source_indexes: list[int] | None = None,
     gate_disc_progress: bool = True,
     stop: asyncio.Event | None = None,
@@ -613,10 +617,7 @@ async def _run_makemkvcon(
         _stream_output(
             proc,
             state,
-            on_title_start,
-            on_title_progress,
-            on_disc_progress,
-            on_title_done=on_title_done,
+            callbacks,
             eligible_source_indexes=eligible_source_indexes,
             gate_disc_progress=gate_disc_progress,
         )
@@ -701,6 +702,37 @@ async def _attribute_outputs(output_dir: Path, eligible: list[int], hash_outputs
     return titles_out
 
 
+def _failed_titles(state: _ParserState, eligible: list[int], ripped: dict[int, RipResult]) -> dict[int, RipResult]:
+    """Failures for titles without a file.
+
+    A captured MSG:5003 reason comes first, then a generic "produced no .mkv" for each eligible title left over.
+    """
+    failed: dict[int, RipResult] = {}
+    # If MSG:5003 captured a per-title failure reason and we didn't
+    # produce a file for it (because the eligible list and files
+    # ran out at different points), surface that reason via a
+    # FAILED entry. Cheap belt-and-braces — most of the time
+    # state.titles is empty in `mkv all` mode.
+    for title_idx, ts in state.titles.items():
+        if title_idx in ripped:
+            continue
+        if ts.fail_reason:
+            failed[title_idx] = RipResult(ok=False, error=ts.fail_reason)
+
+    # Eligible source indexes that didn't get a file *and* don't have
+    # a captured failure reason are surfaced as a generic "produced no
+    # .mkv" failure so the dispatcher can mark the track FAILED rather
+    # than silently dropping it.
+    for source_idx in eligible:
+        if source_idx in ripped or source_idx in failed:
+            continue
+        failed[source_idx] = RipResult(
+            ok=False,
+            error="makemkvcon exited 0 but produced no .mkv for this title",
+        )
+    return failed
+
+
 async def rip_disc(
     device_path: str,
     output_dir: Path,
@@ -762,10 +794,12 @@ async def rip_disc(
     error = await _run_makemkvcon(
         cmd,
         state,
-        on_title_start=on_title_start,
-        on_title_progress=on_title_progress,
-        on_disc_progress=on_disc_progress,
-        on_title_done=on_title_done,
+        callbacks=RipCallbacks(
+            on_title_start=on_title_start,
+            on_title_progress=on_title_progress,
+            on_disc_progress=on_disc_progress,
+            on_title_done=on_title_done,
+        ),
         eligible_source_indexes=eligible_source_indexes,
         stop=stop,
     )
@@ -777,26 +811,7 @@ async def rip_disc(
     eligible = eligible_source_indexes or []
     titles_out = await _attribute_outputs(output_dir, eligible, hash_outputs)
 
-    # If MSG:5003 captured a per-title failure reason and we didn't
-    # produce a file for it, surface that reason via a FAILED entry. Cheap belt-and-braces — most of the time
-    # state.titles is empty in `mkv all` mode.
-    for title_idx, ts in state.titles.items():
-        if title_idx in titles_out:
-            continue
-        if ts.fail_reason:
-            titles_out[title_idx] = RipResult(ok=False, error=ts.fail_reason)
-
-    # Eligible source indexes that didn't get a file *and* don't have
-    # a captured failure reason are surfaced as a generic "produced no
-    # .mkv" failure so the dispatcher can mark the track FAILED rather
-    # than silently dropping it.
-    for source_idx in eligible:
-        if source_idx in titles_out:
-            continue
-        titles_out[source_idx] = RipResult(
-            ok=False,
-            error="makemkvcon exited 0 but produced no .mkv for this title",
-        )
+    titles_out.update(_failed_titles(state, eligible, titles_out))
 
     return RipDiscResult(overall_error=None, titles=titles_out)
 
@@ -850,7 +865,9 @@ async def remux_title(
     # The one save is announced as PRGC:5017 position 0; naming it as the only
     # eligible title keeps the streamer from warning about it, and with no
     # per-title callback its progress comes through the disc-level channel.
-    error = await _run_makemkvcon(cmd, state, on_disc_progress=on_progress, eligible_source_indexes=[title_id])
+    error = await _run_makemkvcon(
+        cmd, state, callbacks=RipCallbacks(on_disc_progress=on_progress), eligible_source_indexes=[title_id]
+    )
     if error is not None:
         return RipResult(ok=False, error=error)
     produced = sorted(scratch_dir.glob("*.mkv"))
