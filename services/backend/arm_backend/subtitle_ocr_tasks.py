@@ -34,7 +34,7 @@ from typing import Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
-from arm_backend.seeders import CONFIG_SINGLETON_ID
+from arm_backend.constants import CONFIG_SINGLETON_ID
 from arm_backend.sidecars import TEXT_SUBTITLE_SUFFIX, image_subtitle_sidecars, sidecar_files
 from arm_backend.ws import WSHub
 from arm_common import (

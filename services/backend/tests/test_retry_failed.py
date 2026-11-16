@@ -28,7 +28,7 @@ from arm_backend.db import get_session  # noqa: E402
 from arm_backend.jwt_utils import issue_access_token  # noqa: E402
 from arm_backend.routers import jobs as jobs_router  # noqa: E402
 from arm_backend.routers import ripper as ripper_router  # noqa: E402
-from arm_backend.seeders import CONFIG_SINGLETON_ID  # noqa: E402
+from arm_backend.constants import CONFIG_SINGLETON_ID  # noqa: E402
 from arm_common import (  # noqa: E402
     Config,
     ContainerFormat,

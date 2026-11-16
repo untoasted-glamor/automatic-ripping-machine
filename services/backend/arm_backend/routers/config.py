@@ -43,7 +43,7 @@ from arm_backend.identity.sources.registry import (
     search_provider_setting,
 )
 from arm_backend.makemkv_status import makemkv_state_detail
-from arm_backend.seeders import CONFIG_SINGLETON_ID
+from arm_backend.constants import CONFIG_SINGLETON_ID
 from arm_backend.subtitle_ocr_tasks import bundled_model_view
 from arm_common import (
     Config,

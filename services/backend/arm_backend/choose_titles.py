@@ -36,7 +36,7 @@ from arm_backend.disc_menus.preview_tasks import preview_settled
 from arm_backend.disc_menus.proposals import scan_titles, title_clips
 from arm_backend.raw_backup import delete_backup
 from arm_backend.rip_retry import RetryRefused, arm_retry, check_retryable, has_complete_backup, remaining_tracks
-from arm_backend.seeders import CONFIG_SINGLETON_ID
+from arm_backend.constants import CONFIG_SINGLETON_ID
 from arm_backend.ws import WSHub
 from arm_common import Config, DiscType, Drive, Job, JobStatus, MediaType, TrackKind, TrackRole, TrackStatus
 from arm_common.enums import MenuProposalStatus
