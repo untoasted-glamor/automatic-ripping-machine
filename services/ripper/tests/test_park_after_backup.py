@@ -179,6 +179,8 @@ async def test_a_parked_rip_calls_rip_parked_and_gives_the_disc_back_once(monkey
     client = _ParkClient()
     controller = env["controller"]
     controller._client = client
+    # The rip's backend calls go through the controller's BackendRetry, built with the first client.
+    controller._backend._client = client
 
     async def backed_up(**kw: Any) -> bool:
         assert kw["park_after_backup"] is True

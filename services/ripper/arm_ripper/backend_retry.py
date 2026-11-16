@@ -61,6 +61,11 @@ class BackendRetry:
         """Mark the job's rip complete on the backend, retrying a transient failure."""
         return await self.call(lambda: self._client.rip_complete(job_id), f"rip-complete {job_id}")
 
+    async def rip_parked(self, job_id: str) -> JobView:
+        """Fork (stop 2): mark the job backed up and waiting for its titles to be chosen, retrying a transient
+        failure."""
+        return await self.call(lambda: self._client.rip_parked(job_id), f"rip-parked {job_id}")
+
     async def patch_track(self, track_id: str, **fields: object) -> None:
         """PATCH one track's fields on the backend, retrying a transient failure."""
         await self.call(lambda: self._client.update_track(track_id, **fields), f"PATCH track {track_id}")
