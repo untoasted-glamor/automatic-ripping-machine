@@ -1,8 +1,7 @@
 """Drive listing + PATCH for `default_session_id` / `display_name` (Phase 8)."""
 
 import asyncio
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -11,14 +10,21 @@ from sqlmodel import col, select
 
 from arm_backend.auth import require_jwt, require_writer
 from arm_backend.db import get_session
-from arm_backend.drive_scanner import PruneUnavailable, _tunables
+from arm_backend.drive_health import (
+    _aware,
+    container_statuses,
+    diagnose_drive,
+    heartbeat_stale,
+    manager_findings,
+    scanner_findings,
+)
+from arm_backend.drive_scanner import PruneUnavailable
 from arm_backend.ripper_manager import RipperManager, RipperManagerError
-from arm_common import Drive, DriveIdentityKind, DriveKind, DriveLifecycle, DriveStatus, Job, Session, User
+from arm_common import Drive, DriveKind, DriveLifecycle, DriveStatus, Job, Session, User
 from arm_common.enums import LIVE_JOB_STATUSES, TERMINAL_JOB_STATUSES
 from arm_common.models._columns import enum_value_str
 from arm_common.models.user import ADMIN_ROLE
 from arm_common.schemas import (
-    DriveDiagnosticItem,
     DriveDiagnosticResponse,
     DriveCurrentJobView,
     DriveRescanResponse,
@@ -27,22 +33,6 @@ from arm_common.schemas import (
 )
 
 router = APIRouter(prefix="/api/drives", tags=["drives"])
-
-# A drive whose last media-status update is older than this is considered
-# stale (its ripper likely stopped heart-beating). Deliberately looser than the
-# 90s manual-trigger pre-check window (jobs.py `_MEDIA_STATUS_FRESHNESS`): that
-# gate fast-fails a rip on a momentarily-quiet drive, whereas this is an
-# operator-facing health view that shouldn't flap on a single missed heartbeat.
-_STALE_AFTER = timedelta(minutes=5)
-
-_PORT_NOTE = "no by-id link, identified by port: a replug on another port creates a new drive"
-
-
-def _aware(dt: datetime) -> datetime:
-    """SQLite (and some drivers) hand back naive datetimes; everything here
-    is compared against `datetime.now(timezone.utc)`, so treat naive as UTC —
-    same convention as drive_scanner.reconcile_drives."""
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
 def _current_job(jobs_for_drive: list[Job]) -> DriveCurrentJobView | None:
@@ -86,7 +76,7 @@ def _to_view(drive: Drive, jobs_for_drive: list[Job]) -> DriveView:
     # "scanning" once the heartbeat is stale (the health view's window).
     if view.scan_started_at is not None:
         seen = drive.media_status_at
-        if seen is None or datetime.now(timezone.utc) - _aware(seen) > _STALE_AFTER:
+        if seen is None or heartbeat_stale(_aware(seen), datetime.now(timezone.utc)):
             view.scan_started_at = None
             view.scan_attempt = None
             view.scan_max_attempts = None
@@ -117,6 +107,14 @@ async def list_drives(
     return [_to_view(d, jobs_by_drive.get(d.id, [])) for d in drives]
 
 
+async def _load_optical_drives(db: AsyncSession) -> list[Drive]:
+    """Every optical drive row, oldest first (virtual ISO rows excluded)."""
+    result = await db.execute(
+        select(Drive).where(col(Drive.kind) == DriveKind.OPTICAL).order_by(col(Drive.created_at).asc())
+    )
+    return list(result.scalars().all())
+
+
 @router.get("/diagnostic", response_model=DriveDiagnosticResponse)
 async def drive_diagnostic(
     request: Request,
@@ -129,105 +127,14 @@ async def drive_diagnostic(
     itself a finding. Virtual (ISO) drives are excluded entirely: they have
     no scanner/by-id/container health to report, and the lifecycle-else
     branch below ("ignored") assumes only an optical row can be here."""
-    drives = list(
-        (
-            await db.execute(
-                select(Drive).where(col(Drive.kind) == DriveKind.OPTICAL).order_by(col(Drive.created_at).asc())
-            )
-        )
-        .scalars()
-        .all()
-    )
+    drives = await _load_optical_drives(db)
     now = datetime.now(timezone.utc)
     scanner = getattr(request.app.state, "drive_scanner", None)
     manager = getattr(request.app.state, "ripper_manager", None)
-
-    statuses: dict[str, tuple[str, bool | None]] = {}
-    if manager is not None:
-        enrolled_ids = [d.id for d in drives if d.lifecycle is DriveLifecycle.ENROLLED]
-        statuses = await asyncio.to_thread(manager.container_statuses, enrolled_ids)
-
-    items: list[DriveDiagnosticItem] = []
-    for d in drives:
-        notes: list[str] = []
-        container: str | None = None
-        if d.lifecycle is DriveLifecycle.ENROLLED:
-            if d.media_status_at is None:
-                notes.append("no media-status heartbeat recorded")
-            elif now - _aware(d.media_status_at) > _STALE_AFTER:
-                notes.append("media-status heartbeat is stale")
-            if d.status is DriveStatus.OFFLINE:
-                notes.append("drive is detached: reconnect it" if not d.present else "ripper heartbeat is stale")
-            elif d.status is DriveStatus.ERROR:
-                notes.append(f"error: {d.last_error or 'unknown'}")
-            if manager is not None:
-                state, current = statuses[d.id]
-                if state == "missing":
-                    container = "missing"
-                    notes.append("no ripper container: restart the backend or re-enroll")
-                elif state == "unknown":
-                    container = "unknown"
-                    notes.append("cannot inspect the ripper container")
-                elif state != "running":
-                    container = state
-                    notes.append("ripper container is not running")
-                elif current is False:
-                    container = "stale-image"
-                    notes.append("ripper runs an older image: it is recreated at the next backend restart while idle")
-                else:
-                    container = "running"
-            healthy = not notes
-        elif d.lifecycle is DriveLifecycle.DETECTED:
-            if not d.present:
-                seen = f"since {_aware(d.last_seen_at):%Y-%m-%d %H:%M} UTC" if d.last_seen_at else ""
-                notes.append(f"not connected {seen}".rstrip())
-            notes.append("not enrolled: enroll it on the Drives page to rip with it")
-            healthy = d.present
-        else:
-            notes.append("ignored")
-            healthy = True
-        if d.identity_kind is DriveIdentityKind.PORT:
-            notes.append(_PORT_NOTE)
-            if d.lifecycle is DriveLifecycle.ENROLLED:
-                healthy = False
-        items.append(
-            DriveDiagnosticItem(
-                id=d.id,
-                lifecycle=d.lifecycle,
-                present=d.present,
-                identity_kind=d.identity_kind,
-                device_path=d.device_path,
-                status=d.status,
-                media_status=d.media_status,
-                media_status_at=d.media_status_at,
-                container=container,
-                last_error=d.last_error,
-                healthy=healthy,
-                notes=notes,
-            )
-        )
-
-    system: list[str] = []
-    if scanner is None:
-        system.append("drive scanner is not running")
-    else:
-        if scanner.last_error:
-            system.append(f"last scan failed: {scanner.last_error}")
-        interval, _prune_days = await _tunables(db)
-        if scanner.last_scan_at is not None:
-            age = int((now - _aware(scanner.last_scan_at)).total_seconds())
-            if age > 3 * interval:
-                system.append(f"last scan was {age}s ago: the scanner may be stuck")
-        if not (Path(scanner.disk_root) / "by-id").is_dir():
-            system.append("/host-disk/by-id is not mounted: drives cannot be identified")
-    if manager is None:
-        system.append("ripper manager is not running: enroll is unavailable")
-    elif not manager.host_paths_set():
-        system.append("ripper manager disabled: ARM_HOST_*_PATH not set")
-    else:
-        ok, detail = await asyncio.to_thread(manager.probe)
-        if not ok:
-            system.append(f"ripper manager: {detail}")
+    statuses = await container_statuses(manager, drives)
+    items = [diagnose_drive(d, now, statuses) for d in drives]
+    system = await scanner_findings(scanner, db, now)
+    system += await manager_findings(manager)
     return DriveDiagnosticResponse(drives=items, system=system)
 
 
@@ -273,7 +180,7 @@ async def rescan_drives(
     online = 0
     stale = 0
     for d in drives:
-        fresh = d.media_status_at is not None and (now - d.media_status_at) <= _STALE_AFTER
+        fresh = d.media_status_at is not None and not heartbeat_stale(d.media_status_at, now)
         if fresh and d.status == DriveStatus.ONLINE:
             online += 1
         else:

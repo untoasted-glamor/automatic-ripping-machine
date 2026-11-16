@@ -20,16 +20,14 @@ from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
 from arm_backend.auth import require_jwt, require_writer
-from arm_backend.auto_session import drain_parked_applications_after_rip
 from arm_backend.config import effective_transcode_capable, settings
+from arm_backend.config_effects import reresolve_identity, redrain_parked_applications
+from arm_backend.config_validation import reject_non_editable_keys, validate_config_update
 from arm_backend.db import get_session
-from arm_backend.identity.pipeline import resolve_job
-from arm_backend.identity.stage_runner import emit_identity_resolved
 from arm_backend.identity.sources.registry import (
     crc64service_enabled,
     episode_auto_apply,
@@ -42,20 +40,17 @@ from arm_backend.identity.sources.registry import (
     music_sources_setting,
     search_provider_setting,
 )
-from arm_backend.makemkv_status import makemkv_state_detail
+from arm_backend.key_checks import check_online_key, makemkv_key_status
 from arm_backend.constants import CONFIG_SINGLETON_ID
 from arm_backend.subtitle_ocr_tasks import bundled_model_view
 from arm_common import (
     Config,
     Job,
     JobStatus,
-    SessionApplication,
-    SessionApplicationStatus,
     User,
-    with_log_context,
 )
-from arm_common.config_metadata import CONFIG_FIELD_META, ConfigFieldMeta
-from arm_common.enums import LIVE_JOB_STATUSES, REDRAIN_JOB_STATUSES, PreviouslyRippedAction
+from arm_common.config_metadata import CONFIG_FIELD_META
+from arm_common.enums import PreviouslyRippedAction
 from arm_common.schemas import (
     ConfigUpdateRequest,
     ConfigView,
@@ -66,22 +61,15 @@ from arm_common.schemas import (
 )
 from arm_common.secrets import HIDDEN_SECRET
 
-_KEY_CHECK_TIMEOUT_SECONDS = 10.0
-
 router = APIRouter(prefix="/api/config", tags=["config"])
 
 logger = logging.getLogger("arm_backend.routers.config")
-
-_NON_EDITABLE_KEYS = frozenset(m.key for m in CONFIG_FIELD_META if not m.editable)
 
 # Secret-tier config fields, derived from the registry so a future secret field
 # auto-masks. The `& ConfigView.model_fields` guard keeps masking aligned to what's
 # actually exposed: e.g. when tvdb_api_key gains its registry+ConfigView entry (B29),
 # it masks automatically; a secret-tier field not yet on ConfigView is skipped.
 _SECRET_KEYS = frozenset(m.key for m in CONFIG_FIELD_META if m.tier == "secret") & set(ConfigView.model_fields)
-
-_RANKED_META = {m.key: m for m in CONFIG_FIELD_META if m.type == "ranked"}
-_ENUM_META = {m.key: m for m in CONFIG_FIELD_META if m.type == "enum" and m.key != "on_previously_ripped"}
 
 
 def _to_view(cfg: Config) -> ConfigView:
@@ -170,15 +158,6 @@ async def get_config(
     return _to_view(await _load_config(session))
 
 
-def _reject_non_editable_keys(raw: dict[str, Any]) -> None:
-    forbidden = _NON_EDITABLE_KEYS & set(raw.keys())
-    if forbidden:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"non-editable settings cannot be patched: {sorted(forbidden)}",
-        )
-
-
 def _drop_masked_secrets(fields: dict[str, Any]) -> None:
     # A secret field whose submitted value is the masked sentinel means "keep the
     # stored secret" — drop it from the update set so it isn't overwritten with the
@@ -186,139 +165,6 @@ def _drop_masked_secrets(fields: dict[str, Any]) -> None:
     for key in _SECRET_KEYS:
         if fields.get(key) == HIDDEN_SECRET:
             del fields[key]
-
-
-def _validate_enum_field(key: str, meta: ConfigFieldMeta, fields: dict[str, Any], cfg: Config) -> None:
-    if key not in fields:
-        return
-    value = fields[key]
-    allowed = meta.enum_values or []
-    if value is None or value not in allowed:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=f"{key} must be one of {', '.join(allowed)}"
-        )
-    required = (meta.enum_requires or {}).get(value)
-    if required:
-        # The key sent in this body counts; otherwise the stored one.
-        present = fields[required] if required in fields else getattr(cfg, required, None)
-        if not (present or "").strip():
-            label = (meta.enum_labels or {}).get(value, value)
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{key}: {label} needs its API key")
-
-
-def _validate_enum_fields(fields: dict[str, Any], cfg: Config) -> None:
-    for key, meta in _ENUM_META.items():
-        _validate_enum_field(key, meta, fields, cfg)
-
-
-def _validate_positive_ints(fields: dict[str, Any]) -> None:
-    # The number inputs send null for an emptied box; these columns are NOT
-    # NULL, so refuse it here rather than 500 on the commit (D-096).
-    for key in (
-        "drive_scan_interval_seconds",
-        "drive_detected_prune_days",
-        "max_parallel_transcodes",
-        "thediscdb_refresh_days",
-    ):
-        if key in fields and (fields[key] is None or fields[key] < 1):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{key} must be a positive integer")
-
-
-def _validate_manual_wait(fields: dict[str, Any]) -> None:
-    if "manual_wait_seconds" in fields and (fields["manual_wait_seconds"] is None or fields["manual_wait_seconds"] < 0):
-        # 0 is a real choice: no countdown, the held disc starts at once.
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="manual_wait_seconds must be 0 or a positive integer"
-        )
-
-
-def _validate_on_previously_ripped(fields: dict[str, Any]) -> None:
-    if "on_previously_ripped" in fields and fields["on_previously_ripped"] is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="on_previously_ripped must be hold, reject or rip"
-        )
-
-
-def _validate_iso_rip_cap(fields: dict[str, Any]) -> None:
-    if "max_parallel_iso_rips" in fields:
-        cap = fields["max_parallel_iso_rips"]
-        if cap is None or isinstance(cap, bool) or not 1 <= cap <= 8:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="max_parallel_iso_rips must be 1 to 8")
-
-
-def _validate_transcode_enabled_not_null(fields: dict[str, Any]) -> None:
-    if "transcode_enabled" in fields and fields["transcode_enabled"] is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="transcode_enabled must be a boolean")
-
-
-def _validate_ranked_fields(fields: dict[str, Any]) -> None:
-    for key, meta in _RANKED_META.items():
-        if key not in fields:
-            continue
-        values = fields[key]
-        if values is None:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{key} must be a list")
-        unknown = [v for v in values if v not in (meta.enum_values or [])]
-        if unknown:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"{key}: unknown value(s) {', '.join(unknown)}",
-            )
-        if len(set(values)) != len(values):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{key}: duplicate values")
-
-
-def _validate_episode_tolerance(fields: dict[str, Any], raw: dict[str, Any]) -> None:
-    if "episode_match_tolerance_seconds" in fields:
-        tol = fields["episode_match_tolerance_seconds"]
-        # Pydantic's lax int validator accepts a JSON bool (bool is an int
-        # subclass) and coerces it to 0/1 before `fields` sees it, so the
-        # bool-ness check has to read the raw wire value, not `tol`.
-        raw_tol = raw.get("episode_match_tolerance_seconds")
-        if tol is None or isinstance(raw_tol, bool) or not 1 <= tol <= 1800:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="episode_match_tolerance_seconds must be 1 to 1800"
-            )
-
-
-def _validate_auto_apply_flags(fields: dict[str, Any]) -> None:
-    # The checkbox inputs send null for a cleared tri-state; these columns are
-    # NOT NULL, so refuse it here rather than 500 on the commit.
-    for key in (
-        "episode_auto_apply",
-        "movie_auto_apply",
-        "music_auto_apply",
-        "crc64service_enabled",
-        "review_requires_confirm",
-        "rip_disc_menus",
-        "subtitle_ocr_enabled",
-        "subtitle_ocr_default_on",
-    ):
-        if key in fields and fields[key] is None:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{key} must be true or false")
-
-
-def _validate_not_null_columns(fields: dict[str, Any]) -> None:
-    # Catch-all for the rest of the NOT NULL columns: a JSON null would
-    # otherwise reach the commit and 500 (D-164). The checks above keep their
-    # field-specific messages.
-    columns = sa_inspect(Config).columns
-    for key, value in fields.items():
-        if value is None and key in columns and not columns[key].nullable:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{key} must not be null")
-
-
-def _validate_config_update(fields: dict[str, Any], raw: dict[str, Any], cfg: Config) -> None:
-    _validate_enum_fields(fields, cfg)
-    _validate_positive_ints(fields)
-    _validate_manual_wait(fields)
-    _validate_on_previously_ripped(fields)
-    _validate_iso_rip_cap(fields)
-    _validate_transcode_enabled_not_null(fields)
-    _validate_ranked_fields(fields)
-    _validate_episode_tolerance(fields, raw)
-    _validate_auto_apply_flags(fields)
-    _validate_not_null_columns(fields)
 
 
 def _require_transcode_capable(fields: dict[str, Any]) -> None:
@@ -416,11 +262,11 @@ async def update_config(
     # always a dict. We re-read the raw body because `req` silently drops unknown
     # keys, so model_dump() would never reveal a forbidden (infra/non-editable) key.
     raw = await request.json()
-    _reject_non_editable_keys(raw)
+    reject_non_editable_keys(raw)
     cfg = await _load_config(session)
     fields = req.model_dump(exclude_unset=True)
     _drop_masked_secrets(fields)
-    _validate_config_update(fields, raw, cfg)
+    validate_config_update(fields, raw, cfg)
     _require_transcode_capable(fields)
 
     unpausing = _is_unpausing(cfg, fields)
@@ -437,202 +283,20 @@ async def update_config(
     await session.refresh(cfg)
     view = _to_view(cfg)
     if reenabling_transcode:
-        await _redrain_parked_applications(session, request)
+        await redrain_parked_applications(session, getattr(request.app.state, "ws_hub", None))
     if identity_sources_changed:
-        await _reresolve_identity(session, request)
+        await reresolve_identity(
+            session, getattr(request.app.state, "ws_hub", None), getattr(request.app.state, "episode_stage", None)
+        )
     return view
 
 
 # Settings that pick which identity sources run (and so which stored claims
 # the resolver applies).
 _IDENTITY_SOURCE_KEYS = ("episode_sources", "disc_hint_sources", "movie_sources", "music_sources")
-# Ripped jobs are re-resolved only while no session has been applied: once
-# transcodes exist their output paths were built from the identity as it was.
-_RERESOLVE_JOB_STATUSES = LIVE_JOB_STATUSES | {JobStatus.RIPPED_AWAITING_IDENTIFY}
-_RERESOLVE_IF_UNAPPLIED_STATUSES = frozenset({JobStatus.RIPPED, JobStatus.RIPPED_PARTIAL})
-
-
-async def _reresolve_identity(session: AsyncSession, request: Request) -> None:
-    """Re-run the identity resolver on live jobs after the source settings
-    changed, and schedule the episode stage (a newly enabled episode source
-    has no stored claims yet). Per job: lock, resolve, commit, emit. A failure
-    is logged and skipped; the PATCH has already committed and never fails
-    here."""
-    hub = getattr(request.app.state, "ws_hub", None)
-    stage_runner = getattr(request.app.state, "episode_stage", None)
-    try:
-        candidates = [
-            (job.id, job.status)
-            for job in (
-                await session.execute(
-                    select(Job).where(
-                        col(Job.status).in_(list(_RERESOLVE_JOB_STATUSES | _RERESOLVE_IF_UNAPPLIED_STATUSES))
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        ]
-        applied = {
-            application.job_id
-            for application in (
-                await session.execute(
-                    select(SessionApplication).where(
-                        col(SessionApplication.job_id).in_([job_id for job_id, _ in candidates])
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        }
-    except Exception:  # noqa: BLE001 - never fail the config PATCH
-        logger.warning("identity source change: listing live jobs failed", exc_info=True)
-        return
-    job_ids = [
-        job_id
-        for job_id, job_status in candidates
-        if job_status not in _RERESOLVE_IF_UNAPPLIED_STATUSES or job_id not in applied
-    ]
-    for job_id in job_ids:
-        with with_log_context(job_id=job_id):
-            try:
-                job = (
-                    await session.execute(
-                        select(Job)
-                        .where(col(Job.id) == job_id)
-                        .with_for_update()
-                        .execution_options(populate_existing=True)
-                    )
-                ).scalar_one_or_none()
-                if job is None:
-                    continue
-                resolved = await resolve_job(session, job)
-                await session.commit()
-                if resolved.changed and hub is not None:
-                    await emit_identity_resolved(session, hub, job, resolved, sources={})
-                    await session.commit()
-            except Exception:  # noqa: BLE001 - one job must not stop the rest
-                await session.rollback()
-                logger.warning("identity source change: re-resolving job_id=%s failed", job_id, exc_info=True)
-                continue
-            if stage_runner is not None:
-                stage_runner.schedule(job_id)
-    if job_ids:
-        logger.info("identity source change: re-resolved %d live job(s)", len(job_ids))
-
-
-async def _redrain_parked_applications(session: AsyncSession, request: Request) -> None:
-    """Promote encode applications parked while transcoding was off.
-
-    Runs after the toggle commit, so `transcode_enabled_now` reads the new
-    value. Reuses the after-rip drain (which commits per job, logs per
-    application, and never raises); any failure here is logged and swallowed
-    so the PATCH itself always succeeds once the toggle is saved.
-    """
-    hub = getattr(request.app.state, "ws_hub", None)
-    try:
-        parked_job_ids = {
-            app.job_id
-            for app in (
-                await session.execute(
-                    select(SessionApplication).where(
-                        col(SessionApplication.status) == SessionApplicationStatus.WAITING_IDENTIFY
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        }
-        if not parked_job_ids:
-            return
-        job_ids = [
-            job.id
-            for job in (
-                await session.execute(
-                    select(Job)
-                    .where(col(Job.id).in_(sorted(parked_job_ids)))
-                    .where(col(Job.status).in_(list(REDRAIN_JOB_STATUSES)))
-                )
-            )
-            .scalars()
-            .all()
-        ]
-    except Exception:  # noqa: BLE001 - re-drain must never fail the config PATCH
-        logger.warning("transcode re-enable: listing parked session_applications failed", exc_info=True)
-        return
-    for job_id in job_ids:
-        with with_log_context(job_id=job_id):
-            # Load each job fresh: a failed drain rolls the session back, which
-            # expires every job loaded before it.
-            try:
-                job = (
-                    await session.execute(
-                        select(Job).where(col(Job.id) == job_id).execution_options(populate_existing=True)
-                    )
-                ).scalar_one_or_none()
-                if job is not None:
-                    await drain_parked_applications_after_rip(session, job, hub, trigger="transcode re-enable")
-            except Exception:  # noqa: BLE001 - one job must not stop the rest
-                await session.rollback()
-                logger.warning("transcode re-enable: re-draining job_id=%s failed", job_id, exc_info=True)
 
 
 _KEY_ATTR = {"tmdb": "tmdb_api_key", "omdb": "omdb_api_key", "tvdb": "tvdb_api_key", "makemkv": "makemkv_key"}
-
-
-async def _check_tmdb(http: httpx.AsyncClient, key: str) -> tuple[Literal["ok", "invalid", "error"], str | None]:
-    headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
-    try:
-        r = await http.get(
-            f"{settings.ARM_TMDB_BASE_URL}/configuration", headers=headers, timeout=_KEY_CHECK_TIMEOUT_SECONDS
-        )
-    except httpx.HTTPError as exc:
-        return "error", str(exc)
-    if r.status_code == 200:
-        return "ok", None
-    if r.status_code == 401:
-        return "invalid", "TMDb rejected the key"
-    return "error", f"tmdb status={r.status_code}"
-
-
-async def _check_omdb(http: httpx.AsyncClient, key: str) -> tuple[Literal["ok", "invalid", "error"], str | None]:
-    try:
-        r = await http.get(
-            settings.ARM_OMDB_BASE_URL,
-            params={"apikey": key, "i": "tt0111161"},
-            timeout=_KEY_CHECK_TIMEOUT_SECONDS,
-        )
-    except httpx.HTTPError as exc:
-        return "error", str(exc)
-    if r.status_code == 401:
-        return "invalid", "OMDb rejected the key"
-    if r.status_code != 200:
-        return "error", f"omdb status={r.status_code}"
-    try:
-        body = r.json()
-    except ValueError as exc:
-        return "error", f"omdb returned a non-JSON response: {exc}"
-    if body.get("Response") == "True":
-        return "ok", None
-    if body.get("Response") == "False":
-        return "invalid", body.get("Error", "omdb rejected the key")
-    return "error", "omdb returned an unexpected response"
-
-
-async def _check_tvdb(http: httpx.AsyncClient, key: str) -> tuple[Literal["ok", "invalid", "error"], str | None]:
-    try:
-        r = await http.post(
-            f"{settings.ARM_TVDB_BASE_URL}/login",
-            json={"apikey": key},
-            timeout=_KEY_CHECK_TIMEOUT_SECONDS,
-        )
-    except httpx.HTTPError as exc:
-        return "error", str(exc)
-    if r.status_code == 200:
-        return "ok", None
-    if r.status_code == 401:
-        return "invalid", "TVDB rejected the key"
-    return "error", f"tvdb status={r.status_code}"
 
 
 @router.post("/keys/{name}/check", response_model=KeyCheckResponse)
@@ -643,53 +307,18 @@ async def check_key(
     _: User = Depends(require_writer),
     session: AsyncSession = Depends(get_session),
 ) -> KeyCheckResponse:
-    cfg = (await session.execute(select(Config).where(col(Config.id) == CONFIG_SINGLETON_ID))).scalar_one_or_none()
-    if cfg is None:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="config singleton missing")
+    cfg = await _load_config(session)
 
     stored_key = getattr(cfg, _KEY_ATTR[name]) or ""
     unsaved_value = body.value if isinstance(body.value, str) and body.value else None
 
     if name == "makemkv":
-        if unsaved_value is not None and unsaved_value != stored_key:
-            return KeyCheckResponse(
-                name=name,
-                status="unknown",
-                detail="save the key; the ripper verifies it before the next rip",
-                checked_at=None,
-            )
-        # The ripper's verdict wins: with no purchased key stored it fetches the
-        # monthly beta key itself, so "valid" is real even when Config holds
-        # nothing. "no key set" only applies when there is no verdict either.
-        if cfg.makemkv_key_valid is True:
-            detail = None if stored_key else "using the monthly beta key"
-            return KeyCheckResponse(name=name, status="ok", detail=detail, checked_at=cfg.makemkv_key_checked_at)
-        if cfg.makemkv_key_valid is False:
-            return KeyCheckResponse(
-                name=name,
-                status="invalid",
-                detail=makemkv_state_detail(cfg.makemkv_key_state),
-                checked_at=cfg.makemkv_key_checked_at,
-            )
-        if not stored_key and cfg.makemkv_key_checked_at is None:
-            return KeyCheckResponse(
-                name=name,
-                status="missing",
-                detail="no key set; the ripper fetches the monthly beta key when it starts",
-                checked_at=None,
-            )
-        detail = "probe failed" if cfg.makemkv_key_state == "probe_failed" else "not checked yet"
-        return KeyCheckResponse(name=name, status="unknown", detail=detail, checked_at=cfg.makemkv_key_checked_at)
+        return makemkv_key_status(cfg, stored_key, unsaved_value)
 
     key = unsaved_value or stored_key
     if not key:
         return KeyCheckResponse(name=name, status="missing", detail="no key set", checked_at=None)
 
     http: httpx.AsyncClient = request.app.state.http
-    if name == "tmdb":
-        check_status, check_detail = await _check_tmdb(http, key)
-    elif name == "omdb":
-        check_status, check_detail = await _check_omdb(http, key)
-    else:
-        check_status, check_detail = await _check_tvdb(http, key)
+    check_status, check_detail = await check_online_key(http, name, key)
     return KeyCheckResponse(name=name, status=check_status, detail=check_detail, checked_at=datetime.now(timezone.utc))
