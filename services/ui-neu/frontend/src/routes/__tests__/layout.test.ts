@@ -94,7 +94,8 @@ vi.mock('$lib/stores/dashboard', async () => {
 	};
 });
 
-vi.mock('$lib/api/dashboard', () => ({
+vi.mock('$lib/api/config', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/api/config')>()),
 	setRippingEnabled: vi.fn(() => Promise.resolve())
 }));
 
@@ -241,7 +242,7 @@ describe('Layout', () => {
 		});
 
 		it('tells an operator who had Hold for review off that Pause turned it on', async () => {
-			const { setRippingEnabled } = await import('$lib/api/dashboard');
+			const { setRippingEnabled } = await import('$lib/api/config');
 			await setDashboard({ ripping_enabled: true, hold_for_review: false });
 			renderComponent(Layout, { props: { children: childSnippet() } });
 			await fireEvent.click(screen.getByRole('switch'));
@@ -256,7 +257,7 @@ describe('Layout', () => {
 		});
 
 		it('shows no notice when Hold for review was already on, and Resume leaves it on', async () => {
-			const { setRippingEnabled } = await import('$lib/api/dashboard');
+			const { setRippingEnabled } = await import('$lib/api/config');
 			const { dashboard } = await import('$lib/stores/dashboard');
 			await setDashboard({ ripping_enabled: true, hold_for_review: true });
 			renderComponent(Layout, { props: { children: childSnippet() } });
@@ -271,7 +272,7 @@ describe('Layout', () => {
 		});
 
 		it('reverts the toggle and Hold for review when Pause fails, with no notice', async () => {
-			const { setRippingEnabled } = await import('$lib/api/dashboard');
+			const { setRippingEnabled } = await import('$lib/api/config');
 			const { dashboard } = await import('$lib/stores/dashboard');
 			vi.mocked(setRippingEnabled).mockRejectedValueOnce(new Error('down'));
 			await setDashboard({ ripping_enabled: true, hold_for_review: false });

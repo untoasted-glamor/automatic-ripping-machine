@@ -1,5 +1,5 @@
 import type { ConfigView } from '$lib/types/api.gen';
-import { get } from './client';
+import { apiFetch, get } from './client';
 
 export interface AppConfig {
 	// Deployment fact: can this install run transcode containers at all
@@ -36,4 +36,18 @@ export async function fetchConfig(): Promise<AppConfig> {
 /** The full config view (secrets masked as '<hidden>'). Read-only. */
 export function fetchConfigView(): Promise<ConfigView> {
 	return get<ConfigView>('/api/config');
+}
+
+// The Pause toggle means "hold discs for review": pausing lets discs scan +
+// identify and then parks each in AWAITING_REVIEW indefinitely. The backend
+// only PARKS (rather than rejecting with 409) when BOTH ripping_paused AND
+// hold_for_review are set (ripper.py identify, iso_rips.py), so Pause turns
+// hold_for_review on too. Resume sends only ripping_paused=false and leaves
+// hold_for_review as it is: the operator's disc-handling choice (Settings)
+// stays theirs, and a Pause that turned it on says so (the layout's notice).
+// config.py gives held discs a fresh countdown on the ripping_paused ON->OFF
+// transition so they don't stampede.
+export function setRippingEnabled(enabled: boolean): Promise<ConfigView> {
+	const body = enabled ? { ripping_paused: false } : { ripping_paused: true, hold_for_review: true };
+	return apiFetch<ConfigView>('/api/config', { method: 'PATCH', body: JSON.stringify(body) });
 }

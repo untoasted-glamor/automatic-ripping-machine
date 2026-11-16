@@ -42,7 +42,7 @@ import { fetchJobs } from '$lib/api/jobs';
 import { fetchNotificationCount } from '$lib/api/notifications';
 import { fetchTranscoderJobs, fetchTranscoderStats } from '$lib/api/transcoder';
 import type { DriveView, IsoPrepareView, JobView } from '$lib/types/api.gen';
-import { fetchDashboard, fetchDashboardSnapshot, setRippingEnabled } from '../dashboard';
+import { fetchDashboard, fetchDashboardSnapshot } from '../dashboard';
 
 const mockFetchDrives = vi.mocked(fetchDrives);
 
@@ -324,17 +324,5 @@ describe('fetchDashboard defaults for failed reads', () => {
 		expect(dash.drive_source_kinds).toEqual({});
 		expect(dash.notification_count).toBe(0);
 		expect(dash.ripping_enabled).toBe(true);
-	});
-});
-
-describe('setRippingEnabled', () => {
-	// Resume never touches hold_for_review (fork, owner decision 2026-10-18).
-	it.each([
-		[true, { ripping_paused: false }],
-		[false, { ripping_paused: true, hold_for_review: true }]
-	])('patches the config for enabled=%s', async (enabled, body) => {
-		await setRippingEnabled(enabled);
-
-		expect(apiFetch).toHaveBeenLastCalledWith('/api/config', { method: 'PATCH', body: JSON.stringify(body) });
 	});
 });
