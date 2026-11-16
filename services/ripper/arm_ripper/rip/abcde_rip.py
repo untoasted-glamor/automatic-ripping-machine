@@ -95,6 +95,126 @@ def _write_config(output_dir: Path) -> Path:
     return conf_path
 
 
+async def _spawn_abcde(
+    device_path: str, conf_path: Path, output_dir: Path, track_args: list[str]
+) -> asyncio.subprocess.Process:
+    """Start abcde on the disc with this config, in its own session and with `output_dir` as its working directory.
+
+    `track_args` (fork, `_track_args`) go last: abcde reads its tracks from the
+    arguments left after `getopts`, and with none it rips the whole disc."""
+    cmd = ["abcde", "-d", device_path, "-c", str(conf_path), "-N", "-n", "-j", "1", *track_args]
+    # abcde creates a per-rip `abcde.XXXXX/` temp dir alongside its CWD
+    # for staging WAVs before the `move` action. The ripper container's
+    # default CWD (`/app/services/ripper`) is read-only for non-root
+    # users, so without `cwd=` abcde fails with "Permission denied" on
+    # the very first track. Running with `cwd=output_dir` puts the temp
+    # dir inside the raw output tree, which is always writable.
+    return await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(output_dir),
+        start_new_session=True,
+    )
+
+
+class _CdTracks:
+    """The track bookkeeping of one abcde rip: the result each track has so far, and the tracks abcde logged as read."""
+
+    def __init__(self, output_dir: Path, track_indexes: list[int], on_track_done: OnAbcdeTrackDone | None) -> None:
+        self._output_dir = output_dir
+        self._track_indexes = track_indexes
+        self._on_track_done = on_track_done
+        self.results: dict[int, RipResult] = {}
+        self._seen_done: set[int] = set()
+
+    async def finalize(self, idx: int) -> None:
+        """Stat + hash the produced WAV; fire callback once."""
+        if idx in self.results:
+            return
+        wav_path = self._output_dir / f"track{idx:02d}.wav"
+        if not wav_path.exists():
+            return
+        try:
+            size = wav_path.stat().st_size
+        except OSError as exc:  # pragma: no cover — race window after exists() returned True
+            logger.warning("stat failed track=%d path=%s err=%s", idx, wav_path, exc)
+            return
+        digest = await sha256_file(wav_path)
+        result = RipResult(ok=True, output_path=wav_path, size_bytes=size, sha256=digest)
+        self.results[idx] = result
+        if self._on_track_done is not None:
+            await self._on_track_done(idx, result)
+
+    async def fail_remaining(self, error: str) -> None:
+        """Build + fire RipResult(ok=False) for every track not yet finalized."""
+        for idx in self._track_indexes:
+            if idx in self.results:
+                continue
+            result = RipResult(ok=False, error=error)
+            self.results[idx] = result
+            if self._on_track_done is not None:
+                await self._on_track_done(idx, result)
+
+    async def note_line(self, line: str) -> None:
+        """Note a track abcde logged as read, then finalize every logged track whose WAV has landed."""
+        m = _TRACK_DONE_RE.search(line)
+        if m:
+            self._seen_done.add(int(m.group(1)))
+            logger.info("abcde finished track %s", m.group(1))
+        # Sweep any track whose log signaled done but whose file
+        # wasn't yet on disk when we last looked. The `move` action
+        # runs after `read`; the WAV may land a few hundred ms after
+        # the "Reading...done" line.
+        for idx in list(self._seen_done):
+            if idx not in self.results:
+                await self.finalize(idx)
+
+    async def finalize_pending(self) -> None:
+        """Give every requested track still without a result one more try at finalizing."""
+        for idx in self._track_indexes:
+            if idx not in self.results:
+                await self.finalize(idx)
+
+
+async def _read_until_exit(proc: asyncio.subprocess.Process, tracks: _CdTracks) -> int:
+    """Feed each line of abcde's stdout to `tracks`, then wait for abcde to exit and return its exit code."""
+    assert proc.stdout is not None
+    while True:
+        line_b = await proc.stdout.readline()
+        if not line_b:
+            break
+        line = line_b.decode(errors="replace").rstrip()
+        await tracks.note_line(line)
+    return await proc.wait()
+
+
+async def _stop_abcde(proc: asyncio.subprocess.Process, stderr_task: asyncio.Task[None], conf_path: Path) -> None:
+    """Clean up after one abcde run: kill and reap its process group if still running, let the stderr drain finish,
+    and delete the config file.
+    """
+    if proc.returncode is None:
+        _kill_group(proc)
+        with contextlib.suppress(BaseException):
+            await proc.wait()
+    with contextlib.suppress(asyncio.CancelledError):
+        await stderr_task
+    conf_path.unlink(missing_ok=True)
+
+
+def _exit_failure(rc: int, stderr_lines: list[str]) -> str:
+    """The error for each track still without a result once abcde has exited: the end of abcde's stderr on a
+    non-zero exit, otherwise a missing-WAV error.
+    """
+    if rc != 0:
+        stderr = "\n".join(stderr_lines).strip()
+        msg = stderr[-400:] if stderr else f"exit={rc}"
+        return f"abcde failed: {msg}"
+    # Successful exit but a particular WAV never landed — likely a per-track
+    # read failure abcde gave up on quietly. Fail just that track.
+    return "abcde did not produce the expected wav file"
+
+
 async def rip_cd(
     device_path: str,
     output_dir: Path,
@@ -124,89 +244,25 @@ async def rip_cd(
 
     conf_path = _write_config(output_dir)
 
-    tracks = _track_args(track_indexes)
-    cmd = ["abcde", "-d", device_path, "-c", str(conf_path), "-N", "-n", "-j", "1", *tracks]
-    logger.info("abcde rip device=%s output_dir=%s tracks=%s", device_path, output_dir, " ".join(tracks))
+    track_args = _track_args(track_indexes)
+    logger.info("abcde rip device=%s output_dir=%s tracks=%s", device_path, output_dir, " ".join(track_args))
 
-    results: dict[int, RipResult] = {}
+    tracks = _CdTracks(output_dir, track_indexes, on_track_done)
 
-    async def _finalize_track(idx: int) -> None:
-        """Stat + hash the produced WAV; fire callback once."""
-        if idx in results:
-            return
-        wav_path = output_dir / f"track{idx:02d}.wav"
-        if not wav_path.exists():
-            return
-        try:
-            size = wav_path.stat().st_size
-        except OSError as exc:  # pragma: no cover — race window after exists() returned True
-            logger.warning("stat failed track=%d path=%s err=%s", idx, wav_path, exc)
-            return
-        digest = await sha256_file(wav_path)
-        result = RipResult(ok=True, output_path=wav_path, size_bytes=size, sha256=digest)
-        results[idx] = result
-        if on_track_done is not None:
-            await on_track_done(idx, result)
-
-    async def _fail_remaining(error: str) -> None:
-        """Build + fire RipResult(ok=False) for every track not yet finalized."""
-        for idx in track_indexes:
-            if idx in results:
-                continue
-            result = RipResult(ok=False, error=error)
-            results[idx] = result
-            if on_track_done is not None:
-                await on_track_done(idx, result)
-
-    # abcde creates a per-rip `abcde.XXXXX/` temp dir alongside its CWD
-    # for staging WAVs before the `move` action. The ripper container's
-    # default CWD (`/app/services/ripper`) is read-only for non-root
-    # users, so without `cwd=` abcde fails with "Permission denied" on
-    # the very first track. Running with `cwd=output_dir` puts the temp
-    # dir inside the raw output tree, which is always writable.
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(output_dir),
-            start_new_session=True,
-        )
+        proc = await _spawn_abcde(device_path, conf_path, output_dir, track_args)
     except FileNotFoundError as e:
         conf_path.unlink(missing_ok=True)
-        await _fail_remaining(f"abcde not on PATH: {e}")
-        return results
+        await tracks.fail_remaining(f"abcde not on PATH: {e}")
+        return tracks.results
 
     stderr_buf: list[str] = []
     stderr_task = asyncio.create_task(_drain_stderr(proc.stderr, stderr_buf))
 
-    seen_done_in_log: set[int] = set()
-
-    async def _stream_and_wait() -> int:
-        """Stream abcde's stdout line-by-line; sweep finished tracks per line."""
-        assert proc.stdout is not None
-        while True:
-            line_b = await proc.stdout.readline()
-            if not line_b:
-                break
-            line = line_b.decode(errors="replace").rstrip()
-            m = _TRACK_DONE_RE.search(line)
-            if m:
-                seen_done_in_log.add(int(m.group(1)))
-                logger.info("abcde finished track %s", m.group(1))
-            # Sweep any track whose log signaled done but whose file
-            # wasn't yet on disk when we last looked. The `move` action
-            # runs after `read`; the WAV may land a few hundred ms after
-            # the "Reading...done" line.
-            for idx in list(seen_done_in_log):
-                if idx not in results:
-                    await _finalize_track(idx)
-        return await proc.wait()
-
     rc: int
     timed_out = False
     try:
-        rc = await asyncio.wait_for(_stream_and_wait(), timeout=CD_RIP_TIMEOUT_SECONDS)
+        rc = await asyncio.wait_for(_read_until_exit(proc, tracks), timeout=CD_RIP_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
         timed_out = True
         rc = -1
@@ -215,36 +271,20 @@ async def rip_cd(
         # we timed out above, abcde is still running and writing to the raw
         # dir. Kill it and its children before letting CancelledError
         # propagate / before returning a timeout result.
-        if proc.returncode is None:
-            _kill_group(proc)
-            with contextlib.suppress(BaseException):
-                await proc.wait()
-        with contextlib.suppress(asyncio.CancelledError):
-            await stderr_task
-        conf_path.unlink(missing_ok=True)
+        await _stop_abcde(proc, stderr_task, conf_path)
 
     if timed_out:
-        await _fail_remaining(f"abcde timed out after {CD_RIP_TIMEOUT_SECONDS}s")
-        return results
+        await tracks.fail_remaining(f"abcde timed out after {CD_RIP_TIMEOUT_SECONDS}s")
+        return tracks.results
 
     # Post-wait sweep: tracks whose "Reading...done" appeared in the
     # final batch of output (or whose WAV landed only after the last
     # line was read) get one more chance to finalize before we fail
     # them.
-    for idx in track_indexes:
-        if idx not in results:
-            await _finalize_track(idx)
+    await tracks.finalize_pending()
 
-    if rc != 0:
-        stderr = "\n".join(stderr_buf).strip()
-        msg = stderr[-400:] if stderr else f"exit={rc}"
-        await _fail_remaining(f"abcde failed: {msg}")
-        return results
-
-    # Successful exit but a particular WAV never landed — likely a per-track
-    # read failure abcde gave up on quietly. Fail just that track.
-    await _fail_remaining("abcde did not produce the expected wav file")
-    return results
+    await tracks.fail_remaining(_exit_failure(rc, stderr_buf))
+    return tracks.results
 
 
 async def _drain_stderr(stream: asyncio.StreamReader | None, buf: list[str]) -> None:

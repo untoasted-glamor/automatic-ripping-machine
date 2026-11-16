@@ -507,3 +507,233 @@ def test_write_config_writes_the_abcde_config_to_a_temp_file(tmp_path):
         assert conf_path.read_text() == abcde_rip._abcde_config(tmp_path)
     finally:
         conf_path.unlink()
+
+
+@pytest.mark.asyncio
+async def test_spawn_abcde_runs_abcde_in_its_own_session_from_the_output_dir(monkeypatch, tmp_path):
+    captured: dict[str, Any] = {}
+    fake = _FakeProc([])
+
+    async def fake_create(*args: Any, **kwargs: Any) -> _FakeProc:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return fake
+
+    monkeypatch.setattr(abcde_rip.asyncio, "create_subprocess_exec", fake_create)
+    conf_path = tmp_path / "x.abcde.conf"
+
+    proc = await abcde_rip._spawn_abcde("/dev/sr0", conf_path, tmp_path, ["1-3", "5"])
+
+    # Fork: the track list goes last.
+    assert captured["args"] == ("abcde", "-d", "/dev/sr0", "-c", str(conf_path), "-N", "-n", "-j", "1", "1-3", "5")
+    assert captured["kwargs"] == {
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.PIPE,
+        "cwd": str(tmp_path),
+        "start_new_session": True,
+    }
+    assert proc is fake
+
+
+def _recording_tracks(tmp_path: Path, indexes: list[int], *, with_callback: bool = True):
+    calls: list[tuple[int, RipResult]] = []
+
+    async def on_done(idx: int, result: RipResult) -> None:
+        calls.append((idx, result))
+
+    tracks = abcde_rip._CdTracks(tmp_path, indexes, on_done if with_callback else None)
+    return tracks, calls
+
+
+async def test_cd_tracks_finalize_records_the_wav_and_fires_the_callback_once(tmp_path):
+    (tmp_path / "track01.wav").write_bytes(b"abc")
+    tracks, calls = _recording_tracks(tmp_path, [1])
+
+    await tracks.finalize(1)
+    first = tracks.results[1]
+    await tracks.finalize(1)
+
+    assert first.ok is True
+    assert first.size_bytes == 3
+    assert first.sha256 == hashlib.sha256(b"abc").hexdigest()
+    assert tracks.results[1] is first
+    assert calls == [(1, first)]
+
+
+async def test_cd_tracks_finalize_without_a_wav_leaves_no_result(tmp_path):
+    tracks, calls = _recording_tracks(tmp_path, [1])
+
+    await tracks.finalize(1)
+
+    assert tracks.results == {}
+    assert calls == []
+
+
+async def test_cd_tracks_finalize_without_a_callback_still_records_the_result(tmp_path):
+    (tmp_path / "track01.wav").write_bytes(b"abc")
+    tracks, _ = _recording_tracks(tmp_path, [1], with_callback=False)
+
+    await tracks.finalize(1)
+
+    assert tracks.results[1].ok is True
+
+
+async def test_cd_tracks_note_line_ignores_lines_that_are_not_track_done(tmp_path):
+    (tmp_path / "track01.wav").write_bytes(b"abc")
+    tracks, calls = _recording_tracks(tmp_path, [1])
+
+    await tracks.note_line("Grabbing entire CD...")
+
+    assert tracks.results == {}
+    assert calls == []
+
+
+async def test_cd_tracks_note_line_finalizes_a_logged_track_once_its_wav_lands(tmp_path):
+    tracks, calls = _recording_tracks(tmp_path, [1])
+
+    await tracks.note_line(_done_line(1))
+    assert tracks.results == {}
+
+    (tmp_path / "track01.wav").write_bytes(b"abc")
+    await tracks.note_line("some later line")
+
+    assert list(tracks.results) == [1]
+    assert [idx for idx, _ in calls] == [1]
+
+
+async def test_cd_tracks_fail_remaining_skips_finalized_tracks(tmp_path):
+    (tmp_path / "track01.wav").write_bytes(b"abc")
+    tracks, calls = _recording_tracks(tmp_path, [1, 2])
+    await tracks.finalize(1)
+
+    await tracks.fail_remaining("boom")
+
+    assert tracks.results[1].ok is True
+    assert tracks.results[2].ok is False
+    assert tracks.results[2].error == "boom"
+    assert [idx for idx, _ in calls] == [1, 2]
+
+
+async def test_cd_tracks_fail_remaining_without_a_callback_records_failures(tmp_path):
+    tracks, _ = _recording_tracks(tmp_path, [1], with_callback=False)
+
+    await tracks.fail_remaining("boom")
+
+    assert tracks.results[1].ok is False
+
+
+async def test_cd_tracks_finalize_pending_finalizes_only_tracks_without_a_result(tmp_path):
+    (tmp_path / "track01.wav").write_bytes(b"abc")
+    (tmp_path / "track02.wav").write_bytes(b"abcd")
+    tracks, calls = _recording_tracks(tmp_path, [1, 2, 3])
+    await tracks.finalize(1)
+
+    await tracks.finalize_pending()
+
+    assert sorted(tracks.results) == [1, 2]
+    assert [idx for idx, _ in calls] == [1, 2]
+
+
+async def test_read_until_exit_feeds_every_stdout_line_to_tracks_then_returns_the_exit_code(tmp_path):
+    seen: list[str] = []
+
+    class _RecordingTracks(abcde_rip._CdTracks):
+        async def note_line(self, line: str) -> None:
+            seen.append(line)
+
+    tracks = _RecordingTracks(tmp_path, [1], None)
+    proc = _FakeProc([b"first\n", b"second\n", b"third\n"], returncode=3)
+
+    rc = await abcde_rip._read_until_exit(proc, tracks)  # type: ignore[arg-type]
+
+    assert seen == ["first", "second", "third"]
+    assert rc == 3
+
+
+def _stop_abcde_setup(monkeypatch, tmp_path, *, returncode: int | None):
+    killpg_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(abcde_rip.os, "killpg", lambda pgid, sig: killpg_calls.append((pgid, sig)))
+    proc = _FakeProc([])
+    proc.returncode = returncode
+    conf_path = tmp_path / "x.abcde.conf"
+    conf_path.write_text("conf")
+    return proc, conf_path, killpg_calls
+
+
+async def _finished_task() -> asyncio.Task[None]:
+    async def done() -> None:
+        return None
+
+    task = asyncio.ensure_future(done())
+    await task
+    return task
+
+
+async def test_stop_abcde_kills_and_reaps_a_running_process_and_deletes_the_config(monkeypatch, tmp_path):
+    proc, conf_path, killpg_calls = _stop_abcde_setup(monkeypatch, tmp_path, returncode=None)
+
+    await abcde_rip._stop_abcde(proc, await _finished_task(), conf_path)  # type: ignore[arg-type]
+
+    assert killpg_calls == [(_FAKE_PID, abcde_rip.signal.SIGKILL)]
+    assert proc.returncode == -9
+    assert not conf_path.exists()
+
+
+async def test_stop_abcde_leaves_an_exited_process_alone_and_deletes_the_config(monkeypatch, tmp_path):
+    proc, conf_path, killpg_calls = _stop_abcde_setup(monkeypatch, tmp_path, returncode=0)
+
+    await abcde_rip._stop_abcde(proc, await _finished_task(), conf_path)  # type: ignore[arg-type]
+
+    assert killpg_calls == []
+    assert not conf_path.exists()
+
+
+async def test_stop_abcde_swallows_a_failing_reap(monkeypatch, tmp_path):
+    proc, conf_path, killpg_calls = _stop_abcde_setup(monkeypatch, tmp_path, returncode=None)
+
+    async def failing_wait() -> int:
+        raise RuntimeError("reap failed")
+
+    monkeypatch.setattr(proc, "wait", failing_wait)
+
+    await abcde_rip._stop_abcde(proc, await _finished_task(), conf_path)  # type: ignore[arg-type]
+
+    assert len(killpg_calls) == 1
+    assert not conf_path.exists()
+
+
+async def test_stop_abcde_swallows_a_cancelled_stderr_task_and_tolerates_a_missing_config(monkeypatch, tmp_path):
+    proc, conf_path, _ = _stop_abcde_setup(monkeypatch, tmp_path, returncode=0)
+    conf_path.unlink()
+
+    async def forever() -> None:
+        await asyncio.sleep(3600)
+
+    task = asyncio.ensure_future(forever())
+    await asyncio.sleep(0)
+    task.cancel()
+
+    await abcde_rip._stop_abcde(proc, task, conf_path)  # type: ignore[arg-type]
+
+    assert task.cancelled()
+    assert not conf_path.exists()
+
+
+def test_exit_failure_reports_the_last_400_characters_of_stderr_on_a_non_zero_exit():
+    stderr_lines = ["early noise " * 50, "  the real error  "]
+
+    message = abcde_rip._exit_failure(2, stderr_lines)
+
+    expected_tail = "\n".join(stderr_lines).strip()[-400:]
+    assert message == f"abcde failed: {expected_tail}"
+    assert len(expected_tail) == 400
+    assert message.endswith("the real error")
+
+
+@pytest.mark.parametrize("stderr_lines", [[], ["", "   "]])
+def test_exit_failure_falls_back_to_the_exit_code_when_stderr_is_blank(stderr_lines):
+    assert abcde_rip._exit_failure(3, stderr_lines) == "abcde failed: exit=3"
+
+
+def test_exit_failure_reports_a_missing_wav_on_a_zero_exit():
+    assert abcde_rip._exit_failure(0, ["ignored"]) == "abcde did not produce the expected wav file"
