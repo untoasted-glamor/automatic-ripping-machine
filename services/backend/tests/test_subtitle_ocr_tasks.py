@@ -20,7 +20,8 @@ os.environ.setdefault("ARM_SERVICE_TOKEN", "tok-service")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from arm_backend.auto_session import _evict_colliding_tasks, _retry_failed_tasks  # noqa: E402
+from arm_backend.auto_session import _retry_failed_tasks  # noqa: E402
+from arm_backend.session_eviction import evict_colliding_tasks  # noqa: E402
 from arm_backend.routers import jobs as jobs_router  # noqa: E402
 from arm_backend.sidecars import image_subtitle_sidecars  # noqa: E402
 from arm_backend.subtitle_ocr_tasks import subtitle_ocr_inputs  # noqa: E402
@@ -396,7 +397,7 @@ async def test_auto_retry_requeues_failed_encodes_only() -> None:
 async def test_overwrite_evicts_the_ocr_task_with_its_encode_and_hands_on_its_srt() -> None:
     srt_file = "Iron Man (2008)/Iron Man.eng.srt"
     db = _done_encode_with_ocr(status=TranscodeTaskStatus.DONE, sidecar_paths=[srt_file])
-    replaced = await _evict_colliding_tasks(db, [_VIDEO], job_id="job_01JZXR7K3M5Q8N4VWA00000001")  # type: ignore[arg-type]
+    replaced = await evict_colliding_tasks(db, [_VIDEO], job_id="job_01JZXR7K3M5Q8N4VWA00000001")  # type: ignore[arg-type]
     assert replaced == {_VIDEO: [*_SUPS, "Iron Man (2008)/Iron Man.fra.mks", srt_file]}
     assert db.rows["transcode_tasks"] == []
 

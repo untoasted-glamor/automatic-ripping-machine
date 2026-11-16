@@ -226,7 +226,7 @@ async def test_an_overwrite_re_encode_replaces_the_old_text_subtitles(
     task's `.srt` to the new encode, the new encode's /complete removes them
     (it wrote no `.srt` of its own) and queues a new OCR task for its `.sup`."""
     from arm_backend import config as bcfg
-    from arm_backend.auto_session import _evict_colliding_tasks
+    from arm_backend.session_eviction import evict_colliding_tasks
 
     monkeypatch.setattr(bcfg.settings, "MEDIA_ROOT", str(tmp_path))
     folder = tmp_path / "Iron Man (2008)"
@@ -254,7 +254,7 @@ async def test_an_overwrite_re_encode_replaces_the_old_text_subtitles(
             sidecar_paths=["Iron Man (2008)/Iron Man.eng.srt"],
         )
     )
-    replaced = await _evict_colliding_tasks(db, [_VIDEO], job_id=JOB)  # type: ignore[arg-type]
+    replaced = await evict_colliding_tasks(db, [_VIDEO], job_id=JOB)  # type: ignore[arg-type]
     assert db.rows["transcode_tasks"] == []
     db.rows["session_applications"] = [
         SessionApplication(id="sap_x", session_id="ses_x", job_id=JOB, status=SessionApplicationStatus.RUNNING)

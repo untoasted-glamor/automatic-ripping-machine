@@ -1321,7 +1321,7 @@ def test_apply_with_no_kept_track_ripped_queues_nothing(signing_key: bytes, tmp_
 async def test_evict_returns_the_sidecars_to_hand_on_including_a_failed_replacements() -> None:
     """A FAILED replacement still carries the sidecars it was handed; a second
     overwrite passes those on too, with no duplicates."""
-    from arm_backend.auto_session import _evict_colliding_tasks
+    from arm_backend.session_eviction import evict_colliding_tasks
 
     db = FakeSession()
     db.rows["session_applications"] = [
@@ -1351,7 +1351,7 @@ async def test_evict_returns_the_sidecars_to_hand_on_including_a_failed_replacem
         task("txt_done", "M/B.mkv", TranscodeTaskStatus.DONE, sidecar_paths=["M/B.eng.sup"]),
         task("txt_plain", "M/C.mkv", TranscodeTaskStatus.DONE),
     ]
-    replaced = await _evict_colliding_tasks(
+    replaced = await evict_colliding_tasks(
         db, ["M/A.mkv", "M/B.mkv", "M/C.mkv"], job_id="job_01JZXR7K3M5Q8N4VWA00000001"
     )
     assert replaced == {"M/A.mkv": ["M/A.fre.sup", "M/A.eng.sup"], "M/B.mkv": ["M/B.eng.sup"]}
@@ -1359,13 +1359,13 @@ async def test_evict_returns_the_sidecars_to_hand_on_including_a_failed_replacem
 
 
 async def test_evict_with_no_own_application_or_no_row_hands_on_nothing() -> None:
-    from arm_backend.auto_session import _evict_colliding_tasks
+    from arm_backend.session_eviction import evict_colliding_tasks
 
     db = FakeSession()
     db.rows["session_applications"] = []
-    assert await _evict_colliding_tasks(db, ["M/A.mkv"], job_id="job_01JZXR7K3M5Q8N4VWA00000001") == {}
+    assert await evict_colliding_tasks(db, ["M/A.mkv"], job_id="job_01JZXR7K3M5Q8N4VWA00000001") == {}
     db.rows["session_applications"] = [
         SessionApplication(id="sap_own", session_id="ses_x", job_id="job_01JZXR7K3M5Q8N4VWA00000001")
     ]
     db.rows["transcode_tasks"] = []
-    assert await _evict_colliding_tasks(db, ["M/A.mkv"], job_id="job_01JZXR7K3M5Q8N4VWA00000001") == {}
+    assert await evict_colliding_tasks(db, ["M/A.mkv"], job_id="job_01JZXR7K3M5Q8N4VWA00000001") == {}
