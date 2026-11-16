@@ -1113,216 +1113,21 @@ class JobController:
         rip_start: RipStartResponse,
         drive_free: bool = False,
     ) -> None:
-        """`drive_free`: the rip reads no drive (a remux from a kept backup, in
+        """Rip every title of the disc, report rip-complete and eject.
+
+        `drive_free`: the rip reads no drive (a remux from a kept backup, in
         the remux lane), so the drive counts as given back from the start."""
         run = _RipRun(drive_released=drive_free)
         if not drive_free:
             self._disc_run = run
         try:
-            await self._rip_and_eject(
-                job_id=job_id, disc_type=disc_type, device_path=device_path, rip_start=rip_start, run=run
-            )
+            await _DiscRip(
+                self, job_id=job_id, disc_type=disc_type, device_path=device_path, rip_start=rip_start, run=run
+            ).run()
         finally:
             # Also on an abandon (cancel): the next job owns the drive again.
             if self._disc_run is run:
                 self._disc_run = None
-
-    async def _rip_and_eject(
-        self,
-        *,
-        job_id: str,
-        disc_type: DiscType,
-        device_path: str,
-        rip_start: RipStartResponse,
-        run: _RipRun,
-    ) -> None:
-        output_dir = RAW_ROOT / job_id
-        # A remux from the kept disc backup: it never reads the drive.
-        drive_free = run.drive_released
-        output_dir.mkdir(parents=True, exist_ok=True)
-        tracks = list(rip_start.tracks)
-        menu = _MenuRow(self, job_id, rip_start.extract_menu.track_id) if rip_start.extract_menu is not None else None
-        # A DVD/BD rip whose drive drops off the bus mid-rip stops makemkvcon
-        # and resumes on the drive's new node instead of failing every
-        # remaining title (D-133). ISO and folder sources have no bus to drop.
-        resumable = (
-            disc_type in (DiscType.DVD, DiscType.BLURAY)
-            and not drive_free
-            and not is_file_source(device_path)
-            and not all(t.kind in (TrackKind.DISC_BACKUP, TrackKind.DATA_DUMP) for t in tracks)
-        )
-        lost = asyncio.Event()
-        # Track ids whose title the lost drive left unfinished, and the files
-        # of every title that finished (kept across a resume).
-        unfinished: set[str] = set()
-        # A retry's DONE titles own their files from the first rip.
-        kept: set[Path] = {Path(t.output_path) for t in tracks if t.status == TrackStatus.DONE and t.output_path}
-        if rip_start.retry or drive_free:
-            # Retry the failed titles only (POST /api/jobs/{id}/retry-failed):
-            # DONE tracks count as left out, so backup-then-remux rips just
-            # the rest, into a folder of its own (a remux names its file by
-            # disc title, which can clash with the first rip's `mkv all` names).
-            # So does any remux from the backup: one re-run after a ripper
-            # restart never redoes the titles it already finished.
-            tracks = [t.model_copy(update={"excluded": True}) if t.status == TrackStatus.DONE else t for t in tracks]
-        # IN_PROGRESS is sent once per track across every pass.
-        started: set[str] = set()
-
-        async def on_track_start(track: TrackView) -> None:
-            if track.status != TrackStatus.QUEUED or track.id in started:
-                return
-            started.add(track.id)
-            with with_log_context(track_id=track.id):
-                await self._patch_track_with_retry(track.id, status=TrackStatus.IN_PROGRESS)
-
-        async def on_track_done(track: TrackView, result: RipResult) -> None:
-            with with_log_context(track_id=track.id):
-                if result.ok:
-                    if result.output_path is not None:
-                        kept.add(Path(result.output_path))
-                    fields: dict[str, object] = {"status": TrackStatus.DONE}
-                    if result.output_path is not None:
-                        fields["output_path"] = str(result.output_path)
-                    if result.size_bytes is not None:
-                        fields["size_bytes"] = result.size_bytes
-                    if result.sha256 is not None:
-                        fields["sha256"] = result.sha256
-                    if result.duration_seconds is not None:
-                        fields["duration_seconds"] = result.duration_seconds
-                    await self._patch_track_with_retry(track.id, **fields)
-                    logger.info(
-                        "track %s done size=%s duration=%s",
-                        track.id,
-                        result.size_bytes,
-                        result.duration_seconds,
-                    )
-                elif resumable and not run.drive_released and (lost.is_set() or self._drive_gone(rip_path)):
-                    # Not this title's fault: the drive went away under it.
-                    # Leave it for the resume rather than failing it.
-                    lost.set()
-                    unfinished.add(track.id)
-                    logger.info("track %s left for a resume: the drive disconnected (%s)", track.id, result.error)
-                else:
-                    await self._patch_track_with_retry(
-                        track.id,
-                        status=TrackStatus.FAILED,
-                        last_error=result.error or "unknown error",
-                    )
-                    logger.warning("track %s failed err=%s", track.id, result.error)
-
-        async def on_track_progress(track: TrackView, fraction: float, stats: TransferStats | None = None, /) -> None:
-            with with_log_context(track_id=track.id):
-                await self._publish_progress(job_id, track.id, fraction, stats)
-
-        min_length_seconds = (
-            rip_start.min_length_seconds
-            if rip_start.min_length_seconds is not None
-            else self._default_min_length_seconds
-        )
-        rip_path = device_path
-        rip_dir = output_dir
-        if rip_start.retry:
-            attempt = 1
-            while (output_dir / f"retry-{attempt}").exists():
-                attempt += 1
-            rip_dir = output_dir / f"retry-{attempt}"
-        skip: set[str] = set()
-        resumes = 0
-        watcher: asyncio.Task[None] | None = None
-
-        async def on_backup_done() -> None:
-            # Backup-then-remux has read the disc; the remuxes only read the
-            # backup. Give the disc back now, and stop watching the drive so
-            # an open tray or a new disc is never taken for a drop.
-            run.drive_released = True
-            if watcher is not None:
-                watcher.cancel()
-            logger.info("disc backup finished; ejecting before the remuxes")
-            await self._eject_with_retry(self._device_path or rip_path)
-
-        parked = False
-        while True:
-            watcher = asyncio.create_task(self._watch_drive(rip_path, lost)) if resumable else None
-            try:
-                parked = await rip_all(
-                    disc_type=disc_type,
-                    device_path=rip_path,
-                    tracks=tracks,
-                    scan_titles=rip_start.scan_titles,
-                    output_dir=rip_dir,
-                    on_track_start=on_track_start,
-                    on_track_done=on_track_done,
-                    on_track_progress=on_track_progress,
-                    min_length_seconds=min_length_seconds,
-                    stop=lost if resumable else None,
-                    skip_track_ids=skip,
-                    drive_lost=functools.partial(self._drive_gone, rip_path) if resumable else None,
-                    backup_full_selections=self._backup_full_selections,
-                    # The job's, whichever folder this pass rips into, so a
-                    # resume remuxes from a backup an earlier pass finished.
-                    backup_dir=output_dir / SELECTION_BACKUP_DIRNAME,
-                    on_backup_done=on_backup_done,
-                    # Until a pass settles it: a resume after the drive
-                    # dropped during the backup copies it then.
-                    menu=menu if menu is not None and not menu.settled else None,
-                    drive_free=drive_free,
-                    park_after_backup=rip_start.park_after_backup and not drive_free,
-                )
-            finally:
-                if watcher is not None:
-                    watcher.cancel()
-            if not (lost.is_set() and unfinished):
-                break
-            # The drive dropped off the bus mid-rip. Keep the disc's finished
-            # titles and, once it is back, rip the rest on its new node: one
-            # more `mkv all`, or the kept titles' remuxes from a finished
-            # backup (never per-title invocations against the drive).
-            logger.warning(
-                "drive disconnected mid-rip on %s; %d title(s) unfinished; waiting up to %.0fs for it to return",
-                rip_path,
-                len(unfinished),
-                DEVICE_RETURN_WAIT_SECONDS,
-            )
-            returned = await self._await_drive_return() if resumes < MAX_DEVICE_RESUMES else None
-            if returned is None:
-                await self._fail_unfinished(tracks, unfinished, started, resumes)
-                break
-            resumes += 1
-            _remove_partial_outputs(output_dir, kept)
-            skip = {t.id for t in tracks} - unfinished
-            unfinished.clear()
-            lost.clear()
-            rip_path = returned
-            rip_dir = output_dir / f"resume-{resumes}"
-            logger.info(
-                "drive back at %s; resuming %d title(s) (resume %d)",
-                rip_path,
-                len(tracks) - len(skip),
-                resumes,
-            )
-
-        if menu is not None and not menu.settled:
-            await menu.finish(menu_failed(MENU_NOT_COPIED))
-        if parked:
-            # Stop 2: the disc went back after its backup; its titles are chosen, then remuxed in the remux lane.
-            if not run.drive_released:
-                # A backup an earlier pass finished was reused, so nothing gave the disc back yet.
-                run.drive_released = True
-                await self._eject_with_retry(self._device_path or device_path)
-            await self._retry_backend_call(lambda: self._client.rip_parked(job_id), f"rip-parked {job_id}")
-            logger.info("rip-parked job_id=%s: backed up; its titles wait to be chosen", job_id)
-            return
-        completed = await self._rip_complete_with_retry(job_id)
-        logger.info("rip-complete job_id=%s status=%s", job_id, completed.status.value)
-
-        if run.drive_released:
-            # Ejected after the backup (or never read, for a remux); the tray
-            # may hold the next disc by now.
-            return
-        # Eject the node the drive is at NOW — it may have renumbered during
-        # the rip (USB replug); the path captured at rip start is a hint only.
-        await self._eject_with_retry(self._device_path or device_path)
-        await asyncio.sleep(EJECT_GRACE_SECONDS)
 
     def _drive_gone(self, path: str) -> bool:
         """The drive this rip runs on has left `path`: the poll loop moved the
@@ -1557,6 +1362,247 @@ class _MenuRow:
         await self._patch(**fields)
         detail = f": {outcome.error}" if outcome.error else ""
         logger.info("disc menu %s %s%s", self.track_id, outcome.status.value, detail)
+
+
+class _DiscRip:
+    """One disc's rip across its resumes: rip every title, leave the titles a lost drive cut short for one more pass
+    on the drive's new node, then report rip-complete and eject.
+
+    Fork: `run` is the rip's own state (`_RipRun`): a remux from the kept disc backup (`drive_released` from the
+    start) never reads the drive; backup-then-remux gives the disc back once its backup is done; the disc menu row
+    (`_MenuRow`) is settled by the rip; a retry rips only the failed titles, into a folder of its own; and a disc
+    parked after its backup (stop 2) reports rip-parked in place of rip-complete."""
+
+    def __init__(
+        self,
+        controller: "JobController",
+        *,
+        job_id: str,
+        disc_type: DiscType,
+        device_path: str,
+        rip_start: RipStartResponse,
+        run: _RipRun,
+    ) -> None:
+        self._controller = controller
+        self._job_id = job_id
+        self._disc_type = disc_type
+        self._rip_start = rip_start
+        self._run = run
+        # A remux from the kept disc backup: it never reads the drive.
+        self._drive_free = run.drive_released
+        # The node at rip start; the controller's own `_device_path` is the live one.
+        self._start_path = device_path
+        self._output_dir = RAW_ROOT / job_id
+        self._tracks = list(rip_start.tracks)
+        self._menu = (
+            _MenuRow(controller, job_id, rip_start.extract_menu.track_id)
+            if rip_start.extract_menu is not None
+            else None
+        )
+        # A DVD/BD rip whose drive drops off the bus mid-rip stops makemkvcon
+        # and resumes on the drive's new node instead of failing every
+        # remaining title (D-133). ISO and folder sources have no bus to drop.
+        self._resumable = (
+            disc_type in (DiscType.DVD, DiscType.BLURAY)
+            and not self._drive_free
+            and not is_file_source(device_path)
+            and not all(t.kind in (TrackKind.DISC_BACKUP, TrackKind.DATA_DUMP) for t in self._tracks)
+        )
+        self._lost = asyncio.Event()
+        # Track ids whose title the lost drive left unfinished, and the files
+        # of every title that finished (kept across a resume).
+        self._unfinished: set[str] = set()
+        # A retry's DONE titles own their files from the first rip.
+        self._kept: set[Path] = {
+            Path(t.output_path) for t in self._tracks if t.status == TrackStatus.DONE and t.output_path
+        }
+        if rip_start.retry or self._drive_free:
+            # Retry the failed titles only (POST /api/jobs/{id}/retry-failed):
+            # DONE tracks count as left out, so backup-then-remux rips just
+            # the rest, into a folder of its own (a remux names its file by
+            # disc title, which can clash with the first rip's `mkv all` names).
+            # So does any remux from the backup: one re-run after a ripper
+            # restart never redoes the titles it already finished.
+            self._tracks = [
+                t.model_copy(update={"excluded": True}) if t.status == TrackStatus.DONE else t for t in self._tracks
+            ]
+        # IN_PROGRESS is sent once per track across every pass.
+        self._started: set[str] = set()
+        self._min_length_seconds = (
+            rip_start.min_length_seconds
+            if rip_start.min_length_seconds is not None
+            else controller._default_min_length_seconds
+        )
+        self._rip_path = device_path
+        self._rip_dir = self._output_dir
+        if rip_start.retry:
+            attempt = 1
+            while (self._output_dir / f"retry-{attempt}").exists():
+                attempt += 1
+            self._rip_dir = self._output_dir / f"retry-{attempt}"
+        self._skip: set[str] = set()
+        self._resumes = 0
+        self._watcher: asyncio.Task[None] | None = None
+
+    async def _on_track_start(self, track: TrackView) -> None:
+        """Mark a queued track IN_PROGRESS, once across every pass."""
+        if track.status != TrackStatus.QUEUED or track.id in self._started:
+            return
+        self._started.add(track.id)
+        with with_log_context(track_id=track.id):
+            await self._controller._patch_track_with_retry(track.id, status=TrackStatus.IN_PROGRESS)
+
+    async def _on_track_done(self, track: TrackView, result: RipResult) -> None:
+        """Record a finished title as done, left for a resume, or failed."""
+        with with_log_context(track_id=track.id):
+            if result.ok:
+                if result.output_path is not None:
+                    self._kept.add(Path(result.output_path))
+                fields: dict[str, object] = {"status": TrackStatus.DONE}
+                if result.output_path is not None:
+                    fields["output_path"] = str(result.output_path)
+                if result.size_bytes is not None:
+                    fields["size_bytes"] = result.size_bytes
+                if result.sha256 is not None:
+                    fields["sha256"] = result.sha256
+                if result.duration_seconds is not None:
+                    fields["duration_seconds"] = result.duration_seconds
+                await self._controller._patch_track_with_retry(track.id, **fields)
+                logger.info(
+                    "track %s done size=%s duration=%s",
+                    track.id,
+                    result.size_bytes,
+                    result.duration_seconds,
+                )
+            elif (
+                self._resumable
+                and not self._run.drive_released
+                and (self._lost.is_set() or self._controller._drive_gone(self._rip_path))
+            ):
+                # Not this title's fault: the drive went away under it.
+                # Leave it for the resume rather than failing it.
+                self._lost.set()
+                self._unfinished.add(track.id)
+                logger.info("track %s left for a resume: the drive disconnected (%s)", track.id, result.error)
+            else:
+                await self._controller._patch_track_with_retry(
+                    track.id,
+                    status=TrackStatus.FAILED,
+                    last_error=result.error or "unknown error",
+                )
+                logger.warning("track %s failed err=%s", track.id, result.error)
+
+    async def _on_track_progress(
+        self, track: TrackView, fraction: float, stats: TransferStats | None = None, /
+    ) -> None:
+        """Publish a track's progress to the websocket hub, when one is connected."""
+        with with_log_context(track_id=track.id):
+            await self._controller._publish_progress(self._job_id, track.id, fraction, stats)
+
+    async def _on_backup_done(self) -> None:
+        """Backup-then-remux has read the disc; the remuxes only read the backup. Give the disc back now, and stop
+        watching the drive so an open tray or a new disc is never taken for a drop."""
+        self._run.drive_released = True
+        if self._watcher is not None:
+            self._watcher.cancel()
+        logger.info("disc backup finished; ejecting before the remuxes")
+        await self._controller._eject_with_retry(self._controller._device_path or self._rip_path)
+
+    async def run(self) -> None:
+        """Rip the disc through its resumes, report rip-complete (or rip-parked), then eject."""
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+        menu = self._menu
+        parked = False
+        while True:
+            self._watcher = (
+                asyncio.create_task(self._controller._watch_drive(self._rip_path, self._lost))
+                if self._resumable
+                else None
+            )
+            try:
+                parked = await rip_all(
+                    disc_type=self._disc_type,
+                    device_path=self._rip_path,
+                    tracks=self._tracks,
+                    scan_titles=self._rip_start.scan_titles,
+                    output_dir=self._rip_dir,
+                    on_track_start=self._on_track_start,
+                    on_track_done=self._on_track_done,
+                    on_track_progress=self._on_track_progress,
+                    min_length_seconds=self._min_length_seconds,
+                    stop=self._lost if self._resumable else None,
+                    skip_track_ids=self._skip,
+                    drive_lost=(
+                        functools.partial(self._controller._drive_gone, self._rip_path) if self._resumable else None
+                    ),
+                    backup_full_selections=self._controller._backup_full_selections,
+                    # The job's, whichever folder this pass rips into, so a
+                    # resume remuxes from a backup an earlier pass finished.
+                    backup_dir=self._output_dir / SELECTION_BACKUP_DIRNAME,
+                    on_backup_done=self._on_backup_done,
+                    # Until a pass settles it: a resume after the drive
+                    # dropped during the backup copies it then.
+                    menu=menu if menu is not None and not menu.settled else None,
+                    drive_free=self._drive_free,
+                    park_after_backup=self._rip_start.park_after_backup and not self._drive_free,
+                )
+            finally:
+                if self._watcher is not None:
+                    self._watcher.cancel()
+            if not (self._lost.is_set() and self._unfinished):
+                break
+            # The drive dropped off the bus mid-rip. Keep the disc's finished
+            # titles and, once it is back, rip the rest on its new node: one
+            # more `mkv all`, or the kept titles' remuxes from a finished
+            # backup (never per-title invocations against the drive).
+            logger.warning(
+                "drive disconnected mid-rip on %s; %d title(s) unfinished; waiting up to %.0fs for it to return",
+                self._rip_path,
+                len(self._unfinished),
+                DEVICE_RETURN_WAIT_SECONDS,
+            )
+            returned = await self._controller._await_drive_return() if self._resumes < MAX_DEVICE_RESUMES else None
+            if returned is None:
+                await self._controller._fail_unfinished(self._tracks, self._unfinished, self._started, self._resumes)
+                break
+            self._resumes += 1
+            _remove_partial_outputs(self._output_dir, self._kept)
+            self._skip = {t.id for t in self._tracks} - self._unfinished
+            self._unfinished.clear()
+            self._lost.clear()
+            self._rip_path = returned
+            self._rip_dir = self._output_dir / f"resume-{self._resumes}"
+            logger.info(
+                "drive back at %s; resuming %d title(s) (resume %d)",
+                self._rip_path,
+                len(self._tracks) - len(self._skip),
+                self._resumes,
+            )
+
+        if menu is not None and not menu.settled:
+            await menu.finish(menu_failed(MENU_NOT_COPIED))
+        controller = self._controller
+        job_id = self._job_id
+        if parked:
+            # Stop 2: the disc went back after its backup; its titles are chosen, then remuxed in the remux lane.
+            if not self._run.drive_released:
+                # A backup an earlier pass finished was reused, so nothing gave the disc back yet.
+                self._run.drive_released = True
+                await controller._eject_with_retry(controller._device_path or self._start_path)
+            await controller._retry_backend_call(lambda: controller._client.rip_parked(job_id), f"rip-parked {job_id}")
+            logger.info("rip-parked job_id=%s: backed up; its titles wait to be chosen", job_id)
+            return
+        completed = await controller._rip_complete_with_retry(job_id)
+        logger.info("rip-complete job_id=%s status=%s", job_id, completed.status.value)
+
+        if self._run.drive_released:
+            # Ejected after the backup (or never read, for a remux); the tray
+            # may hold the next disc by now.
+            return
+        # Eject the node the drive is at NOW — it may have renumbered during
+        # the rip (USB replug); the path captured at rip start is a hint only.
+        await controller._eject_with_retry(controller._device_path or self._start_path)
+        await asyncio.sleep(EJECT_GRACE_SECONDS)
 
 
 def _remove_partial_outputs(output_dir: Path, kept: set[Path]) -> None:
