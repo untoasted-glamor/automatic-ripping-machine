@@ -14,6 +14,7 @@
 	} from '$lib/utils/track-keep';
 	import PlayAllBadge from './PlayAllBadge.svelte';
 	import TrackKeepToggle from './TrackKeepToggle.svelte';
+	import { parseEpisodeNumber } from '$lib/utils/track-edit';
 	import TrackTitleSearch from './TrackTitleSearch.svelte';
 	interface Props {
 		job: JobView;
@@ -78,9 +79,7 @@
 	}
 
 	function handleEpisodeNumberInput(trackId: string, raw: string) {
-		const trimmed = raw.trim();
-		const n = trimmed === '' ? null : Number(trimmed);
-		handleTrackFieldUpdate(trackId, 'episode_number', Number.isFinite(n) ? n : null);
+		handleTrackFieldUpdate(trackId, 'episode_number', parseEpisodeNumber(raw));
 	}
 
 	function toggleTrackSearch(trackId: string) {
