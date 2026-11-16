@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from arm_backend.auto_session import cancel_parked_applications
+from arm_backend.session_drain import cancel_parked_applications
 from arm_common import Job, JobStatus
 from arm_common.enums import OFF_DRIVE_JOB_STATUSES
 
