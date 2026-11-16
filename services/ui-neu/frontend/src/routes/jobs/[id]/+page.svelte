@@ -2,16 +2,13 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { onMount, tick } from 'svelte';
-	import { fetchJob, fetchNamingPreview, keepTracks, resolveJob, retryFailedTitles } from '$lib/api/jobs';
-	import { ApiError } from '$lib/api/client';
+	import { keepTracks, resolveJob, retryFailedTitles } from '$lib/api/jobs';
 	import { posterSrc, posterFallback, jobPoster } from '$lib/utils/poster';
 	import PosterImage from '$lib/components/PosterImage.svelte';
 	import type {
-		JobDetailView,
 		MenuProposalView,
 		ResolveResponse,
 		ApplySessionResponse,
-		NamingPreviewItem,
 		SubtitleOcrResponse
 	} from '$lib/types/api.gen';
 	import InlineField from '$lib/components/InlineField.svelte';
@@ -54,9 +51,7 @@
 	import PlayAllBadge from '$lib/components/PlayAllBadge.svelte';
 	import { fetchSessions } from '$lib/api/sessions';
 	import { buildMetadataFields } from '$lib/utils/job-fields';
-	import { readJobMetadata } from '$lib/utils/job-metadata';
 	import { formatFps } from '$lib/utils/fps';
-	import { extractMusicTracks } from '$lib/utils/music-tracks';
 	import { trackKindLabel, trackSizeLabel } from '$lib/utils/track-fields';
 	import { trackDuration } from '$lib/utils/duration';
 	import LoadState from '$lib/components/LoadState.svelte';
@@ -74,10 +69,10 @@
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
 	import { isAdmin } from '$lib/stores/auth';
 	import { dashboard } from '$lib/stores/dashboard';
+	import { JobDetail } from '$lib/stores/jobDetail.svelte';
 
-	let detail = $state<JobDetailView | null>(null);
-	let jobLoading = $state(true);
-	let jobError = $state<Error | null>(null);
+	const jobDetail = new JobDetail(() => $page.params.id ?? '');
+	let detail = $derived(jobDetail.detail);
 	// The Identity panel (search, season and disc, episodes; MusicSearch on a CD).
 	let identityOpen = $state(false);
 	let identityPanel = $state<
@@ -93,23 +88,12 @@
 	let editingTrackId = $state<string | null>(null);
 	// Why the last Keep change was refused (shown above the Tracks table).
 	let trackError = $state<string | null>(null);
-	let previewItems = $state<NamingPreviewItem[]>([]);
-	// The last preview answered 409 (no routed session, so no template). The
-	// 5s poll then asks again only every PREVIEW_UNROUTED_EVERY_N_POLLS polls,
-	// so a route added elsewhere still shows up; explicit reloads always ask.
-	const PREVIEW_UNROUTED_EVERY_N_POLLS = 6;
-	let previewUnrouted = false;
-	let previewSkippedPolls = 0;
-	let previewByTrack = $derived(new Map(previewItems.map((i) => [i.track_id, i])));
 
 	// Dialog visibility + a transient note shown after a resolve/apply lands.
 	let showIdentify = $state(false);
 	let showApply = $state(false);
 	let actionNote = $state<string | null>(null);
 	let noteTimer: ReturnType<typeof setTimeout> | null = null;
-
-	let canResolve = $derived(!!detail && detail.job.actions.can_resolve);
-	let canApply = $derived(!!detail && detail.job.actions.can_apply);
 
 	// Identify is "Edit identity" once an identity already exists (post-rip /
 	// identified), otherwise "Identify disc" for the auto-id-failed case. A disc
@@ -138,7 +122,7 @@
 	function handleIdentified(resp: ResolveResponse) {
 		showIdentify = false;
 		identityPanel?.accepted();
-		loadJob();
+		jobDetail.load();
 		if (resp.fan_out?.length) {
 			const n = resp.fan_out.length;
 			flashNote(`${n} session${n === 1 ? '' : 's'} resumed`);
@@ -147,7 +131,7 @@
 
 	function handleApplied(resp: ApplySessionResponse) {
 		showApply = false;
-		loadJob();
+		jobDetail.load();
 		if (resp.session_application?.status === 'waiting_identify') {
 			// Pre-rip applies park until rip-complete. A post-rip park (identity
 			// still pending, or no title resolved an output) has no such
@@ -161,7 +145,7 @@
 	}
 
 	function handleTextSubtitles(resp: SubtitleOcrResponse) {
-		loadJob();
+		jobDetail.load();
 		const n = resp.tasks?.length ?? 0;
 		const running = (resp.skipped ?? []).filter((s) => s.reason === 'running').length;
 		if (n > 0) flashNote(`Text subtitles queued for ${n} encode${n === 1 ? '' : 's'}`);
@@ -171,34 +155,15 @@
 
 	let canMakeTextSubtitles = $derived((detail?.subtitle_ocr?.eligible_encodes ?? 0) > 0);
 
-	let isVideoDisc = $derived(detail?.job.disc_type === 'dvd' || detail?.job.disc_type === 'bluray');
-
-	let isCdDisc = $derived(detail?.job.disc_type === 'cd');
-	let hasIdentityPanel = $derived(isVideoDisc || isCdDisc);
+	let hasIdentityPanel = $derived(jobDetail.isVideoDisc || jobDetail.isCdDisc);
 
 	let sessionNames = $state(new Map<string, string>());
 	let metadataFields = $derived(detail ? buildMetadataFields(detail.job, $dashboard.drive_names, sessionNames) : []);
-	let musicTracks = $derived(detail ? extractMusicTracks(detail.job.metadata_json) : []);
-	let tracksAreSeries = $derived(
-		(detail?.tracks ?? []).some(
-			(t) => t.role === 'episode' || t.episode_number != null || (t.role == null && detail?.job.media_type === 'tv')
-		)
-	);
-	// Tracks whose episode or role the user set by hand (switching to Movie drops them).
-	let handSetCount = $derived(
-		(detail?.tracks ?? []).filter((t) =>
-			['episode_number', 'role'].some((k) => t.identity_provenance?.[k] === 'manual')
-		).length
-	);
-	let jobMeta = $derived(detail ? readJobMetadata(detail.job.metadata_json) : {});
 	let showRawMetadata = $state(false);
-	let rawMetadataPairs = $derived(
-		detail ? Object.entries((detail.job.metadata_json ?? {}) as Record<string, unknown>) : []
-	);
 
 	function handleTrackTitleApply() {
 		editingTrackId = null;
-		loadJob();
+		jobDetail.load();
 	}
 
 	// What the last Retry failed titles click started (shown under the Tracks table).
@@ -215,7 +180,7 @@
 
 	function menuNameChanged(updated: MenuProposalView) {
 		menuProposals = menuProposals.map((p) => (p.id === updated.id ? updated : p));
-		if (updated.status === 'applied' || updated.status === 'accepted') loadJob();
+		if (updated.status === 'applied' || updated.status === 'accepted') jobDetail.load();
 		void menuPanel?.reload();
 	}
 
@@ -223,7 +188,7 @@
 		menuProposals = list;
 		// A finished preview adds rows for the short titles the menu plays: load them.
 		const have = new Set((detail?.tracks ?? []).map((t) => t.id));
-		if (list.some((p) => p.track_id && !have.has(p.track_id))) loadJob();
+		if (list.some((p) => p.track_id && !have.has(p.track_id))) jobDetail.load();
 	}
 
 	// A title's menu-name row: open when the menu names it, else when its Episode cell was clicked. A click on the
@@ -236,7 +201,7 @@
 
 	function menuNamedByHand(created: MenuProposalView) {
 		menuProposals = [...menuProposals, created];
-		loadJob();
+		jobDetail.load();
 		void menuPanel?.reload();
 	}
 
@@ -260,7 +225,7 @@
 			const res = await acceptAllMenuProposals(jobId);
 			const refused = Object.keys(res.refused ?? {}).length;
 			menuNote = refused ? `${refused} ${refused === 1 ? 'name was' : 'names were'} not accepted; see the rows.` : null;
-			loadJob();
+			jobDetail.load();
 		} catch (e) {
 			menuNote = `Could not accept the names: ${e instanceof Error ? e.message : 'unknown error'}`;
 		} finally {
@@ -285,7 +250,7 @@
 			trackError = `Could not rip the remaining titles: ${e instanceof Error ? e.message : 'unknown error'}`;
 		} finally {
 			retrying = false;
-			loadJob();
+			jobDetail.load();
 		}
 	}
 
@@ -296,46 +261,7 @@
 		} catch (e) {
 			trackError = `Could not update the tracks: ${e instanceof Error ? e.message : 'unknown error'}`;
 		} finally {
-			loadJob();
-		}
-	}
-
-	async function loadJob({ poll = false } = {}) {
-		const id = $page.params.id ?? '';
-		// Only flip into the loading state on the FIRST load. The 5s poll
-		// re-calls loadJob() and on a slow network that would unmount the
-		// rendered detail in favour of a skeleton, then remount when the
-		// fetch settles. On refreshes we already have a previous payload to
-		// render; just swap it in place when the new one arrives.
-		const isInitialLoad = detail == null;
-		if (isInitialLoad) {
-			jobLoading = true;
-		}
-		jobError = null;
-		try {
-			detail = await fetchJob(id);
-			// Rendered filename preview is a best-effort SECOND fetch — never block
-			// or fail the job render on it. Excluded tracks may be absent from items[].
-			const skipPreview = poll && previewUnrouted && ++previewSkippedPolls % PREVIEW_UNROUTED_EVERY_N_POLLS !== 0;
-			if (!skipPreview) {
-				try {
-					const preview = await fetchNamingPreview(id);
-					previewItems = preview.items;
-					previewUnrouted = false;
-				} catch (e) {
-					previewItems = [];
-					previewUnrouted = e instanceof ApiError && e.status === 409;
-					previewSkippedPolls = 0;
-				}
-			}
-		} catch (e) {
-			if (e instanceof Error && e.message.includes('404')) {
-				goto('/');
-				return;
-			}
-			jobError = e instanceof Error ? e : new Error('Failed to load job');
-		} finally {
-			jobLoading = false;
+			jobDetail.load();
 		}
 	}
 
@@ -360,13 +286,13 @@
 			!!after &&
 			job.media_type === 'tv' &&
 			(before.season !== (after.season ?? null) || before.disc !== (after.disc_number ?? null));
-		await loadJob();
+		await jobDetail.load();
 		if (changed) matching.start();
 	}
 
 	function handleSeriesApplied() {
 		matching.start();
-		loadJob();
+		jobDetail.load();
 	}
 
 	function handleMediaTypeChanged(type: 'movie' | 'tv') {
@@ -375,7 +301,7 @@
 			matching.start();
 			identityOpen = true;
 		} else matching.stop();
-		loadJob();
+		jobDetail.load();
 	}
 
 	// Client-side navigation from one job page to another keeps this component
@@ -386,7 +312,7 @@
 		const id = $page.params.id ?? '';
 		if (id && id !== loadedId) {
 			loadedId = id;
-			loadJob();
+			jobDetail.load();
 		}
 	});
 
@@ -415,7 +341,7 @@
 			() => $page.params.id,
 			matching,
 			async () => {
-				await loadJob();
+				await jobDetail.load();
 				await identityPanel?.reloadEpisodes();
 			}
 		);
@@ -424,10 +350,10 @@
 			// apply), and the next tick picks that up without a remount.
 			while (!stopped) {
 				await new Promise((r) => setTimeout(r, 5000));
-				if (!stopped && detail && isLive(detail.job)) await loadJob({ poll: true });
+				if (!stopped && detail && isLive(detail.job)) await jobDetail.load({ poll: true });
 			}
 		}
-		loadJob().then(() => poll());
+		jobDetail.load().then(() => poll());
 		return () => {
 			stopped = true;
 			offRipperEvents();
@@ -441,7 +367,7 @@
 	<title>ARM - {detail?.job.title || 'Job Detail'}</title>
 </svelte:head>
 
-<LoadState data={detail} loading={jobLoading} error={jobError} transitionKey="job-detail-main">
+<LoadState data={jobDetail.detail} loading={jobDetail.loading} error={jobDetail.error} transitionKey="job-detail-main">
 	{#snippet loadingSlot()}
 		<SkeletonCard lines={6} />
 	{/snippet}
@@ -463,7 +389,7 @@
 		{@const retryBacksUp = d.retry_backs_up ?? false}
 		{@const hasMenu = tracks.some((t) => isDiscMenu(t) && t.status === 'done')}
 		<!-- The Episode column: a series' episodes, and on a disc with a menu each title's menu name (click to name it). -->
-		{@const nameColumn = tracksAreSeries || hasMenu}
+		{@const nameColumn = jobDetail.tracksAreSeries || hasMenu}
 		<div class="stack-lg stack">
 			<!-- Breadcrumb -->
 			<nav class="job-detail-breadcrumb">
@@ -486,7 +412,7 @@
 						<InlineField
 							label="Title"
 							value={job.title || 'Untitled'}
-							canEdit={$isAdmin && canResolve && !hasIdentityPanel}
+							canEdit={$isAdmin && jobDetail.canResolve && !hasIdentityPanel}
 							onsave={(raw) => saveFact('title', raw)}
 						/>
 					</h1>
@@ -494,29 +420,29 @@
 						<span class="job-detail-year">({job.year})</span>
 					{/if}
 					<StatusBadge status={effectiveJobStatus(job)} />
-					{#if isVideoDisc && !$isAdmin}
+					{#if jobDetail.isVideoDisc && !$isAdmin}
 						<span class="badge" data-testid="media-type-text">{job.media_type === 'tv' ? 'TV' : 'Movie'}</span>
 					{/if}
-					{#if jobMeta.imdb_id && !isCdDisc}
+					{#if jobDetail.jobMeta.imdb_id && !jobDetail.isCdDisc}
 						<a
-							href="https://www.imdb.com/title/{jobMeta.imdb_id}"
+							href="https://www.imdb.com/title/{jobDetail.jobMeta.imdb_id}"
 							target="_blank"
 							rel="noopener noreferrer"
 							class="badge badge-imdb job-detail-imdb-badge">IMDb</a
 						>
 					{/if}
-					{#if jobMeta.multi_title}
+					{#if jobDetail.jobMeta.multi_title}
 						<span class="badge badge-sm job-detail-multi-title-badge">Multi-Title</span>
 					{/if}
-					{#if jobMeta.source_type === 'iso'}
+					{#if jobDetail.jobMeta.source_type === 'iso'}
 						<span class="job-detail-source-badge">ISO</span>
-					{:else if jobMeta.source_type === 'folder'}
+					{:else if jobDetail.jobMeta.source_type === 'folder'}
 						<span class="job-detail-source-badge">Folder</span>
 					{/if}
 
 					<!-- Action buttons pushed right -->
 					<div class="flex flex-wrap items-center gap-2 ml-auto">
-						{#if (hasIdentityPanel || canResolve) && $isAdmin}
+						{#if (hasIdentityPanel || jobDetail.canResolve) && $isAdmin}
 							<button
 								type="button"
 								data-testid="identify-open"
@@ -526,7 +452,7 @@
 								{hasIdentityPanel ? 'Identity' : identifyLabel}
 							</button>
 						{/if}
-						{#if canApply && $isAdmin}
+						{#if jobDetail.canApply && $isAdmin}
 							<button
 								type="button"
 								data-testid="apply-open"
@@ -540,7 +466,7 @@
 							<MakeTextSubtitlesButton jobId={job.id} view={d.subtitle_ocr} ondone={handleTextSubtitles} />
 						{/if}
 						{#if $isAdmin}
-							<JobActions {job} onaction={loadJob} ondelete={() => goto('/')} />
+							<JobActions {job} onaction={jobDetail.load} ondelete={() => goto('/')} />
 						{/if}
 					</div>
 				</div>
@@ -550,7 +476,7 @@
 					<div class="job-detail-suggestion">
 						<IdentitySuggestionBanner
 							{job}
-							canAct={$isAdmin && canResolve}
+							canAct={$isAdmin && jobDetail.canResolve}
 							onaccepted={handleIdentified}
 							onsearch={() => (showIdentify = true)}
 						/>
@@ -562,7 +488,7 @@
 					<!-- Poster -->
 					<div class="shrink-0 job-detail-poster-cell" data-disc-type={job.disc_type}>
 						<PosterImage url={jobPoster(job)} alt={job.title ?? 'Poster'} class="job-detail-poster" />
-						{#if isVideoDisc && $isAdmin}
+						{#if jobDetail.isVideoDisc && $isAdmin}
 							<button
 								type="button"
 								class="job-detail-poster-change"
@@ -598,7 +524,7 @@
 												field.edit === 'year'
 													? 'number'
 													: 'text'}
-												canEdit={$isAdmin && canResolve && !hasIdentityPanel}
+												canEdit={$isAdmin && jobDetail.canResolve && !hasIdentityPanel}
 												onsave={(raw) => saveFact(field.edit!, raw)}
 											/>
 										</div>
@@ -625,8 +551,8 @@
 						{job}
 						{tracks}
 						matching={matching.active}
-						{handSetCount}
-						onchanged={() => loadJob()}
+						handSetCount={jobDetail.handSetCount}
+						onchanged={() => jobDetail.load()}
 						onseries={handleSeriesApplied}
 						ontypechanged={handleMediaTypeChanged}
 						onmanual={() => (showIdentify = true)}
@@ -681,7 +607,7 @@
 					waitSeconds={$dashboard.manual_wait_seconds ?? 60}
 					paused={!$dashboard.ripping_enabled}
 					keptCount={tracks.length > 0 ? keptCount : null}
-					onchanged={() => loadJob()}
+					onchanged={() => jobDetail.load()}
 				/>
 			{/if}
 
@@ -746,7 +672,7 @@
 									<th class="table-header">Kind</th>
 									<th class="table-header">Title</th>
 									{#if nameColumn}
-										<th class="table-header">{tracksAreSeries ? 'Episode' : 'Extra'}</th>
+										<th class="table-header">{jobDetail.tracksAreSeries ? 'Episode' : 'Extra'}</th>
 									{/if}
 									<th class="table-header">Filename</th>
 									<th class="table-header">Length</th>
@@ -758,7 +684,7 @@
 							</thead>
 							<tbody>
 								{#each tracks as track (track.id)}
-									{@const preview = previewByTrack.get(track.id)}
+									{@const preview = jobDetail.previewByTrack.get(track.id)}
 									{@const length = trackDuration(track.duration_seconds, track.expected_duration_seconds)}
 									{@const nameable = $isAdmin && hasMenu && track.kind === 'video_title'}
 									<tr
@@ -832,7 +758,7 @@
 										{#if nameColumn}
 											<td
 												class="table-cell {nameable ? 'job-detail-track-title-cell' : ''}"
-												data-label={tracksAreSeries ? 'Episode' : 'Extra'}
+												data-label={jobDetail.tracksAreSeries ? 'Episode' : 'Extra'}
 												data-testid="track-name-cell"
 												title={nameable
 													? menuRowOpen(track.id)
@@ -882,7 +808,7 @@
 													{track}
 													lockedReason={keepLockedReason(job.status, parks)}
 													lastKept={choosing && keptCount === 1}
-													onchanged={() => loadJob()}
+													onchanged={() => jobDetail.load()}
 													onerror={(message) => (trackError = message)}
 												/>
 											{:else}
@@ -1024,7 +950,7 @@
 							backup={d.raw_backup}
 							ripping={isRipperBusyStatus(d.job.status) || d.job.status === 'awaiting_titles'}
 							canDelete={$isAdmin}
-							ondeleted={() => loadJob()}
+							ondeleted={() => jobDetail.load()}
 						/>
 					{/if}
 				</section>
@@ -1063,11 +989,11 @@
 		     real Track rows yet — once the disc has tracks (which carry the mapped
 		     song titles), the Tracks table above is authoritative and this would
 		     just duplicate it. Mirrors neu's single-section behavior. -->
-			{#if tracks.length === 0 && musicTracks.length > 0}
+			{#if tracks.length === 0 && jobDetail.musicTracks.length > 0}
 				<section>
 					<h2 class="mb-3 job-detail-section-title">
 						Tracklist
-						<span class="job-detail-section-subtitle">({musicTracks.length} tracks via MusicBrainz)</span>
+						<span class="job-detail-section-subtitle">({jobDetail.musicTracks.length} tracks via MusicBrainz)</span>
 					</h2>
 					<div class="overflow-x-auto job-detail-table-scroll">
 						<table class="table responsive-table">
@@ -1079,7 +1005,7 @@
 								</tr>
 							</thead>
 							<tbody>
-								{#each musicTracks as mt (mt.number)}
+								{#each jobDetail.musicTracks as mt (mt.number)}
 									<tr class="table-row">
 										<td class="table-cell" data-label="#">{mt.number}</td>
 										<td class="table-cell" data-label="Title">{mt.title}</td>
@@ -1096,7 +1022,7 @@
 			<JobLogPanel jobId={job.id} {job} />
 
 			<!-- Raw metadata (collapsible): the full metadata_json as a JSON tree, nothing hidden -->
-			{#if rawMetadataPairs.length > 0}
+			{#if jobDetail.rawMetadataPairs.length > 0}
 				<section>
 					<button
 						type="button"
@@ -1113,7 +1039,7 @@
 					</button>
 					{#if showRawMetadata}
 						<div class="mt-3 overflow-x-auto job-detail-raw-metadata">
-							{#each rawMetadataPairs as [key, value] (key)}
+							{#each jobDetail.rawMetadataPairs as [key, value] (key)}
 								<JsonTree {value} name={key} depth={0} />
 							{/each}
 						</div>
