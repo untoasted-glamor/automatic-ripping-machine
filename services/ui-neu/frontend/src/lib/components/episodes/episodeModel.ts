@@ -39,6 +39,7 @@ const NON_EPISODE: Record<string, string> = {
 	other: 'Other',
 	play_all: 'Play-all'
 };
+const ROLES = ['extra', 'trailer', 'other'] as const;
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -146,7 +147,9 @@ export function buildRows(
 	});
 }
 
-export const ROLE_OPTIONS = Object.entries(NON_EPISODE).map(([value, label]) => ({ value, label }));
+// The roles a by-hand pick can set. Play-all is only named (NON_EPISODE):
+// a detector sets it, so the picker does not offer it (fork).
+export const ROLE_OPTIONS = ROLES.map((value) => ({ value, label: NON_EPISODE[value] }));
 
 /** The episode numbers the other tracks of a season already hold, a
  * two-part episode's whole span included: `pickerOptions` marks them
@@ -186,6 +189,31 @@ export function pickerOptions(
 	});
 	items.sort((a, b) => +a.isUsed - +b.isUsed || fit(a.e) - fit(b.e) || a.e.number - b.e.number);
 	return [...items.map(({ value, label }) => ({ value, label })), ...ROLE_OPTIONS];
+}
+
+/** A picker value read back: a role, or an episode by its season and
+ * number. */
+export type HandPick = { role: (typeof ROLES)[number] } | { season: number; episode: number };
+
+/** Reads a value `pickerOptions` gave back; null for any other value. */
+export function parseHandPick(value: string): HandPick | null {
+	const role = ROLES.find((r) => r === value);
+	if (role) return { role };
+	const m = /^s(\d+)e(\d+)$/.exec(value);
+	if (!m) return null;
+	return { season: Number(m[1]), episode: Number(m[2]) };
+}
+
+/** The name of the picked episode in its season's list, or null when
+ * the list does not hold it. A pick in season 0 matches a special (or
+ * any episode of a season 0 list), and only those. */
+export function pickedEpisodeName(
+	list: EpisodeSummary[],
+	listSeason: number | null,
+	season: number,
+	episode: number
+): string | null {
+	return list.find((e) => e.number === episode && (!!e.special || listSeason === 0) === (season === 0))?.name ?? null;
 }
 
 /** Rows with a placement on the track: an episode (sure or a guess) or a
