@@ -12,7 +12,8 @@ import {
 	formatTransfer,
 	formatDateTime,
 	formatShortDateTime,
-	calendarTimeAgo
+	calendarTimeAgo,
+	formatTrackLength
 } from '../utils/format';
 
 describe('formatBytes', () => {
@@ -314,5 +315,19 @@ describe('formatTransfer', () => {
 				rate_bps: 0
 			})
 		).toBe('3 GB');
+	});
+});
+
+describe('formatTrackLength', () => {
+	it.each([
+		[null, ''],
+		[undefined, ''],
+		[0, '0:00'],
+		[45, '0:45'],
+		[65, '1:05'],
+		[120, '2:00'],
+		[3725, '62:05']
+	])('formatTrackLength(%s) = %j', (input, expected) => {
+		expect(formatTrackLength(input)).toBe(expected);
 	});
 });
