@@ -33,6 +33,7 @@ from arm_backend.ws.principal import (
     UIPrincipal,
     resolve_principal,
 )
+from arm_backend.ws.topics import is_progress_topic, progress_scope
 from arm_common import User
 from arm_common.schemas import (
     WSAck,
@@ -255,52 +256,68 @@ async def _dispatch(
         return
 
     if isinstance(msg, WSSubscribeRequest):
-        if not await can_subscribe(principal, msg.topic, session):
-            await _send_error(websocket, CLOSE_FORBIDDEN, f"cannot subscribe to {msg.topic}")
-            return
-        await hub.subscribe(websocket, msg.topic)
-        await websocket.send_json(WSAck(topic=msg.topic).model_dump())
+        await _handle_subscribe(websocket, hub, principal, msg, session)
         return
 
     if isinstance(msg, WSUnsubscribeRequest):
-        await hub.unsubscribe(websocket, msg.topic)
-        await websocket.send_json(WSAck(topic=msg.topic).model_dump())
+        await _handle_unsubscribe(websocket, hub, msg)
         return
 
     if isinstance(msg, WSPublishRequest):  # pragma: no branch — WSInboundMessage union is exhaustively handled above
-        if not await can_publish(principal, msg.topic, session):
-            await _send_error(websocket, CLOSE_FORBIDDEN, f"cannot publish to {msg.topic}")
-            return
-        # Service-published progress is fire-and-forget — never persisted, never blocks the publisher.
-        is_progress = msg.topic.startswith("ripper.progress.") or msg.topic.startswith("transcode.progress.")
-        job_id = _extract_id(msg.topic, "ripper.progress.")
-        # transcode.progress.{task_id} → use the task_id as the throttle scope (same role as track_id).
-        track_id: str | None = None
-        if isinstance(msg.payload, dict):  # pragma: no branch — WSPublishRequest.payload is schema-constrained to dict
-            track_id = msg.payload.get("track_id")
-        if track_id is None:
-            track_id = _extract_id(msg.topic, "transcode.progress.")
-        await hub.emit(
-            topic=msg.topic,
-            event_type=msg.event_type,
-            payload=msg.payload,
-            persist=not is_progress,
-            job_id=job_id,
-            track_id=track_id,
-            session=session if not is_progress else None,
-        )
-        # Unreachable today: can_publish only permits `*.progress.*` topics,
-        # which are all is_progress=True. Kept for forward-compat if a
-        # persisted publishable topic is ever added to the authz surface.
-        if not is_progress:  # pragma: no cover
-            await session.commit()
+        await _handle_publish(websocket, hub, principal, msg, session)
         return
 
 
-def _extract_id(topic: str, prefix: str) -> str | None:
-    if topic.startswith(prefix):
-        return topic[len(prefix) :] or None
-    return None
+async def _handle_subscribe(
+    websocket: WebSocket,
+    hub: WSHub,
+    principal: Principal,
+    msg: WSSubscribeRequest,
+    session: AsyncSession,
+) -> None:
+    """Subscribe the socket to a topic the principal may read, and ack it."""
+    if not await can_subscribe(principal, msg.topic, session):
+        await _send_error(websocket, CLOSE_FORBIDDEN, f"cannot subscribe to {msg.topic}")
+        return
+    await hub.subscribe(websocket, msg.topic)
+    await websocket.send_json(WSAck(topic=msg.topic).model_dump())
+
+
+async def _handle_unsubscribe(websocket: WebSocket, hub: WSHub, msg: WSUnsubscribeRequest) -> None:
+    """Unsubscribe the socket from a topic, and ack it."""
+    await hub.unsubscribe(websocket, msg.topic)
+    await websocket.send_json(WSAck(topic=msg.topic).model_dump())
+
+
+async def _handle_publish(
+    websocket: WebSocket,
+    hub: WSHub,
+    principal: Principal,
+    msg: WSPublishRequest,
+    session: AsyncSession,
+) -> None:
+    """Fan out a service's publish on a topic it may write; progress is never
+    persisted."""
+    if not await can_publish(principal, msg.topic, session):
+        await _send_error(websocket, CLOSE_FORBIDDEN, f"cannot publish to {msg.topic}")
+        return
+    # Service-published progress is fire-and-forget — never persisted, never blocks the publisher.
+    is_progress = is_progress_topic(msg.topic)
+    job_id, track_id = progress_scope(msg.topic, msg.payload)
+    await hub.emit(
+        topic=msg.topic,
+        event_type=msg.event_type,
+        payload=msg.payload,
+        persist=not is_progress,
+        job_id=job_id,
+        track_id=track_id,
+        session=session if not is_progress else None,
+    )
+    # Unreachable today: can_publish only permits `*.progress.*` topics,
+    # which are all is_progress=True. Kept for forward-compat if a
+    # persisted publishable topic is ever added to the authz surface.
+    if not is_progress:  # pragma: no cover
+        await session.commit()
 
 
 async def _send_error(websocket: WebSocket, code: int, reason: str) -> None:

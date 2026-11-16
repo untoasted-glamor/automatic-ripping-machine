@@ -2635,7 +2635,7 @@ class _RetryClient:
 async def test_a_retry_remuxes_only_the_failed_title_from_the_kept_backup(monkeypatch, tmp_path, disc_lane_busy, retry):
     """The remux lane runs beside a rip of the next disc (the disc lane held), never touching the drive.
     Any remux leaves the DONE titles out, a retry or not; only a retry rips into a folder of its own."""
-    import arm_ripper.job_controller as jc_module
+    import arm_ripper.raw_dir as raw_dir_module
     import arm_ripper.makemkv_prep as makemkv_prep_module
     from arm_ripper.drive_handle import DriveHandle
     from arm_ripper.eject import Ejector
@@ -2662,7 +2662,7 @@ async def test_a_retry_remuxes_only_the_failed_title_from_the_kept_backup(monkey
     ]
     client = _RetryClient(job_id, retry_tracks, scan)
     client.start = client.start.model_copy(update={"retry": retry})
-    monkeypatch.setattr(jc_module, "RAW_ROOT", tmp_path)
+    monkeypatch.setattr(raw_dir_module, "RAW_ROOT", tmp_path)
 
     async def no_key(**_kw: Any) -> None:
         return None
@@ -2695,11 +2695,11 @@ async def test_a_retry_remuxes_only_the_failed_title_from_the_kept_backup(monkey
 
 
 async def test_a_retry_with_no_finished_backup_or_a_busy_remux_lane_does_nothing(monkeypatch, tmp_path):
-    import arm_ripper.job_controller as jc_module
+    import arm_ripper.raw_dir as raw_dir_module
     from arm_ripper.drive_handle import DriveHandle
     from arm_ripper.job_controller import JobController
 
-    monkeypatch.setattr(jc_module, "RAW_ROOT", tmp_path)
+    monkeypatch.setattr(raw_dir_module, "RAW_ROOT", tmp_path)
     client = AsyncMock()
     controller = JobController(client, "drv_x", device_path=DriveHandle("/dev/sr0"))
 
