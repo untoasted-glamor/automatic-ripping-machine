@@ -41,9 +41,11 @@ from arm_backend.disc_menus.packs import menu_pack_inputs
 from arm_backend.disc_menus.preview_tasks import menu_preview_inputs
 from arm_backend.subtitle_ocr_tasks import queue_after_encode, subtitle_ocr_inputs
 from arm_backend.task_kinds import rules_for
+
+
+from arm_backend.gpu_claim import release_gpu_for_task
 from arm_backend.routers._deps import get_hub
 from arm_backend.transcode_apply import settle_session_application
-from arm_backend.transcode_dispatcher import release_gpu_for_task
 from arm_backend.ws import WSHub
 from arm_common import (
     Job,
