@@ -131,7 +131,7 @@
 	function handleApplied(resp: ApplySessionResponse) {
 		showApply = false;
 		jobDetail.load();
-		flashNote(applyNote(resp, detail ? isPostRipStatus(detail.job.status) : false));
+		flashNote(applyNote(resp, jobDetail.isPostRip));
 	}
 
 	function handleTextSubtitles(resp: SubtitleOcrResponse) {
