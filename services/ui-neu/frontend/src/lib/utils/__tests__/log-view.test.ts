@@ -272,7 +272,8 @@ describe('entryTimeLabel', () => {
 describe('formatCopyText', () => {
 	it('writes one time, service and event line per entry, joined by newlines', () => {
 		const ts = '2026-01-02T03:04:05Z';
-		const time = new Date(ts).toLocaleTimeString([], { hour12: false });
+		// The fork leads a line from another day with its date.
+		const time = entryTimeLabel(entry({ timestamp: ts }));
 		const text = formatCopyText([
 			entry({ event: 'b', service: 'arm-backend', timestamp: ts }),
 			entry({ event: 'r', service: 'arm-ripper-SER1', timestamp: ts }),
