@@ -233,7 +233,7 @@ async def test_a_preview_is_held_while_its_image_is_missing() -> None:
     db.rows["transcode_tasks"].append(_preview_task())
     docker = MagicMock()
     disp = _dispatcher(db, docker, ARM_MENU_PREVIEW_IMAGE="arm-menu-preview:latest")
-    disp.menu_preview_image_available = lambda: False  # type: ignore[method-assign]
+    disp.images.menu_preview_image_available = lambda: False  # type: ignore[method-assign]
     assert await disp.spawn_pending(db) == 0  # type: ignore[arg-type]
     docker.containers.run.assert_not_called()
     assert _tasks(db)[0].status == TranscodeTaskStatus.QUEUED
@@ -241,14 +241,14 @@ async def test_a_preview_is_held_while_its_image_is_missing() -> None:
 
 def test_the_preview_image_is_pulled_when_absent() -> None:
     disp = _dispatcher(FakeSession(), MagicMock(), ARM_MENU_PREVIEW_IMAGE="arm-menu-preview:latest")
-    disp.image_exists = lambda image: False  # type: ignore[method-assign]
+    disp.images.image_exists = lambda image: False  # type: ignore[method-assign]
     pulled: list[str] = []
-    disp._pull_image = lambda image, **kw: pulled.append(image) or True  # type: ignore[method-assign]
-    assert disp.menu_preview_image_available() is True
+    disp.images.pull_image = lambda image, **kw: pulled.append(image) or True  # type: ignore[method-assign]
+    assert disp.images.menu_preview_image_available() is True
     assert pulled == ["arm-menu-preview:latest"]
-    disp.image_exists = lambda image: True  # type: ignore[method-assign]
-    assert disp.menu_preview_image_available() is True
-    assert _dispatcher(FakeSession(), None).menu_preview_image_available() is False
+    disp.images.image_exists = lambda image: True  # type: ignore[method-assign]
+    assert disp.images.menu_preview_image_available() is True
+    assert _dispatcher(FakeSession(), None).images.menu_preview_image_available() is False
 
 
 async def test_a_preview_that_cannot_run_fails_before_any_spawn() -> None:
