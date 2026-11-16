@@ -163,6 +163,32 @@ def _no_output_error(title_idx: int, track: TrackView, min_length_seconds: int, 
     return f"makemkvcon produced no output for title {title_idx} (eligible={title_idx in eligible})"
 
 
+def _finished_file(output_dir: Path, title_idx: int, position: int) -> tuple[Path, int] | None:
+    """The file MakeMKV wrote at this output position (fork: the one whose `_tNN` suffix is it) and its size; None,
+    after logging why, when there is none or it can't be stat'ed."""
+    file_path = output_files_by_position(output_dir).get(position)
+    if file_path is None:
+        # No `_tNN` file for this title (fork: matched by suffix): defer
+        # to the post-rip loop, which reports it FAILED if it never appears.
+        logger.debug(
+            "on_title_done: no file for source_idx=%d position=%d; deferring",
+            title_idx,
+            position,
+        )
+        return None
+    try:
+        size = file_path.stat().st_size
+    except OSError as exc:
+        logger.warning(
+            "on_title_done: stat failed source_idx=%d path=%s err=%s",
+            title_idx,
+            file_path,
+            exc,
+        )
+        return None
+    return file_path, size
+
+
 class _OpticalRip:
     """One single-invocation DVD/BD rip: the per-title callbacks makemkvcon's stream fires, and the attribution after it
     exits."""
@@ -310,26 +336,10 @@ class _OpticalRip:
             # MakeMKV announced a title we didn't list as eligible —
             # nothing to attribute live; the post-rip loop handles it.
             return
-        file_path = output_files_by_position(self._output_dir).get(position)
-        if file_path is None:
-            # No `_tNN` file for this title (fork: matched by suffix): defer
-            # to the post-rip loop, which reports it FAILED if it never appears.
-            logger.debug(
-                "on_title_done: no file for source_idx=%d position=%d; deferring",
-                title_idx,
-                position,
-            )
+        found = _finished_file(self._output_dir, title_idx, position)
+        if found is None:
             return
-        try:
-            size = file_path.stat().st_size
-        except OSError as exc:
-            logger.warning(
-                "on_title_done: stat failed source_idx=%d path=%s err=%s",
-                title_idx,
-                file_path,
-                exc,
-            )
-            return
+        file_path, size = found
         await self._ensure_started(title_idx, track)
         result = RipResult(
             ok=True,
