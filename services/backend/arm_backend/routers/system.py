@@ -1,14 +1,5 @@
-"""System diagnostics. Read-only operator health report.
+"""The system routes: diagnostics report, stats, resources, version and the TheDiscDB refresh."""
 
-Everything the backend can fix silently, it fixes (missing root dirs are
-created at startup and re-ensured before every read — see `ensure_roots`);
-this endpoint reports only what cannot be healed from inside a container:
-a mount that is read-only or wrong-owner (v3 never chowns user mounts —
-docs/developers/architecture/06-deployment.md), no rippers registered yet, a missing config
-row. The ported UI's settings System-Health panel and first-run wizard
-render it (Tier-12)."""
-
-import asyncio
 import functools
 import importlib.metadata
 import logging
@@ -26,33 +17,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, func, select
 
 from arm_backend.auth import require_jwt, require_writer
-from arm_backend.config import effective_transcode_capable, settings
+from arm_backend.config import settings
 from arm_backend.db import get_session
-from arm_backend.makemkv_status import makemkv_state_detail
 from arm_backend.constants import CONFIG_SINGLETON_ID
-from arm_backend.transcode_dispatcher import count_queued_encode_tasks
 from arm_backend.identity.sources.thediscdb_snapshot import RefreshBusy, refresh as thediscdb_refresh
 from arm_backend.identity.sources.thediscdb_snapshot import refresh_running as thediscdb_refresh_running
-from arm_backend.utils import default_roots
+from arm_backend.system_diagnostics import collect_diagnostics, online_enrolled_drives, system_roots
 from arm_common import (
     Config,
-    Drive,
-    DriveKind,
-    DriveLifecycle,
-    DriveStatus,
     Event,
     Job,
-    KeydbState,
-    MakemkvSdfState,
     User,
 )
 from arm_common.schemas import (
-    DiagnosticDetail,
     MemoryInfo,
-    PathStatus,
     StatsResponse,
     StorageRoot,
-    SystemDiagnosticCheck,
     SystemDiagnosticsResponse,
     SystemResourcesResponse,
     SystemVersionResponse,
@@ -62,49 +42,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
-_WORST = {"ok": 0, "warning": 1, "error": 2}
-_REQUIRED_ROOTS = {"MEDIA_ROOT", "RAW_ROOT", "LOG_DIR"}
-
-
-def _roots(request: Request) -> dict[str, str]:
-    injected: dict[str, str] | None = getattr(request.app.state, "system_paths", None)
-    if injected is not None:
-        return injected
-    return default_roots()
-
-
-# Host-side bind source for each container root, so the report can print the
-# exact `chown` the operator runs on the server (setup spec §6.3).
-_HOST_PATH_SETTING = {
-    "MEDIA_ROOT": "ARM_HOST_MEDIA_PATH",
-    "RAW_ROOT": "ARM_HOST_RAW_PATH",
-    "LOG_DIR": "ARM_HOST_LOGS_PATH",
-}
-
-
-def _path_status(name: str, path: str) -> PathStatus:
-    exists = os.path.isdir(path)
-    writable = exists and os.access(path, os.W_OK)
-    setting = _HOST_PATH_SETTING.get(name)
-    host = (getattr(settings, setting, "") or None) if setting else None
-    return PathStatus(
-        name=name, path=path, exists=exists, writable=writable, host_path=host, uid=os.getuid(), gid=os.getgid()
-    )
-
-
-def _docker_details(image_label: str, ok: bool, detail: str | None) -> list[DiagnosticDetail]:
-    """Split one docker probe result into socket + image rows for the UI. The
-    probe reports a single message, so an image problem is told apart by its
-    wording; anything else is a daemon/socket problem."""
-    if ok:
-        return [DiagnosticDetail(label="Docker socket", ok=True), DiagnosticDetail(label=image_label, ok=True)]
-    if "image" in (detail or "").lower():
-        return [
-            DiagnosticDetail(label="Docker socket", ok=True),
-            DiagnosticDetail(label=image_label, ok=False, message=detail),
-        ]
-    return [DiagnosticDetail(label="Docker socket", ok=False, message=detail)]
-
 
 @router.get("/diagnostics", response_model=SystemDiagnosticsResponse)
 async def diagnostics(
@@ -113,178 +50,6 @@ async def diagnostics(
     db: AsyncSession = Depends(get_session),
 ) -> SystemDiagnosticsResponse:
     return await collect_diagnostics(request, db)
-
-
-async def collect_diagnostics(request: Request, db: AsyncSession) -> SystemDiagnosticsResponse:
-    """The diagnostics report, reusable by the setup router's system-step reconciliation."""
-    roots = _roots(request)
-    # Heal-on-read: the report never shows a problem the backend could
-    # have fixed itself.
-    # ensure_roots(roots)
-    # DO NOT heal-on-read. These should be guaranteed at launch so if any are missing
-    # then that is an error we want to surface when this endpoint is hit.
-    # TODO: implement a check for missing roots (low priority, most processes will
-    # surface this error)
-
-    checks: list[SystemDiagnosticCheck] = []
-
-    cfg = (await db.execute(select(Config).where(col(Config.id) == CONFIG_SINGLETON_ID))).scalar_one_or_none()
-    checks.append(
-        SystemDiagnosticCheck(
-            name="config",
-            status="ok" if cfg is not None else "error",
-            detail=None if cfg is not None else "config singleton missing",
-        )
-    )
-
-    paths: list[PathStatus] = []
-    for name, path in roots.items():
-        ps = _path_status(name, path)
-        paths.append(ps)
-        if ps.exists and ps.writable:
-            checks.append(SystemDiagnosticCheck(name=name, status="ok"))
-        else:
-            sev = "error" if name in _REQUIRED_ROOTS else "warning"
-            checks.append(
-                SystemDiagnosticCheck(
-                    name=name, status=sev, detail=f"{path}: exists={ps.exists} writable={ps.writable}"
-                )
-            )
-
-    drives = await _online_enrolled_drives(db)
-    checks.append(
-        SystemDiagnosticCheck(
-            name="drives",
-            status="ok" if drives else "warning",
-            detail=None if drives else "no online drives registered",
-        )
-    )
-
-    mk_valid = cfg.makemkv_key_valid if cfg is not None else None
-    mk_state = cfg.makemkv_key_state if cfg is not None else None
-    if mk_valid is True:
-        mk_status, mk_detail = "ok", makemkv_state_detail("valid")
-    elif mk_valid is False:
-        mk_status, mk_detail = "error", (makemkv_state_detail(mk_state) or "MakeMKV key invalid")
-    else:
-        mk_status, mk_detail = "warning", "MakeMKV key not yet validated by a ripper"
-    checks.append(SystemDiagnosticCheck(name="makemkv_key", status=mk_status, detail=mk_detail))
-
-    kdb_state = cfg.community_keydb_state if cfg is not None else None
-    kdb_count = cfg.community_keydb_vuk_count if cfg is not None else None
-    # Compare against KeydbState members (StrEnum, so they equal the stored
-    # VARCHAR) rather than bare strings — a renamed member then fails at import
-    # instead of silently falling through to the "not yet checked" branch.
-    if kdb_state in (KeydbState.OK, KeydbState.FRESH_KEPT):
-        kdb_status = "ok"
-        kdb_detail = f"{kdb_count} VUK keys installed" if kdb_count else "keydb present"
-    elif kdb_state == KeydbState.DISABLED:
-        kdb_status, kdb_detail = "ok", "community keydb disabled"
-    elif kdb_state in (KeydbState.DOWNLOAD_FAILED, KeydbState.EMPTY, KeydbState.PROBE_FAILED):
-        kdb_status, kdb_detail = "warning", "community keydb unavailable; using last keydb if any"
-    else:  # None — never reported by a ripper yet
-        kdb_status, kdb_detail = "warning", "community keydb not yet checked by a ripper"
-    checks.append(SystemDiagnosticCheck(name="community_keydb", status=kdb_status, detail=kdb_detail))
-
-    sdf_state = cfg.makemkv_sdf_state if cfg is not None else None
-    if sdf_state in (MakemkvSdfState.UPDATED, MakemkvSdfState.FRESH_KEPT):
-        sdf_status_v, sdf_detail = "ok", "SDF present"
-    elif sdf_state == MakemkvSdfState.DISABLED:
-        sdf_status_v, sdf_detail = "ok", "SDF refresh disabled (baked SDF in use)"
-    elif sdf_state in (MakemkvSdfState.DOWNLOAD_FAILED, MakemkvSdfState.PROBE_FAILED):
-        sdf_status_v, sdf_detail = "warning", "SDF refresh failed; using baked/last SDF"
-    else:  # None — never reported by a ripper yet
-        sdf_status_v, sdf_detail = "warning", "SDF not yet checked by a ripper"
-    checks.append(SystemDiagnosticCheck(name="makemkv_sdf", status=sdf_status_v, detail=sdf_detail))
-
-    dispatcher = getattr(request.app.state, "transcode_dispatcher", None)
-    tc_details: list[DiagnosticDetail] = []
-    if not effective_transcode_capable(settings):
-        # Ripper-only is a supported deployment, not a degraded one: the
-        # dispatcher runs without a docker client by design, so reporting its
-        # (absent) container path as a warning would be permanent noise.
-        tc_status, tc_detail = "ok", "ripper-only deployment (transcoding not installed)"
-        held = await count_queued_encode_tasks(db)
-        if held:
-            # Queued before the box went ripper-only (or swept back to
-            # QUEUED): spawn_pending holds them with nothing to run them.
-            tc_status = "warning"
-            tc_detail = (
-                f"ripper-only deployment: {held} queued encode task(s) are held; "
-                "re-run setup without --ripper-only to resume them, or delete them"
-            )
-    elif dispatcher is None:
-        tc_status, tc_detail = "warning", "transcoder dispatcher not running"
-    elif not dispatcher.host_paths_set():
-        tc_status, tc_detail = "warning", "transcoder disabled: ARM_HOST_*_PATH not set"
-    else:
-        # probe() pings a possibly-remote ssh docker host; run it off the
-        # event loop so a slow/unreachable host doesn't block the server.
-        ok, detail = await asyncio.to_thread(dispatcher.probe)
-        tc_details = _docker_details("Transcode image", ok, detail)
-        if not ok:
-            tc_status, tc_detail = "warning", detail
-        elif dispatcher.last_spawn_error:
-            tc_status, tc_detail = "warning", f"last spawn failed: {dispatcher.last_spawn_error}"
-        elif dispatcher.backend_url_warning:
-            tc_status = "warning"
-            tc_detail = f"{dispatcher.backend_url_warning} (ARM_TRANSCODE_BACKEND_URL_CHECK=warn: spawning anyway)"
-        else:
-            tc_status, tc_detail = "ok", None
-    remote = settings.ARM_TRANSCODE_DOCKER_HOST or ""
-    if not effective_transcode_capable(settings):
-        location, remote_host = "none", None
-    elif remote:
-        location, remote_host = "remote", remote.removeprefix("ssh://").split("/", 1)[0] or None
-    else:
-        location, remote_host = "local", None
-    checks.append(
-        SystemDiagnosticCheck(
-            name="transcoder",
-            status=tc_status,
-            detail=tc_detail,
-            details=tc_details,
-            location=location,
-            remote_host=remote_host,
-        )
-    )
-
-    manager = getattr(request.app.state, "ripper_manager", None)
-    if manager is None:
-        rm_status, rm_detail = "warning", "ripper manager disabled: docker socket unavailable"
-        rm_details = [DiagnosticDetail(label="Docker socket", ok=False, message="docker socket unavailable")]
-    elif not manager.host_paths_set():
-        rm_status, rm_detail = "warning", "ripper manager disabled: ARM_HOST_*_PATH not set"
-        rm_details = [DiagnosticDetail(label="Host paths", ok=False, message="ARM_HOST_*_PATH not set")]
-    else:
-        ok, detail = await asyncio.to_thread(manager.probe)
-        rm_details = _docker_details("Ripper image", ok, detail)
-        if not ok:
-            rm_status, rm_detail = "warning", detail
-        else:
-            rm_status, rm_detail = "ok", None
-    checks.append(SystemDiagnosticCheck(name="ripper_manager", status=rm_status, detail=rm_detail, details=rm_details))
-
-    overall = "ok"
-    for ch in checks:
-        if _WORST[ch.status] > _WORST[overall]:
-            overall = ch.status
-    return SystemDiagnosticsResponse(status=overall, checks=checks, paths=paths)
-
-
-async def _online_enrolled_drives(db: AsyncSession) -> list[Drive]:
-    """Online drives a ripper actually serves.
-
-    Scanner-created DETECTED rows and virtual ISO rows are ``online`` by default,
-    so ``status`` alone would count a drive that is merely plugged in (D-149).
-    """
-    stmt = (
-        select(Drive)
-        .where(col(Drive.status) == DriveStatus.ONLINE)
-        .where(col(Drive.kind) == DriveKind.OPTICAL)
-        .where(col(Drive.lifecycle) == DriveLifecycle.ENROLLED)
-    )
-    return list((await db.execute(stmt)).scalars().all())
 
 
 @router.get("/stats", response_model=StatsResponse)
@@ -301,7 +66,7 @@ async def stats(
         key = job_status.value if hasattr(job_status, "value") else str(job_status)
         by_status[key] = n
 
-    drives_online = len(await _online_enrolled_drives(db))
+    drives_online = len(await online_enrolled_drives(db))
 
     events_unsent = (
         await db.execute(select(func.count()).select_from(Event).where(col(Event.notified_at).is_(None)))
@@ -345,7 +110,7 @@ async def resources(
         percent=mem.percent,
     )
     storage: list[StorageRoot] = []
-    for name, path in _roots(request).items():
+    for name, path in system_roots(request).items():
         usage = get_disk_usage(path)
         if usage is None:
             continue
