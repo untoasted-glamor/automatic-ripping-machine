@@ -4,6 +4,7 @@
 	import TitleSearch from './TitleSearch.svelte';
 	import { missReason } from '$lib/utils/job-review';
 	import IdentifyCdForm from './identify/IdentifyCdForm.svelte';
+	import IdentifyVideoForm from './identify/IdentifyVideoForm.svelte';
 	import { driveLabel } from '$lib/utils/drive-name';
 	import { isAwaitingIdentity } from '$lib/utils/job-status-groups';
 	import { changedPosition } from '$lib/utils/identity-position';
@@ -152,30 +153,7 @@
 				<IdentifyCdForm bind:album bind:year bind:artist bind:trackTitles {scanTrackCount} {submitting} />
 				<IdentityFields bind:season bind:discNumber bind:discTotal {isCd} disabled={submitting} />
 			{:else}
-				<div class="mb-3 flex gap-3">
-					<label class="field identify-dialog-field-wide">
-						<span class="field-label">Title</span>
-						<input
-							bind:value={title}
-							oninput={() => (confirmNoMatch = false)}
-							type="text"
-							required
-							data-testid="identify-title"
-							disabled={submitting}
-						/>
-					</label>
-					<label class="field flex-1">
-						<span class="field-label">Year</span>
-						<input
-							bind:value={year}
-							type="number"
-							min="1888"
-							max="2100"
-							data-testid="identify-year"
-							disabled={submitting}
-						/>
-					</label>
-				</div>
+				<IdentifyVideoForm bind:title bind:year {submitting} ontitleinput={() => (confirmNoMatch = false)} />
 				<IdentityFields bind:season bind:discNumber bind:discTotal {isCd} disabled={submitting} />
 			{/if}
 
@@ -209,8 +187,5 @@
 	.identify-dialog-panel {
 		position: relative;
 		z-index: 1;
-	}
-	.identify-dialog-field-wide {
-		flex: 2 1 0%;
 	}
 </style>
