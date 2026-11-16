@@ -1,16 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import type { JobView, TrackView } from '$lib/types/api.gen';
-	import {
-		abandonJob,
-		deleteJob,
-		startWaitingJob,
-		pauseWaitingJob,
-		resolveJob,
-		retryFailedTitles
-	} from '$lib/api/jobs';
-	import { cancelIsoRip } from '$lib/api/iso';
 	import { DiscReviewData } from '$lib/stores/discReviewData.svelte';
+	import { DiscReviewJobActions } from '$lib/stores/discReviewJobActions.svelte';
 	import { parkedSessionLine } from '$lib/utils/parked-session';
 	import { readJobMetadata } from '$lib/utils/job-metadata';
 	import { episodeStatus } from '$lib/utils/episode-status';
@@ -85,8 +77,6 @@
 	// awaiting_review = the timed review gate (Start / countdown); other waiting
 	// statuses (awaiting_user_id / ripped_awaiting_identify) are identify-only.
 	let isReviewGate = $derived(job?.status === 'awaiting_review');
-	let starting = $state(false);
-	let pauseBusy = $state(false);
 
 	const reviewData = new DiscReviewData(() => job?.id);
 	// Stop 2 (fork only): the disc is backed up; its titles are ticked here or on the job page, then ripped from the
@@ -101,10 +91,10 @@
 	// flip to TV; job.identity_updated for this job (or a timeout) ends it.
 	const matching = new EpisodeMatching();
 	let showApplySession = $state(false);
-	let cancelling = $state(false);
-	let deleting = $state(false);
-	let confirmDelete = $state(false);
-	let errorMessage = $state<string | null>(null);
+	const actions = new DiscReviewJobActions({ dismiss: () => ondismiss?.(), refresh: () => onrefresh?.() });
+	// The audio/subtitle choice (fork): Start saves it before the rip.
+	let trackPicker = $state<JobTrackPicker | null>(null);
+	let showTracks = $state(false);
 
 	let tracks = $derived<TrackView[]>(reviewData.detail?.tracks ?? []);
 	// Every title left out: nothing to rip, so Start waits for one to be kept
@@ -229,115 +219,6 @@
 		reviewData.loadDetail();
 	}
 
-	async function handleCancel() {
-		if (!job) return;
-		cancelling = true;
-		errorMessage = null;
-		try {
-			if (isoName && job.drive_id) {
-				await cancelIsoRip(job.drive_id);
-			} else {
-				await abandonJob(job.id);
-			}
-			ondismiss?.();
-			onrefresh?.();
-		} catch (e) {
-			errorMessage = e instanceof Error ? e.message : 'Failed to cancel the job';
-		} finally {
-			cancelling = false;
-		}
-	}
-
-	// A rip that already finished cannot be abandoned; the backend offers
-	// delete instead. Raw files stay on disk, as on the job page.
-	async function handleDelete() {
-		if (!job) return;
-		confirmDelete = false;
-		deleting = true;
-		errorMessage = null;
-		try {
-			await deleteJob(job.id);
-			ondismiss?.();
-			onrefresh?.();
-		} catch (e) {
-			errorMessage = e instanceof Error ? e.message : 'Failed to delete the job';
-		} finally {
-			deleting = false;
-		}
-	}
-
-	// Action-row "Start rip": save + start. Resolving the job's current identity
-	// (title/year/disc, preferring the freshly-loaded detail) is the save — it
-	// also unblocks the parked ripper for an awaiting_user_id disc. For an
-	// awaiting_review disc the rip is held at the review gate, so additionally
-	// start it via rip-start-review. With hold_for_review on, resolving an
-	// awaiting_user_id disc parks it in awaiting_review too, so the resolve's
-	// answer decides, not the status the card was opened with. Then dismiss the
-	// card; the disc is on its way.
-	let trackPicker = $state<JobTrackPicker | null>(null);
-	let showTracks = $state(false);
-
-	async function handleStartRip() {
-		if (!job) return;
-		const j = reviewData.detail?.job ?? job;
-		const startTitle = (j.title ?? '').trim();
-		if (!startTitle) {
-			errorMessage = 'A title is required to start. Open Info or Search to set one.';
-			return;
-		}
-		starting = true;
-		errorMessage = null;
-		try {
-			// The audio/subtitle choice is saved first: it applies to this
-			// disc's transcodes, which follow the rip.
-			await trackPicker?.save();
-			const resolved = await resolveJob(job.id, {
-				title: startTitle,
-				year: j.year ?? null,
-				disc_number: j.disc_number ?? null,
-				disc_total: j.disc_total ?? null
-			});
-			if (isReviewGate || resolved.job.status === 'awaiting_review') {
-				await startWaitingJob(job.id);
-			}
-			ondismiss?.();
-			onrefresh?.();
-		} catch (e) {
-			errorMessage = e instanceof Error ? e.message : 'Failed to start the rip';
-		} finally {
-			starting = false;
-		}
-	}
-
-	async function handleRipTitles() {
-		if (!job) return;
-		starting = true;
-		errorMessage = null;
-		try {
-			await retryFailedTitles(job.id);
-			ondismiss?.();
-			onrefresh?.();
-		} catch (e) {
-			errorMessage = e instanceof Error ? e.message : 'Failed to rip the titles';
-		} finally {
-			starting = false;
-		}
-	}
-
-	async function handlePauseToggle(paused: boolean) {
-		if (!job) return;
-		pauseBusy = true;
-		errorMessage = null;
-		try {
-			await pauseWaitingJob(job.id, paused);
-			onrefresh?.();
-		} catch (e) {
-			errorMessage = e instanceof Error ? e.message : 'Failed to update pause';
-		} finally {
-			pauseBusy = false;
-		}
-	}
-
 	onMount(() => {
 		reviewData.loadDetail();
 		reviewData.loadSessions();
@@ -383,8 +264,8 @@
 					{paused}
 					held={countdownHeld}
 					inverted
-					onpause={!$isAdmin || paused || pauseBusy ? undefined : () => handlePauseToggle(true)}
-					onresume={!$isAdmin || paused || pauseBusy ? undefined : () => handlePauseToggle(false)}
+					onpause={!$isAdmin || paused || actions.pauseBusy ? undefined : () => actions.setPaused(job, true)}
+					onresume={!$isAdmin || paused || actions.pauseBusy ? undefined : () => actions.setPaused(job, false)}
 				/>
 			{/if}
 		</div>
@@ -585,10 +466,10 @@
 		{/if}
 
 		<!-- Error banner -->
-		{#if errorMessage}
+		{#if actions.errorMessage}
 			<div class="alert alert-danger disc-review-widget-error">
-				<span class="flex-1">{errorMessage}</span>
-				<button onclick={() => (errorMessage = null)} class="shrink-0 disc-review-widget-error-dismiss">&times;</button>
+				<span class="flex-1">{actions.errorMessage}</span>
+				<button onclick={actions.dismissError} class="shrink-0 disc-review-widget-error-dismiss">&times;</button>
 			</div>
 		{/if}
 
@@ -632,23 +513,33 @@
 			<a href="/jobs/{job.id}" class="btn disc-review-widget-action-btn"> View details </a>
 			{#if $isAdmin && displayJob.actions.can_abandon}
 				<button
-					onclick={handleCancel}
-					disabled={cancelling}
+					onclick={() => actions.cancel(job, isoName)}
+					disabled={actions.cancelling}
 					class="btn btn-danger ml-auto"
 					title={isoName ? 'Cancel the rip and remove the virtual drive' : undefined}
 				>
-					{cancelling ? 'Cancelling...' : previousId ? 'Discard' : 'Cancel'}
+					{actions.cancelling ? 'Cancelling...' : previousId ? 'Discard' : 'Cancel'}
 				</button>
 			{/if}
 			{#if $isAdmin && displayJob.actions.can_delete}
-				<button onclick={() => (confirmDelete = true)} disabled={deleting} class="btn btn-danger ml-auto">
-					{deleting ? 'Deleting...' : 'Delete'}
+				<button
+					onclick={() => (actions.confirmDelete = true)}
+					disabled={actions.deleting}
+					class="btn btn-danger ml-auto"
+				>
+					{actions.deleting ? 'Deleting...' : 'Delete'}
 				</button>
 			{/if}
 			{#if canStart && $isAdmin}
 				<button
-					onclick={handleStartRip}
-					disabled={starting || (nothingKept && !previousId)}
+					onclick={() =>
+						actions.startRip(
+							job,
+							reviewData.detail?.job,
+							() => isReviewGate,
+							() => trackPicker?.save()
+						)}
+					disabled={actions.starting || (nothingKept && !previousId)}
 					class="btn disc-review-widget-success-btn"
 					title={previousId
 						? 'Rip this disc again'
@@ -656,7 +547,7 @@
 							? 'Keep at least one title to start the rip'
 							: 'Save the metadata and start ripping this disc'}
 				>
-					{starting
+					{actions.starting
 						? 'Starting...'
 						: previousId
 							? 'Rip again'
@@ -669,13 +560,13 @@
 			{/if}
 			{#if titlesOpen && $isAdmin}
 				<button
-					onclick={handleRipTitles}
-					disabled={starting || nothingKept}
+					onclick={() => actions.ripTitles(job)}
+					disabled={actions.starting || nothingKept}
 					class="btn disc-review-widget-success-btn"
 					data-testid="disc-review-rip-titles"
 					title={nothingKept ? 'Keep at least one title to rip' : 'Rip the ticked titles from the disc backup'}
 				>
-					{starting ? 'Starting...' : 'Rip titles'}
+					{actions.starting ? 'Starting...' : 'Rip titles'}
 				</button>
 			{/if}
 		</div>
@@ -758,13 +649,13 @@
 	{/if}
 
 	<ConfirmDialog
-		open={confirmDelete}
+		open={actions.confirmDelete}
 		title="Delete job"
 		message="Delete this job? The raw files stay on disk. This cannot be undone."
 		confirmLabel="Delete"
 		variant="danger"
-		onconfirm={handleDelete}
-		oncancel={() => (confirmDelete = false)}
+		onconfirm={() => actions.remove(job)}
+		oncancel={() => (actions.confirmDelete = false)}
 	/>
 {/if}
 
