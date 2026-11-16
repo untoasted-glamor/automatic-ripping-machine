@@ -2833,3 +2833,95 @@ async def test_the_backup_goes_once_no_title_is_left_out_or_failed(monkeypatch, 
     assert started == ["trk_7"] and _results(second)["trk_7"].ok
     assert fake.drive_reads == []
     assert not (job / ".backup").exists()
+
+
+# --- _on_title_done early exits ----------------------------------------------
+
+
+async def _fire_on_title_done_once(monkeypatch, tmp_path, tracks: list[TrackView], title_idx: int) -> dict[str, Any]:
+    """Run rip_all with a fake rip_disc that fires `on_title_done(title_idx)`
+    once and snapshots, right after the closure returns, what it handed to
+    the hasher and which lifecycle callbacks had fired by then."""
+    seen: dict[str, Any] = {"submitted": [], "events": []}
+    real_submit = dispatcher_module.TitleHasher.submit
+
+    def recording_submit(self: Any, path: Path, size: int, on_hashed: Any) -> None:
+        seen["submitted"].append(path)
+        real_submit(self, path, size, on_hashed)
+
+    monkeypatch.setattr(dispatcher_module.TitleHasher, "submit", recording_submit)
+
+    async def fake_rip_disc(**kwargs: Any) -> RipDiscResult:
+        await kwargs["on_title_done"](title_idx)
+        seen["submitted_in_closure"] = list(seen["submitted"])
+        seen["events_in_closure"] = list(seen["events"])
+        return RipDiscResult(overall_error=None, titles={})
+
+    monkeypatch.setattr(dispatcher_module, "rip_disc", fake_rip_disc)
+
+    async def on_start(track: TrackView) -> None:
+        seen["events"].append(("start", track.id))
+
+    async def on_done(track: TrackView, result: RipResult) -> None:
+        seen["events"].append(("done", track.id))
+
+    async def on_progress(track: TrackView, fraction: float, stats: Any = None) -> None:
+        seen["events"].append(("progress", track.id))
+
+    await rip_all(
+        disc_type=DiscType.BLURAY,
+        device_path="/dev/sr0",
+        tracks=tracks,
+        output_dir=tmp_path,
+        on_track_start=on_start,
+        on_track_done=on_done,
+        on_track_progress=on_progress,
+        min_length_seconds=600,
+    )
+    return seen
+
+
+async def test_on_title_done_ignores_a_title_missing_from_the_eligible_list(monkeypatch, tmp_path, caplog):
+    """Track 5 is selected but shorter than the minimum length, so it is
+    not in the eligible list: the closure returns before touching the disk."""
+    (tmp_path / "Disc_t00.mkv").write_bytes(b"x" * 10)
+    tracks = [_track(0), _track(5, duration_seconds=60)]
+
+    with caplog.at_level(logging.DEBUG, logger=dispatcher_module.logger.name):
+        seen = await _fire_on_title_done_once(monkeypatch, tmp_path, tracks, 5)
+
+    assert seen["submitted_in_closure"] == []
+    assert seen["events_in_closure"] == []
+    assert not [r for r in caplog.records if r.name == dispatcher_module.logger.name and "on_title_done" in r.message]
+
+
+async def test_on_title_done_defers_a_title_whose_file_is_not_on_disk_yet(monkeypatch, tmp_path, caplog):
+    """No `_tNN.mkv` exists for the title's position: the closure logs at
+    debug and returns without hashing or PATCHing anything."""
+    with caplog.at_level(logging.DEBUG, logger=dispatcher_module.logger.name):
+        seen = await _fire_on_title_done_once(monkeypatch, tmp_path, [_track(0)], 0)
+
+    assert seen["submitted_in_closure"] == []
+    assert seen["events_in_closure"] == []
+    records = [r for r in caplog.records if r.name == dispatcher_module.logger.name and "deferring" in r.message]
+    assert len(records) == 1
+    assert records[0].levelno == logging.DEBUG
+    # Fork wording: a missing `_tNN` file, not a file "not on disk yet" (pairing is by suffix).
+    assert records[0].getMessage() == "on_title_done: no file for source_idx=0 position=0; deferring"
+
+
+async def test_on_title_done_warns_and_skips_a_title_whose_file_cannot_be_stat_ed(monkeypatch, tmp_path, caplog):
+    """A dangling symlink named like the output is listed by the glob but
+    `stat` fails: the closure logs a warning and hands nothing to the hasher."""
+    dangling = tmp_path / "Disc_t00.mkv"
+    dangling.symlink_to(tmp_path / "missing_target.mkv")
+
+    with caplog.at_level(logging.DEBUG, logger=dispatcher_module.logger.name):
+        seen = await _fire_on_title_done_once(monkeypatch, tmp_path, [_track(0)], 0)
+
+    assert seen["submitted_in_closure"] == []
+    assert seen["events_in_closure"] == []
+    records = [r for r in caplog.records if r.name == dispatcher_module.logger.name and "stat failed" in r.message]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].getMessage().startswith(f"on_title_done: stat failed source_idx=0 path={dangling} err=")

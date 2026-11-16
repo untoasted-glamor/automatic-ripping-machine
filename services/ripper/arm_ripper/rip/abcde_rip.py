@@ -87,6 +87,14 @@ def _track_args(track_indexes: list[int]) -> list[str]:
     return [str(first) if first == last else f"{first}-{last}" for first, last in runs]
 
 
+def _write_config(output_dir: Path) -> Path:
+    """Write the abcde config for `output_dir` to a temporary file and return its path; the caller deletes it."""
+    with NamedTemporaryFile("w", suffix=".abcde.conf", delete=False) as conf:
+        conf.write(_abcde_config(output_dir))
+        conf_path = Path(conf.name)
+    return conf_path
+
+
 async def rip_cd(
     device_path: str,
     output_dir: Path,
@@ -114,9 +122,7 @@ async def rip_cd(
         return {}
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    with NamedTemporaryFile("w", suffix=".abcde.conf", delete=False) as conf:
-        conf.write(_abcde_config(output_dir))
-        conf_path = Path(conf.name)
+    conf_path = _write_config(output_dir)
 
     tracks = _track_args(track_indexes)
     cmd = ["abcde", "-d", device_path, "-c", str(conf_path), "-N", "-n", "-j", "1", *tracks]

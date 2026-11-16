@@ -487,3 +487,23 @@ async def test_rip_cd_with_no_tracks_runs_nothing(monkeypatch, tmp_path):
 
     monkeypatch.setattr(abcde_rip.asyncio, "create_subprocess_exec", fake_create)
     assert await rip_cd(device_path="/dev/sr0", output_dir=tmp_path, track_indexes=[]) == {}
+
+
+def test_kill_group_tolerates_an_already_empty_group(monkeypatch):
+    def gone(_pgid: int, _sig: int) -> None:
+        raise ProcessLookupError
+
+    monkeypatch.setattr(abcde_rip.os, "killpg", gone)
+    fake = _FakeProc([])
+    abcde_rip._kill_group(fake)  # type: ignore[arg-type]
+    assert fake.returncode == -9
+
+
+def test_write_config_writes_the_abcde_config_to_a_temp_file(tmp_path):
+    conf_path = abcde_rip._write_config(tmp_path)
+    try:
+        assert conf_path.exists()
+        assert conf_path.name.endswith(".abcde.conf")
+        assert conf_path.read_text() == abcde_rip._abcde_config(tmp_path)
+    finally:
+        conf_path.unlink()

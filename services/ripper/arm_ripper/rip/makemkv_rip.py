@@ -63,10 +63,10 @@ from arm_ripper.source import makemkv_source_url
 
 logger = logging.getLogger("arm_ripper.rip.makemkv")
 
-_OUTPUT_FILE_RE = re.compile(r"_t(\d+)\.mkv$", re.IGNORECASE)
+OUTPUT_FILE_RE = re.compile(r"_t(\d+)\.mkv$", re.IGNORECASE)
 
 
-def _output_files_by_position(output_dir: Path) -> dict[int, Path]:
+def output_files_by_position(output_dir: Path) -> dict[int, Path]:
     """Map the value of each produced `.mkv`'s `_tNN` suffix (its output
     position in this rip) to the file.
 
@@ -90,7 +90,7 @@ def _output_files_by_position(output_dir: Path) -> dict[int, Path]:
     """
     by_position: dict[int, Path] = {}
     for f in sorted(output_dir.glob("*.mkv")):
-        m = _OUTPUT_FILE_RE.search(f.name)
+        m = OUTPUT_FILE_RE.search(f.name)
         if not m:
             continue
         position = int(m.group(1))
@@ -149,7 +149,7 @@ async def _attribute_outputs(output_dir: Path, eligible: list[int], hash_outputs
     # extras we didn't expect) and we simply don't claim it — it
     # remains on disk for inspection.
     titles_out: dict[int, RipResult] = {}
-    for position, file_path in sorted(_output_files_by_position(output_dir).items()):
+    for position, file_path in sorted(output_files_by_position(output_dir).items()):
         if position >= len(eligible):
             logger.warning("output file %s has no eligible title (eligible has %d)", file_path.name, len(eligible))
             continue
@@ -341,8 +341,8 @@ async def remux_title(
     # Named by the disc-scan index, like the `mkv all` files: `B1_t00.mkv`
     # from a backup whose id for disc title 3 is 0 becomes `B1_t03.mkv`.
     name = produced[0].name
-    if _OUTPUT_FILE_RE.search(name):
-        renamed = _OUTPUT_FILE_RE.sub(f"_t{output_index:02d}.mkv", name)
+    if OUTPUT_FILE_RE.search(name):
+        renamed = OUTPUT_FILE_RE.sub(f"_t{output_index:02d}.mkv", name)
     else:
         renamed = f"{produced[0].stem}_t{output_index:02d}.mkv"
     output_dir.mkdir(parents=True, exist_ok=True)

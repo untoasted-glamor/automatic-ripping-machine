@@ -27,10 +27,10 @@ from arm_ripper.rip.makemkv_backup import (
 )
 from arm_ripper.rip.makemkv_process import STOPPED_ERROR
 from arm_ripper.rip.makemkv_rip import (
-    _OUTPUT_FILE_RE,
+    OUTPUT_FILE_RE,
     REMUX_MIN_LENGTH_SECONDS,
     RipDiscResult,
-    _output_files_by_position,
+    output_files_by_position,
     remux_title,
     rip_disc,
 )
@@ -711,7 +711,7 @@ async def _rip_every_title(
             # MakeMKV announced a title we didn't list as eligible —
             # nothing to attribute live; the post-rip loop handles it.
             return
-        file_path = _output_files_by_position(output_dir).get(position)
+        file_path = output_files_by_position(output_dir).get(position)
         if file_path is None:
             # No `_tNN` file for this title: defer to the post-rip loop,
             # which reports it FAILED if it never appears.
@@ -864,7 +864,7 @@ def _delete_skipped_outputs(output_dir: Path, eligible_source_indexes: list[int]
         return
     positions = {pos for pos, idx in enumerate(eligible_source_indexes) if idx in skipped}
     for f in output_dir.glob("*.mkv"):
-        m = _OUTPUT_FILE_RE.search(f.name)
+        m = OUTPUT_FILE_RE.search(f.name)
         if m and int(m.group(1)) in positions:
             f.unlink(missing_ok=True)
 

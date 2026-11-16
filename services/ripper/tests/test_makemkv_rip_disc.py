@@ -29,6 +29,7 @@ import pytest
 import arm_ripper.rip.makemkv_process as makemkv_process
 import arm_ripper.rip.makemkv_rip as makemkv_rip
 import arm_ripper.rip.makemkv_stream as makemkv_stream
+import arm_ripper.rip.subprocess_cleanup as subprocess_cleanup
 from arm_ripper.rip.makemkv_rip import rip_disc
 from arm_ripper.rip.result import RipResult
 from tests._makemkvcon_fake import SINTEL_ISO, install
@@ -954,14 +955,14 @@ async def test_wait_for_exit_with_stop_times_out_when_neither_happens(monkeypatc
 async def test_kill_if_running_leaves_a_finished_proc_alone():
     proc = _ScriptedHangingProc([])
     proc.returncode = 0
-    await makemkv_process._kill_if_running(_as_process(proc))
+    await subprocess_cleanup.kill_if_running(_as_process(proc))
     assert proc.kill_count == 0
     assert proc.waits_after_kill == 0
 
 
 async def test_kill_if_running_kills_then_waits_for_a_running_proc():
     proc = _ScriptedHangingProc([])
-    await makemkv_process._kill_if_running(_as_process(proc))
+    await subprocess_cleanup.kill_if_running(_as_process(proc))
     assert proc.kill_count == 1
     assert proc.waits_after_kill == 1
 
@@ -973,7 +974,7 @@ async def test_kill_if_running_swallows_a_wait_that_raises(error):
             raise error
 
     proc = _Proc([])
-    await makemkv_process._kill_if_running(_as_process(proc))
+    await subprocess_cleanup.kill_if_running(_as_process(proc))
     assert proc.returncode == -9
 
 
@@ -1148,7 +1149,7 @@ def test_output_files_by_position_skips_files_without_a_title_suffix(tmp_path):
     # Upstream pins _output_files_in_rip_order; the fork pairs by suffix value instead.
     for name in ("disc_t01.mkv", "disc_t00.mkv", "stray.mkv", "notes.txt"):
         (tmp_path / name).write_bytes(b"x")
-    assert makemkv_rip._output_files_by_position(tmp_path) == {
+    assert makemkv_rip.output_files_by_position(tmp_path) == {
         0: tmp_path / "disc_t00.mkv",
         1: tmp_path / "disc_t01.mkv",
     }
