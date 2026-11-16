@@ -3,6 +3,7 @@
 	import { keepTracks, updateTrack } from '$lib/api/jobs';
 	import { isAdmin } from '$lib/stores/auth';
 	import { trackToRow, scanTitleToRow, nonEpisode } from '$lib/utils/review-rows';
+	import { formatTrackDuration } from '$lib/utils/format';
 	import {
 		CHOSEN_AFTER_BACKUP,
 		choosingTitles,
@@ -93,15 +94,6 @@
 	function handleTrackTitleApply(trackId: string) {
 		openSearchTrackIds = new Set([...openSearchTrackIds].filter((id) => id !== trackId));
 		onrefresh?.();
-	}
-
-	function formatLength(secs: number | null | undefined): string {
-		if (!secs) return '--';
-		const h = Math.floor(secs / 3600);
-		const m = Math.floor((secs % 3600) / 60);
-		const s = secs % 60;
-		if (h > 0) return `${h}h ${m}m ${s}s`;
-		return `${m}m ${s}s`;
 	}
 </script>
 
@@ -209,7 +201,7 @@
 										{/if}
 									</td>
 								{/if}
-								<td class="table-cell review-tracks-table-secondary">{formatLength(row.durationSeconds)}</td>
+								<td class="table-cell review-tracks-table-secondary">{formatTrackDuration(row.durationSeconds)}</td>
 								<td class="table-cell mono review-tracks-table-muted">{row.isMenu ? '-' : row.sourceLabel}</td>
 								{#if isVideo}
 									<td class="table-cell">
