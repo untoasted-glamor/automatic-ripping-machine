@@ -14,23 +14,24 @@ RipperManagerError for docker/transport failures.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
-import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import docker.errors  # type: ignore[import-untyped]
 from sqlmodel import col, select
 
 from arm_backend.config import Settings
-from arm_backend.container_logging import log_config
 from arm_backend.docker_probe import TtlProbe, probe_docker
-from arm_backend.iso_library import iso_host_path
-from arm_common import Drive, DriveKind, DriveLifecycle, DriveStatus, Job
+from arm_backend.ripper_container_spec import (
+    DOCKER_LABEL_KEY,
+    SPEC_HASH_LABEL_KEY,
+    certs_path,
+    container_name,
+    container_spec,
+)
+from arm_common import Drive, DriveLifecycle, DriveStatus, Job
 from arm_common.enums import RIPPER_BUSY_JOB_STATUSES
 
 if TYPE_CHECKING:
@@ -38,30 +39,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("arm_backend.ripper_manager")
 
-DOCKER_LABEL_KEY = "arm.drive_id"
-VIRTUAL_LABEL_KEY = "arm.virtual"
-# sha256 of the spec the container was created from; reconcile recreates an idle
-# ripper whose label no longer matches (a changed ARM_RIPPER_* tunable, PUID, ...).
-SPEC_HASH_LABEL_KEY = "arm.spec_hash"
 # Seconds docker waits for the ripper to exit on SIGTERM before SIGKILL.
 # A rip in flight is refused at the router (unenroll while RIPPING), so
 # this only ever interrupts idle polling.
 _STOP_TIMEOUT_SECONDS = 30
-_DEVICE_CGROUP_RULES = ["b 11:* rmw", "c 21:* rmw"]  # sr* block + sg* char majors (spec §3)
-_HOST_DISK_MOUNT = "/host-disk"
-# Optical-only env: a virtual (ISO) ripper has no device, no /dev/disk and no cdrom group.
-_OPTICAL_ONLY_ENV = ("ARM_DRIVE_DEV", "ARM_HOST_DISK_ROOT", "ARM_DRIVE_BY_ID", "CDROM_GID")
-
-# backend Settings name -> env name the ripper/entrypoint reads
-_TUNABLE_ENV: dict[str, str] = {
-    "ARM_RIPPER_POLL_INTERVAL_SECONDS": "POLL_INTERVAL_SECONDS",
-    "ARM_RIPPER_MIN_LENGTH_SECONDS": "ARM_MIN_LENGTH_SECONDS",
-    "ARM_RIPPER_BACKUP_FULL_SELECTIONS": "ARM_BACKUP_FULL_SELECTIONS",
-    "ARM_RIPPER_MAKEMKV_KEYCHECK_INTERVAL_SECONDS": "MAKEMKV_KEYCHECK_INTERVAL_SECONDS",
-    "ARM_RIPPER_NOT_READY_REARM_POLLS": "ARM_NOT_READY_REARM_POLLS",
-    "ARM_RIPPER_OPTICAL_SR_MAX": "ARM_OPTICAL_SR_MAX",
-    "ARM_RIPPER_OPTICAL_SG_MAX": "ARM_OPTICAL_SG_MAX",
-}
 
 
 class RipperManagerError(RuntimeError):
@@ -82,12 +63,26 @@ def _err(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"[:300]
 
 
-def _spec_hash(spec: dict[str, Any]) -> str:
-    """Hash of every `containers.run` kwarg except the labels that carry it.
-    Image drift is caught by image id in `_image_current`; this catches the
-    rest (environment, mounts, network, ...)."""
-    material = {k: v for k, v in spec.items() if k != "labels"}
-    return hashlib.sha256(json.dumps(material, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+def _by_drive(containers: Iterable[Any]) -> dict[str, Any]:
+    """Index the labelled containers by drive id; the first one listed for
+    an id wins."""
+    by_drive: dict[str, Any] = {}
+    for c in containers:
+        by_drive.setdefault(c.labels.get(DOCKER_LABEL_KEY), c)
+    return by_drive
+
+
+def _log_summary(summary: ReconcileSummary) -> None:
+    """Log one line counting each reconcile outcome."""
+    logger.info(
+        "ripper reconcile: created=%d adopted=%d restarted=%d recreated=%d orphans_removed=%d failed=%d",
+        len(summary.created),
+        len(summary.adopted),
+        len(summary.restarted),
+        len(summary.recreated),
+        len(summary.orphans_removed),
+        len(summary.failed),
+    )
 
 
 class RipperManager:
@@ -100,120 +95,11 @@ class RipperManager:
 
     def host_paths_set(self) -> bool:
         s = self._settings
-        return bool(s.ARM_HOST_RAW_PATH and s.ARM_HOST_LOGS_PATH and self._certs_path())
-
-    def _certs_path(self) -> str:
-        """Local host certs dir for the rippers' CA mount — ARM_RIPPER_CERTS_PATH
-        when set (remote-transcode installs), else ARM_HOST_CERTS_PATH."""
-        return self._settings.ARM_RIPPER_CERTS_PATH or self._settings.ARM_HOST_CERTS_PATH
+        return bool(s.ARM_HOST_RAW_PATH and s.ARM_HOST_LOGS_PATH and certs_path(s))
 
     def probe(self) -> tuple[bool, str | None]:
         """Daemon reachable and ARM_RIPPER_IMAGE present? Never raises; TTL-cached."""
         return self._probe()
-
-    # --- spec ------------------------------------------------------------------
-
-    def container_name(self, drive: Drive) -> str:
-        """`arm-ripper-<serial slug>-<drive-id suffix>` — a stable slot label;
-        srN is not in the name because the node moves. The drive-id suffix
-        keeps two drives that report the same short serial (common behind USB
-        bridges) from colliding on the name. Falls back to the drive-id suffix
-        alone when the drive has no serial. Lower-cased `[a-z0-9-]` so it is
-        valid both as a docker name and as a hostname. A virtual (ISO) drive
-        is `arm-ripper-iso-<drive-id suffix>`."""
-        if drive.kind == DriveKind.VIRTUAL:
-            return f"arm-ripper-iso-{drive.id[-12:].lower()}"
-        id_slug = drive.id[-12:].lower()
-        serial_slug = re.sub(r"[^a-z0-9]+", "-", (drive.serial or "").lower()).strip("-")
-        if not serial_slug:
-            return f"arm-ripper-{id_slug}"
-        return f"arm-ripper-{serial_slug}-{drive.id[-6:].lower()}"
-
-    def container_spec(self, drive: Drive) -> dict[str, Any]:
-        """kwargs for `containers.run` — what the ripper needs and nothing more
-        (spec §3): no `devices:` bind (the entrypoint pre-creates nodes), no
-        per-ripper cert, `/dev/disk` not `/dev`."""
-        s = self._settings
-        name = self.container_name(drive)
-        env: dict[str, str] = {
-            "ARM_DRIVE_ID": drive.id,
-            "ARM_DRIVE_DEV": drive.device_path,
-            "ARM_HOST_DISK_ROOT": _HOST_DISK_MOUNT,
-            "ARM_BACKEND_URL": "https://arm-backend:8443",
-            "ARM_SERVICE_TOKEN": s.ARM_SERVICE_TOKEN,
-            "ARM_LOG_LEVEL": s.ARM_LOG_LEVEL,
-        }
-        if drive.by_id_name:
-            env["ARM_DRIVE_BY_ID"] = drive.by_id_name
-        for key in ("PUID", "PGID", "CDROM_GID"):
-            value = getattr(s, key)
-            if value:
-                env[key] = value
-        for setting, env_name in _TUNABLE_ENV.items():
-            value = getattr(s, setting)
-            if value:
-                env[env_name] = value
-        certs_root = Path(self._certs_path())
-        volumes = {
-            s.ARM_HOST_RAW_PATH: {"bind": "/raw", "mode": "rw"},
-            s.ARM_HOST_LOGS_PATH: {"bind": "/logs", "mode": "rw"},
-            str(certs_root / "arm-ca.crt"): {"bind": "/etc/ssl/arm/arm-ca.crt", "mode": "ro"},
-            "/dev/disk": {"bind": _HOST_DISK_MOUNT, "mode": "ro"},
-        }
-        spec: dict[str, Any] = {
-            "image": s.ARM_RIPPER_IMAGE,
-            "name": name,
-            "hostname": name,
-            "labels": {DOCKER_LABEL_KEY: drive.id},
-            "environment": env,
-            "volumes": volumes,
-            "network": s.ARM_DOCKER_NETWORK,
-            "device_cgroup_rules": list(_DEVICE_CGROUP_RULES),
-            "restart_policy": {"Name": "unless-stopped"},
-            "log_config": log_config(),
-            "detach": True,
-        }
-        if drive.kind == DriveKind.VIRTUAL:
-            spec = self._virtual_spec(drive, spec)
-        spec["labels"][SPEC_HASH_LABEL_KEY] = _spec_hash(spec)
-        return spec
-
-    def _virtual_spec(self, drive: Drive, spec: dict[str, Any]) -> dict[str, Any]:
-        """Turn the optical spec into a one-shot ISO ripper's (spec 6.1): only
-        the chosen ISO is mounted, read-only, at the drive's device_path
-        (`/source/<file name>`); no /dev/disk, no device cgroup rules, no
-        cdrom group; restart policy "no" (the watchdog cleans up).
-
-        The ISO goes in `mounts`, not `volumes`: docker-py renders a volume
-        as `host:container:mode`, so a file name with a colon in it
-        (`Star Wars: Episode IV.iso`) breaks the spec, while a Mount carries
-        source and target as separate fields."""
-        assert drive.source_path is not None, "a virtual drive always has a source_path"
-        source = drive.device_path
-        env = {k: v for k, v in spec["environment"].items() if k not in _OPTICAL_ONLY_ENV}
-        env["ARM_SOURCE_PATH"] = source
-        session_id = (drive.rip_params_json or {}).get("session_id")
-        if session_id:
-            env["ARM_SOURCE_SESSION_ID"] = str(session_id)
-        volumes = dict(spec["volumes"])
-        volumes.pop("/dev/disk")
-        library_host = self._settings.ARM_HOST_ISO_LIBRARY_PATH
-        iso_mount = docker.types.Mount(
-            target=source,
-            source=iso_host_path(drive.source_path, library_host=library_host),
-            type="bind",
-            read_only=True,
-        )
-        virtual = {
-            **spec,
-            "environment": env,
-            "volumes": volumes,
-            "mounts": [iso_mount],
-            "labels": {DOCKER_LABEL_KEY: drive.id, VIRTUAL_LABEL_KEY: "1"},
-            "restart_policy": {"Name": "no"},
-        }
-        virtual.pop("device_cgroup_rules")
-        return virtual
 
     # --- operations ------------------------------------------------------------
 
@@ -225,7 +111,7 @@ class RipperManager:
         """Returns "created" | "adopted" | "restarted"."""
         if existing is None:
             try:
-                self._docker.containers.run(**self.container_spec(drive))
+                self._docker.containers.run(**container_spec(self._settings, drive))
             except docker.errors.APIError as exc:
                 # A concurrent creator can win the name race between our
                 # `_labelled` lookup and `containers.run` (two callers
@@ -260,7 +146,7 @@ class RipperManager:
             outcome = self._start_or_create(drive, existing)
         except Exception as exc:  # noqa: BLE001 — docker-py + transport errors, all one answer
             raise RipperManagerError(_err(exc)) from exc
-        name = existing.name if existing is not None else self.container_name(drive)
+        name = existing.name if existing is not None else container_name(drive)
         logger.info(
             "ripper %s drive_id=%s container=%s image=%s", outcome, drive.id, name, self._settings.ARM_RIPPER_IMAGE
         )
@@ -299,7 +185,7 @@ class RipperManager:
         once, when idle."""
         if not self._image_current(container):
             return "a stale image"
-        wanted = self.container_spec(drive)["labels"][SPEC_HASH_LABEL_KEY]
+        wanted = container_spec(self._settings, drive)["labels"][SPEC_HASH_LABEL_KEY]
         if (container.labels or {}).get(SPEC_HASH_LABEL_KEY) != wanted:
             return "a spec that differs from the current settings"
         return None
@@ -318,9 +204,7 @@ class RipperManager:
         except Exception as exc:  # noqa: BLE001
             logger.warning("cannot list containers: %s", _err(exc))
             return dict.fromkeys(ids, ("unknown", None))
-        by_drive: dict[str, Any] = {}
-        for c in containers:
-            by_drive.setdefault(c.labels.get(DOCKER_LABEL_KEY), c)
+        by_drive = _by_drive(containers)
         result: dict[str, tuple[str, bool | None]] = {}
         for drive_id in ids:
             existing = by_drive.get(drive_id)
@@ -347,11 +231,18 @@ class RipperManager:
             containers = self._labelled()
         except Exception as exc:  # noqa: BLE001
             raise RipperManagerError(_err(exc)) from exc
-        by_drive: dict[str, Any] = {}
-        for c in containers:
-            by_drive.setdefault(c.labels.get(DOCKER_LABEL_KEY), c)
+        by_drive = _by_drive(containers)
         wanted = {d.id for d in enrolled}
         summary = ReconcileSummary()
+        self._remove_orphans(by_drive, wanted, summary)
+        for drive in enrolled:
+            self._reconcile_drive(drive, by_drive.get(drive.id), busy, summary)
+        _log_summary(summary)
+        return summary
+
+    def _remove_orphans(self, by_drive: dict[str, Any], wanted: set[str], summary: ReconcileSummary) -> None:
+        """Stop and remove every labelled container whose drive is no longer
+        enrolled, recording each outcome."""
         for drive_id, c in by_drive.items():
             if drive_id in wanted:
                 continue
@@ -360,49 +251,48 @@ class RipperManager:
                 summary.orphans_removed.append(drive_id)
             except Exception as exc:  # noqa: BLE001
                 summary.failed[drive_id] = _err(exc)
-        for drive in enrolled:
-            existing = by_drive.get(drive.id)
-            try:
-                drift = self._drift(drive, existing) if existing is not None else None
-            except Exception as exc:  # noqa: BLE001
-                # container_spec can raise for one bad drive; that must not
-                # abort the reconcile for every other drive.
-                summary.failed[drive.id] = _err(exc)
-                continue
-            if drift is not None:
-                if drive.id in busy:
-                    logger.info(
-                        "ripper drive_id=%s runs %s but is ripping — adopting; recreated at the "
-                        "next backend restart once the drive is idle",
-                        drive.id,
-                        drift,
-                    )
-                else:
-                    try:
-                        self._stop_and_remove(existing)
-                        self._docker.containers.run(**self.container_spec(drive))
-                    except Exception as exc:  # noqa: BLE001
-                        summary.failed[drive.id] = _err(exc)
-                        continue
-                    logger.info("ripper recreated drive_id=%s: it ran %s", drive.id, drift)
-                    summary.recreated.append(drive.id)
-                    continue
-            try:
-                outcome = self._start_or_create(drive, existing)
-            except Exception as exc:  # noqa: BLE001
-                summary.failed[drive.id] = _err(exc)
-                continue
-            getattr(summary, outcome).append(drive.id)
-        logger.info(
-            "ripper reconcile: created=%d adopted=%d restarted=%d recreated=%d orphans_removed=%d failed=%d",
-            len(summary.created),
-            len(summary.adopted),
-            len(summary.restarted),
-            len(summary.recreated),
-            len(summary.orphans_removed),
-            len(summary.failed),
-        )
-        return summary
+
+    def _reconcile_drive(
+        self, drive: Drive, existing: Any | None, busy: frozenset[str], summary: ReconcileSummary
+    ) -> None:
+        """Bring one enrolled drive's container in line with its spec,
+        recording the outcome; never raises."""
+        try:
+            drift = self._drift(drive, existing) if existing is not None else None
+        except Exception as exc:  # noqa: BLE001
+            # container_spec can raise for one bad drive; that must not
+            # abort the reconcile for every other drive.
+            summary.failed[drive.id] = _err(exc)
+            return
+        if drift is not None:
+            if drive.id in busy:
+                logger.info(
+                    "ripper drive_id=%s runs %s but is ripping — adopting; recreated at the "
+                    "next backend restart once the drive is idle",
+                    drive.id,
+                    drift,
+                )
+            else:
+                self._recreate(drive, existing, drift, summary)
+                return
+        try:
+            outcome = self._start_or_create(drive, existing)
+        except Exception as exc:  # noqa: BLE001
+            summary.failed[drive.id] = _err(exc)
+            return
+        getattr(summary, outcome).append(drive.id)
+
+    def _recreate(self, drive: Drive, existing: Any, drift: str, summary: ReconcileSummary) -> None:
+        """Replace a drifted, idle container with one built from the current
+        spec."""
+        try:
+            self._stop_and_remove(existing)
+            self._docker.containers.run(**container_spec(self._settings, drive))
+        except Exception as exc:  # noqa: BLE001
+            summary.failed[drive.id] = _err(exc)
+            return
+        logger.info("ripper recreated drive_id=%s: it ran %s", drive.id, drift)
+        summary.recreated.append(drive.id)
 
 
 async def reconcile_enrolled_rippers(

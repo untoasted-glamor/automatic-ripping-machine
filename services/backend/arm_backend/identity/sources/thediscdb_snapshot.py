@@ -1,58 +1,18 @@
-"""Local TheDiscDB snapshot: GitHub data tarball -> sqlite index -> lookups.
+"""Local TheDiscDB snapshot: lookups against the sqlite index.
 
-The data repo (github.com/TheDiscDb/data, MIT) lays out
-`data/<movie|series|sets>/<Title (Year)>/[metadata.json + <release>/
-(release.json + disc*.json)]`. We index every disc*.json by its ContentHash
-(uppercased) with its sibling metadata/release JSON attached. `sets/` is
-skipped in v1 (deferred; different grouping shape).
-
-Refresh keeps the previous index on any failure (mirror philosophy: a
-third-party outage must never break local operation). Build raises an
-exception if the tarball contains zero indexable discs (e.g., upstream
-layout change), so refresh propagates the error and the previous index
-remains untouched. Build is atomic: write a uniquely named temp file next
-to the live index, then os.replace over it. `refresh` holds a process-wide
-lock so the daily loop and a manual refresh never build concurrently.
+`thediscdb_index.build_index` builds the index from the GitHub data tarball
+and `thediscdb_refresh.refresh` keeps it current.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
-import logging
-import os
-import re
 import sqlite3
-import tarfile
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import httpx
-
-logger = logging.getLogger(__name__)
-
-TARBALL_URL = "https://codeload.github.com/TheDiscDb/data/tar.gz/refs/heads/main"
 INDEX_FILENAME = "index.sqlite"
-
-# <root>/data/(movie|series)/<title-dir>/<release-dir>/disc<NN>.json
-_DISC_RE = re.compile(r"^[^/]+/data/(movie|series)/([^/]+)/([^/]+)/disc\d+\.json$")
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS discs (
-    content_hash TEXT PRIMARY KEY,
-    global_disc_id TEXT,
-    kind TEXT NOT NULL,
-    title_slug TEXT NOT NULL,
-    release_slug TEXT NOT NULL,
-    disc_json TEXT NOT NULL,
-    metadata_json TEXT NOT NULL,
-    release_json TEXT NOT NULL,
-    release_seasons TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_discs_global ON discs(global_disc_id);
-"""
 
 
 @dataclass(slots=True)
@@ -65,114 +25,6 @@ class DiscMatch:
     release: dict[str, Any]
     # Seasons covered by the whole release (sorted); None when it has no Episode titles.
     release_seasons: list[int] | None = None
-
-
-def _episode_seasons(disc: dict[str, Any]) -> set[int]:
-    seasons: set[int] = set()
-    for entry in disc.get("Titles") or []:
-        item = entry.get("Item") if isinstance(entry, dict) else None
-        if not isinstance(item, dict) or item.get("Type") != "Episode":
-            continue
-        try:
-            seasons.add(int(item["Season"]))
-        except KeyError, TypeError, ValueError:
-            continue
-    return seasons
-
-
-def build_index(tarball: Path, dest_sqlite: Path) -> int:
-    """Parse the data tarball into a fresh sqlite index; atomic replace."""
-    # Pass 1: read everything grouped by directory.
-    discs: list[tuple[str, str, str, dict[str, Any]]] = []  # (kind, title_dir, release_dir, disc)
-    metadata_by_title: dict[str, dict[str, Any]] = {}
-    release_by_dir: dict[str, dict[str, Any]] = {}
-
-    def _load(tar: tarfile.TarFile, member: tarfile.TarInfo) -> dict[str, Any] | None:
-        fh = tar.extractfile(member)
-        if fh is None:
-            return None
-        try:
-            loaded = json.load(fh)
-            return loaded if isinstance(loaded, dict) else None
-        except json.JSONDecodeError, UnicodeDecodeError:
-            logger.debug("thediscdb: skipping malformed %s", member.name)
-            return None
-
-    with tarfile.open(tarball, "r:gz") as tar:
-        for member in tar:
-            if not member.isfile() or not member.name.endswith(".json"):
-                continue
-            parts = member.name.split("/")
-            m = _DISC_RE.match(member.name)
-            if m:
-                obj = _load(tar, member)
-                if obj and obj.get("ContentHash"):
-                    discs.append((m.group(1), m.group(2), m.group(3), obj))
-            elif len(parts) >= 4 and parts[-1] == "metadata.json" and parts[1] == "data":
-                obj = _load(tar, member)
-                if obj is not None:
-                    metadata_by_title["/".join(parts[2:4])] = obj  # "<kind>/<title-dir>"
-            elif parts[-1] == "release.json" and len(parts) >= 5 and parts[1] == "data":
-                obj = _load(tar, member)
-                if obj is not None:
-                    release_by_dir["/".join(parts[2:5])] = obj  # "<kind>/<title>/<release>"
-
-    if not discs:
-        raise ValueError("thediscdb: tarball contained no indexable discs — refusing to replace index")
-
-    dest_sqlite.parent.mkdir(parents=True, exist_ok=True)
-    # Unique name per build: a fixed `<dest>.new` let two overlapping builds
-    # unlink each other's open database (D-159).
-    fd, tmp_name = tempfile.mkstemp(dir=dest_sqlite.parent, prefix=f"{dest_sqlite.name}.", suffix=".new")
-    os.close(fd)
-    new_path = Path(tmp_name)
-    try:
-        rows = _write_index(new_path, discs, metadata_by_title, release_by_dir)
-        os.replace(new_path, dest_sqlite)
-    except BaseException:
-        new_path.unlink(missing_ok=True)
-        raise
-    logger.info("thediscdb: index built with %d discs", rows)
-    return rows
-
-
-def _write_index(
-    new_path: Path,
-    discs: list[tuple[str, str, str, dict[str, Any]]],
-    metadata_by_title: dict[str, dict[str, Any]],
-    release_by_dir: dict[str, dict[str, Any]],
-) -> int:
-    conn = sqlite3.connect(new_path)
-    try:
-        conn.executescript(_SCHEMA)
-        rows = 0
-        seasons_by_release: dict[tuple[str, str, str], set[int]] = {}
-        for kind, title_dir, release_dir, disc in discs:
-            seasons_by_release.setdefault((kind, title_dir, release_dir), set()).update(_episode_seasons(disc))
-        for kind, title_dir, release_dir, disc in discs:
-            meta = metadata_by_title.get(f"{kind}/{title_dir}", {})
-            release = release_by_dir.get(f"{kind}/{title_dir}/{release_dir}", {})
-            conn.execute(
-                "INSERT OR REPLACE INTO discs VALUES (?,?,?,?,?,?,?,?,?)",
-                (
-                    str(disc["ContentHash"]).upper(),
-                    (str(disc["GlobalDiscId"]).upper() if disc.get("GlobalDiscId") else None),
-                    kind,
-                    str(meta.get("Slug") or title_dir),
-                    str(release.get("Slug") or release_dir),
-                    json.dumps(disc),
-                    json.dumps(meta),
-                    json.dumps(release),
-                    json.dumps(sorted(seasons))
-                    if (seasons := seasons_by_release[(kind, title_dir, release_dir)])
-                    else None,
-                ),
-            )
-            rows += 1
-        conn.commit()
-    finally:
-        conn.close()
-    return rows
 
 
 class SnapshotStore:
@@ -215,43 +67,3 @@ class SnapshotStore:
             release=json.loads(row[5]),
             release_seasons=json.loads(row[6]) if len(row) > 6 and row[6] else None,
         )
-
-
-# Serialises refreshes within the process (daily loop vs the manual route).
-_refresh_lock = asyncio.Lock()
-
-
-def refresh_running() -> bool:
-    """True while a refresh holds the lock; the manual route answers 409."""
-    return _refresh_lock.locked()
-
-
-class RefreshBusy(RuntimeError):
-    """A refresh is already running in this process."""
-
-
-async def refresh(http: httpx.AsyncClient, dir_path: Path) -> int:
-    """Download the tarball and rebuild the index. Raises on failure — the
-    caller logs and keeps the previous index. Raises RefreshBusy, without
-    waiting, while another refresh holds the lock: a manual refresh must not
-    hang behind the daily download, and the daily loop has nothing to add
-    after a manual one."""
-    if _refresh_lock.locked():
-        raise RefreshBusy("thediscdb refresh already in progress")
-    async with _refresh_lock:
-        return await _refresh_locked(http, dir_path)
-
-
-async def _refresh_locked(http: httpx.AsyncClient, dir_path: Path) -> int:
-    dir_path.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-    try:
-        async with http.stream("GET", TARBALL_URL, follow_redirects=True, timeout=300.0) as resp:
-            resp.raise_for_status()
-            with open(tmp_path, "wb") as out:
-                async for chunk in resp.aiter_bytes():
-                    out.write(chunk)
-        return await asyncio.to_thread(build_index, tmp_path, Path(dir_path) / INDEX_FILENAME)
-    finally:
-        tmp_path.unlink(missing_ok=True)

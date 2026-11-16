@@ -11,8 +11,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from arm_backend.identity.sources import thediscdb_snapshot
-from arm_backend.identity.sources.thediscdb_snapshot import TARBALL_URL, SnapshotStore, build_index, refresh
+from arm_backend.identity.sources import thediscdb_index, thediscdb_refresh
+from arm_backend.identity.sources.thediscdb_index import build_index
+from arm_backend.identity.sources.thediscdb_refresh import TARBALL_URL, refresh
+from arm_backend.identity.sources.thediscdb_snapshot import SnapshotStore
 
 DISC = {
     "Index": 1,
@@ -90,7 +92,7 @@ def test_build_failure_removes_temp_file_and_keeps_live_index(tmp_path: Path, mo
     def _boom(src: object, dst: object) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr(thediscdb_snapshot.os, "replace", _boom)
+    monkeypatch.setattr(thediscdb_index.os, "replace", _boom)
     with pytest.raises(OSError, match="disk full"):
         build_index(_mini_tarball(tmp_path), dest)
     assert SnapshotStore(tmp_path).count() == 1
@@ -100,13 +102,13 @@ def test_build_failure_removes_temp_file_and_keeps_live_index(tmp_path: Path, mo
 def test_overlapping_builds_use_distinct_temp_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # D-159: two builds into the same dest must not share a temp path.
     seen: list[Path] = []
-    real_write = thediscdb_snapshot._write_index
+    real_write = thediscdb_index._write_index
 
     def _spy(new_path: Path, *args: object) -> int:
         seen.append(new_path)
         return real_write(new_path, *args)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(thediscdb_snapshot, "_write_index", _spy)
+    monkeypatch.setattr(thediscdb_index, "_write_index", _spy)
     dest = tmp_path / "index.sqlite"
     build_index(_mini_tarball(tmp_path), dest)
     build_index(_mini_tarball(tmp_path), dest)
@@ -233,25 +235,25 @@ async def test_concurrent_refreshes_are_serialised(tmp_path: Path, monkeypatch: 
 
     async def _fake_locked(http: object, dir_path: Path) -> int:
         nonlocal active, peak
-        running_during.append(thediscdb_snapshot.refresh_running())
+        running_during.append(thediscdb_refresh.refresh_running())
         active += 1
         peak = max(peak, active)
         await asyncio.sleep(0.01)
         active -= 1
         return 1
 
-    monkeypatch.setattr(thediscdb_snapshot, "_refresh_locked", _fake_locked)
-    assert not thediscdb_snapshot.refresh_running()
+    monkeypatch.setattr(thediscdb_refresh, "_refresh_locked", _fake_locked)
+    assert not thediscdb_refresh.refresh_running()
     results = await asyncio.gather(
         refresh(object(), tmp_path),  # type: ignore[arg-type]
         refresh(object(), tmp_path),  # type: ignore[arg-type]
         return_exceptions=True,
     )
     assert results[0] == 1
-    assert isinstance(results[1], thediscdb_snapshot.RefreshBusy)
+    assert isinstance(results[1], thediscdb_refresh.RefreshBusy)
     assert peak == 1
     assert running_during == [True]
-    assert not thediscdb_snapshot.refresh_running()
+    assert not thediscdb_refresh.refresh_running()
 
 
 def _series_disc(index: int, season: str, hash_: str) -> dict:

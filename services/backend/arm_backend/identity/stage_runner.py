@@ -40,7 +40,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
+from typing import Any
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -49,7 +50,6 @@ from sqlmodel import col, select
 from arm_backend.identity.episode_stage import (
     SourceOutcome,
     StageOptions,
-    apply_episode_outcomes,
     compute_episode_claims,
     is_tv_candidate,
 )
@@ -57,9 +57,9 @@ from arm_backend.identity.episodes.providers.base import EpisodeListProvider
 from arm_backend.identity.episodes.providers.tmdb import TmdbEpisodes
 from arm_backend.identity.episodes.providers.tvdb import TvdbEpisodes
 from arm_backend.identity.episodes.providers.tvmaze import TvmazeEpisodes
+from arm_backend.identity.events import apply_outcomes_and_emit
 from arm_backend.identity.http import POLICIES, SourceHttp
 from arm_backend.identity.ids import current_ids, merge_new_ids
-from arm_backend.identity.pipeline import ResolveOutcome
 from arm_backend.identity.proposals import claims_of
 from arm_backend.identity.sources.registry import EPISODE_SOURCE_IDS
 from arm_backend.constants import CONFIG_SINGLETON_ID
@@ -103,60 +103,16 @@ def build_providers(http_map: dict[str, SourceHttp], cfg: Config) -> list[Episod
     ]
 
 
-async def emit_identity_resolved(
-    session: AsyncSession,
-    hub: WSHub,
-    job: Job,
-    resolved: ResolveOutcome,
-    *,
-    sources: dict[str, str],
-) -> None:
-    """Emit `job.identity_updated` (payload carries `sources`, a source id ->
-    status map) plus one `track.updated` per track `resolved` says the
-    resolver changed.
-
-    Shared by the episode stage's apply path (`apply_outcomes_and_emit`) and
-    the identity router's pin-clear (Task 9 F3), so every caller that runs
-    the resolver and wants to tell the UI about it reports identically —
-    spec 7 requires `job.identity_updated` whenever the resolver changes
-    anything, not just when the episode stage supplied new outcomes."""
-    await hub.emit(
-        topic="ripper.events",
-        event_type="job.identity_updated",
-        payload={"job_id": job.id, "sources": sources},
-        job_id=job.id,
-        session=session,
+def _new_ids(before: dict[str, Any], job: Job) -> ExternalIds:
+    """The show ids on `job` that differ from `before`: new ones, or a movie
+    TMDb id swapped for a show's."""
+    return ExternalIds(
+        **{
+            field: value
+            for field, value in current_ids(job).model_dump(exclude_none=True).items()
+            if before.get(field) != value  # new, or a movie TMDb id swapped for a show's
+        }
     )
-    for track_id in sorted(resolved.track_ids):
-        await hub.emit(
-            topic="ripper.events",
-            event_type="track.updated",
-            payload={"track_id": track_id, "job_id": job.id},
-            job_id=job.id,
-            track_id=track_id,
-            session=session,
-        )
-
-
-async def apply_outcomes_and_emit(
-    session: AsyncSession,
-    job: Job,
-    outcomes: Sequence[SourceOutcome],
-    hub: WSHub,
-) -> ResolveOutcome:
-    """Store `outcomes` (`apply_episode_outcomes`: put_source then resolve),
-    commit, then emit via `emit_identity_resolved`, committing again. `job`
-    must already be the freshly re-selected row the caller intends to write
-    to.
-
-    Shared by the background runner's apply phase and the identity router's
-    `apply=True` path (controller ruling 2) so both commit and emit
-    identically."""
-    resolved = await apply_episode_outcomes(session, job, outcomes)
-    await session.commit()
-    await emit_identity_resolved(session, hub, job, resolved, sources={o.source_id: o.claims.status for o in outcomes})
-    await session.commit()
-    return resolved
 
 
 class EpisodeStageRunner:
@@ -335,79 +291,84 @@ class EpisodeStageRunner:
             with with_log_context(job_id=job_id):
                 await self._run_body(job_id)
 
+    async def _compute_phase(self, job_id: str) -> tuple[list[SourceOutcome], ExternalIds] | None:
+        """Phase 1 (fetch): the outcomes and newly found show ids for
+        `job_id`, or None when there is nothing to apply."""
+        # Phase 1 (fetch): load the snapshot and run the network phase
+        # against ONE session, held open only for this session's own
+        # queries — the job/tracks/config load, then compute's own
+        # sibling/track reads, all of which happen before any provider
+        # is even tried. Nothing queries, flushes or commits this
+        # session again afterward, so `job`'s in-memory mutation (a
+        # newly resolved show id `compute_episode_claims` may cache via
+        # `resolve_show_ids` — see `ids.py`) is simply discarded when
+        # the session closes below (a rollback, never a write): it can
+        # NEVER reach the DB from here, regardless of what a concurrent
+        # PATCH/resolve commits while we're waiting on providers. This
+        # is the invariant fix round 2 restores — round 1's fix alone
+        # left a window where the apply phase's own re-select, sharing
+        # this session, would autoflush that mutation as a stale
+        # full-row UPDATE before returning the fresh row.
+        async with self._session_factory() as compute_session:
+            job = (await compute_session.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
+            if job is None:
+                # Vanished (deleted) between scheduling and running.
+                return None
+            tracks = list(
+                (await compute_session.execute(select(Track).where(col(Track.job_id) == job_id))).scalars().all()
+            )
+            if not is_tv_candidate(job, tracks):
+                return None
+            cfg = (
+                await compute_session.execute(select(Config).where(col(Config.id) == CONFIG_SINGLETON_ID))
+            ).scalar_one()
+            providers = self._providers_for(cfg)
+            ids_before = current_ids(job).model_dump(exclude_none=True)
+            outcomes = await compute_episode_claims(compute_session, job, providers, cfg, StageOptions())
+            if not outcomes:
+                # Nothing to match yet (no eligible titles): no lock,
+                # no resolve, no event.
+                return None
+            # I4: only the ids this compute newly found. An id the
+            # snapshot already had may since have been cleared on the
+            # fresh row (e.g. /resolve with a different show) and must
+            # not come back.
+            found = _new_ids(ids_before, job)
+            return outcomes, found
+
+    async def _apply_phase(self, job_id: str, outcomes: list[SourceOutcome], found: ExternalIds) -> None:
+        """Phase 2 (apply): fold `found` into the freshly locked job row and
+        apply `outcomes`, unless the job vanished or this run's outcome was
+        superseded or dropped."""
+        # Phase 2 (apply): a fresh session. The snapshot `job` is detached now
+        # (its own session closed above without a commit/flush) — never
+        # written anywhere itself; only the NEW show ids it resolved
+        # (if any) are folded into the fresh row below.
+        async with self._session_factory() as apply_session:
+            fresh_job = (
+                await apply_session.execute(
+                    select(Job).where(col(Job.id) == job_id).with_for_update().execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+            if fresh_job is None or job_id in self._rerun or job_id in self._discarded:
+                # Vanished meanwhile, another `schedule()` for this job
+                # arrived while we were waiting on providers, or a caller
+                # dropped this run's outcome: write nothing, commit
+                # nothing, emit nothing. The queued rerun-once (if any)
+                # will apply fresh outcomes against the current state
+                # instead.
+                return
+
+            merge_new_ids(fresh_job, found)
+            await apply_outcomes_and_emit(apply_session, fresh_job, outcomes, self._hub)
+
     async def _run_body(self, job_id: str) -> None:
         try:
-            # Phase 1 (fetch): load the snapshot and run the network phase
-            # against ONE session, held open only for this session's own
-            # queries — the job/tracks/config load, then compute's own
-            # sibling/track reads, all of which happen before any provider
-            # is even tried. Nothing queries, flushes or commits this
-            # session again afterward, so `job`'s in-memory mutation (a
-            # newly resolved show id `compute_episode_claims` may cache via
-            # `resolve_show_ids` — see `ids.py`) is simply discarded when
-            # the session closes below (a rollback, never a write): it can
-            # NEVER reach the DB from here, regardless of what a concurrent
-            # PATCH/resolve commits while we're waiting on providers. This
-            # is the invariant fix round 2 restores — round 1's fix alone
-            # left a window where the apply phase's own re-select, sharing
-            # this session, would autoflush that mutation as a stale
-            # full-row UPDATE before returning the fresh row.
-            async with self._session_factory() as compute_session:
-                job = (await compute_session.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
-                if job is None:
-                    # Vanished (deleted) between scheduling and running.
-                    return
-                tracks = list(
-                    (await compute_session.execute(select(Track).where(col(Track.job_id) == job_id))).scalars().all()
-                )
-                if not is_tv_candidate(job, tracks):
-                    return
-                cfg = (
-                    await compute_session.execute(select(Config).where(col(Config.id) == CONFIG_SINGLETON_ID))
-                ).scalar_one()
-                providers = self._providers_for(cfg)
-                ids_before = current_ids(job).model_dump(exclude_none=True)
-                outcomes = await compute_episode_claims(compute_session, job, providers, cfg, StageOptions())
-                if not outcomes:
-                    # Nothing to match yet (no eligible titles): no lock,
-                    # no resolve, no event.
-                    return
-                # I4: only the ids this compute newly found. An id the
-                # snapshot already had may since have been cleared on the
-                # fresh row (e.g. /resolve with a different show) and must
-                # not come back.
-                found = ExternalIds(
-                    **{
-                        field: value
-                        for field, value in current_ids(job).model_dump(exclude_none=True).items()
-                        if ids_before.get(field) != value  # new, or a movie TMDb id swapped for a show's
-                    }
-                )
-
-            # Phase 2 (apply): a fresh session. The snapshot `job` is detached now
-            # (its own session closed above without a commit/flush) — never
-            # written anywhere itself; only the NEW show ids it resolved
-            # (if any) are folded into the fresh row below.
-            async with self._session_factory() as apply_session:
-                fresh_job = (
-                    await apply_session.execute(
-                        select(Job)
-                        .where(col(Job.id) == job_id)
-                        .with_for_update()
-                        .execution_options(populate_existing=True)
-                    )
-                ).scalar_one_or_none()
-                if fresh_job is None or job_id in self._rerun or job_id in self._discarded:
-                    # Vanished meanwhile, another `schedule()` for this job
-                    # arrived while we were waiting on providers, or a caller
-                    # dropped this run's outcome: write nothing, commit
-                    # nothing, emit nothing. The queued rerun-once (if any)
-                    # will apply fresh outcomes against the current state
-                    # instead.
-                    return
-
-                merge_new_ids(fresh_job, found)
-                await apply_outcomes_and_emit(apply_session, fresh_job, outcomes, self._hub)
+            computed = await self._compute_phase(job_id)
+            if computed is None:
+                return
+            outcomes, found = computed
+            await self._apply_phase(job_id, outcomes, found)
         except Exception:
             # Never crash the loop: a provider outage or a DB hiccup on one
             # job must not take down every other job's background stage.
