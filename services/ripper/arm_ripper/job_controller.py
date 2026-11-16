@@ -3,10 +3,11 @@ import contextlib
 import functools
 import logging
 import shutil
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -151,6 +152,38 @@ SCAN_NOT_READY_BACKOFFS = (2.0, 4.0, 8.0, 12.0)  # between attempts 1→2, 2→3
 # attribute afterward, which is how every existing wait test already
 # configures the timeout.
 _RESOLUTION_TIMEOUT_UNSET = object()
+
+
+def _spawn_tracked(coro: Coroutine[Any, Any, None], tasks: set[asyncio.Task[None]]) -> None:
+    """Run `coro` as a fire-and-forget task, held in `tasks` until it finishes so it is not garbage-collected
+    mid-run."""
+    task = asyncio.create_task(coro)
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+
+
+def _disconnect_reason(resumes: int) -> str:
+    """Why the titles a lost drive left are failed: it did not come back in time, or it dropped more often than a
+    rip may resume."""
+    return (
+        f"the drive disconnected mid-rip and did not come back within {DEVICE_RETURN_WAIT_SECONDS:.0f}s"
+        if resumes < MAX_DEVICE_RESUMES
+        else f"the drive disconnected mid-rip {resumes + 1} times; giving up"
+    )
+
+
+def _command_payload(envelope: WSEnvelope) -> dict[str, Any]:
+    """A WS command's payload, or an empty dict when it isn't one."""
+    return envelope.payload if isinstance(envelope.payload, dict) else {}
+
+
+async def _woken_within(event: asyncio.Event, timeout: float) -> bool:
+    """True when `event` is set within `timeout` seconds, False when the wait times out."""
+    try:
+        await asyncio.wait_for(event.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        return False
+    return True
 
 
 def _previously_ripped(response: httpx.Response) -> bool:
@@ -308,6 +341,20 @@ class JobController:
         """
         return self._active_task is None
 
+    @contextlib.asynccontextmanager
+    async def _claim(self, job_id: str | None) -> AsyncIterator[None]:
+        """Hold the single-flight gate for this task and job: is_idle() is False, and job.abandoned can cancel the
+        task, until the block exits. A pipeline claims with None, before identify has made the job, and records the
+        id itself once it has one."""
+        async with self._active_lock:
+            self._active_task = asyncio.current_task()
+            self._active_job_id = job_id
+            try:
+                yield
+            finally:
+                self._active_task = None
+                self._active_job_id = None
+
     async def pickup(self, job: JobView, device_path: str) -> None:
         """Re-acquire a rip-ready job from a heartbeat reprobe.
 
@@ -320,64 +367,80 @@ class JobController:
         if not self.is_idle():
             logger.debug("pickup ignored: controller already busy")
             return
-        async with self._active_lock:
-            self._active_task = asyncio.current_task()
-            self._active_job_id = job.id
-            try:
-                with with_log_context(job_id=job.id):
-                    logger.info("pickup: re-acquiring job %s status=%s", job.id, job.status.value)
-                    await self._run_rip(job, device_path)
-            finally:
-                self._active_task = None
-                self._active_job_id = None
+        async with self._claim(job.id):
+            with with_log_context(job_id=job.id):
+                logger.info("pickup: re-acquiring job %s status=%s", job.id, job.status.value)
+                await self._run_rip(job, device_path)
 
     async def on_ws_command(self, envelope: WSEnvelope) -> None:
-        """Handler registered for `ripper.commands.{drive_id}` topic."""
-        if envelope.event_type in ("identify.resolved", "rip.start", "review.pause"):
-            # All wake the per-job wait Event; the waiter re-fetches the job and
-            # re-evaluates (identify.resolved -> identified; rip.start -> ripping;
-            # review.pause -> re-read manual_pause/wait_start_time so a per-job
-            # pause/resume applies promptly instead of on the next periodic poll).
-            job_id = envelope.payload.get("job_id") if isinstance(envelope.payload, dict) else None
-            if not isinstance(job_id, str):
-                logger.warning("%s without job_id payload: %s", envelope.event_type, envelope.payload)
-                return
-            event = self._resolution_events.get(job_id)
-            if event is not None:
-                event.set()
-                logger.info("ws %s received for job_id=%s", envelope.event_type, job_id)
-            else:
-                logger.debug("%s for job_id=%s but no waiter registered", envelope.event_type, job_id)
-        elif envelope.event_type == "manual.trigger":
-            payload = envelope.payload if isinstance(envelope.payload, dict) else {}
-            session_id = payload.get("session_id")
-            if session_id is not None and not isinstance(session_id, str):
-                logger.warning("manual.trigger with non-string session_id: %r", session_id)
-                session_id = None
-            asyncio.create_task(self.handle_manual_trigger(session_id))
-        elif envelope.event_type == "rip.retry":
-            payload = envelope.payload if isinstance(envelope.payload, dict) else {}
-            job_id = payload.get("job_id")
-            if not isinstance(job_id, str):
-                logger.warning("rip.retry without job_id payload: %s", payload)
-                return
-            self.start_remux(job_id)
-        elif envelope.event_type == "job.abandoned":
-            payload = envelope.payload if isinstance(envelope.payload, dict) else {}
-            job_id = payload.get("job_id")
-            delete_raw = bool(payload.get("delete_raw"))
-            if not isinstance(job_id, str):
-                logger.warning("job.abandoned without job_id payload: %s", payload)
-                return
-            self._handle_abandon(job_id, delete_raw=delete_raw, off_drive=bool(payload.get("off_drive")))
-            # Also wake any `_await_resolution` waiter — abandoning a parked
-            # job needs to unstick the pipeline the same way `identify.resolved`
-            # does. The waiter polls and decides based on the new job status.
-            event = self._resolution_events.get(job_id)
-            if event is not None:
-                event.set()
-        else:
+        """Handler registered for `ripper.commands.{drive_id}` topic: runs the handler for the command's event
+        type and ignores any other type."""
+        handlers: dict[str, Callable[[WSEnvelope], None]] = {
+            "identify.resolved": self._on_wake_command,
+            "rip.start": self._on_wake_command,
+            "review.pause": self._on_wake_command,
+            "manual.trigger": self._on_manual_trigger,
+            "rip.retry": self._on_rip_retry,
+            "job.abandoned": self._on_job_abandoned,
+        }
+        handler = handlers.get(envelope.event_type)
+        if handler is None:
             logger.debug("ws command ignored: type=%s", envelope.event_type)
+            return
+        handler(envelope)
+
+    def _on_wake_command(self, envelope: WSEnvelope) -> None:
+        """Wake the pipeline parked on the payload's job so it re-fetches the job and re-evaluates:
+        identify.resolved -> identified, rip.start -> ripping, review.pause -> re-read
+        manual_pause / wait_start_time so a per-job pause or resume applies promptly instead of
+        on the next periodic poll."""
+        job_id = _command_payload(envelope).get("job_id")
+        if not isinstance(job_id, str):
+            logger.warning("%s without job_id payload: %s", envelope.event_type, envelope.payload)
+            return
+        if self._wake_waiter(job_id):
+            logger.info("ws %s received for job_id=%s", envelope.event_type, job_id)
+        else:
+            logger.debug("%s for job_id=%s but no waiter registered", envelope.event_type, job_id)
+
+    def _on_manual_trigger(self, envelope: WSEnvelope) -> None:
+        """Start a manual rip for the payload's session, or with no session when it doesn't name one as a string."""
+        payload = _command_payload(envelope)
+        session_id = payload.get("session_id")
+        if session_id is not None and not isinstance(session_id, str):
+            logger.warning("manual.trigger with non-string session_id: %r", session_id)
+            session_id = None
+        asyncio.create_task(self.handle_manual_trigger(session_id))
+
+    def _on_rip_retry(self, envelope: WSEnvelope) -> None:
+        """Fork: remux the payload's job from its kept disc backup in the remux lane."""
+        job_id = _command_payload(envelope).get("job_id")
+        if not isinstance(job_id, str):
+            logger.warning("rip.retry without job_id payload: %s", envelope.payload)
+            return
+        self.start_remux(job_id)
+
+    def _on_job_abandoned(self, envelope: WSEnvelope) -> None:
+        """Abandon the payload's job, then wake a pipeline parked on it so it sees the new status."""
+        payload = _command_payload(envelope)
+        job_id = payload.get("job_id")
+        delete_raw = bool(payload.get("delete_raw"))
+        if not isinstance(job_id, str):
+            logger.warning("job.abandoned without job_id payload: %s", payload)
+            return
+        self._handle_abandon(job_id, delete_raw=delete_raw, off_drive=bool(payload.get("off_drive")))
+        # Also wake any `_await_resolution` waiter — abandoning a parked
+        # job needs to unstick the pipeline the same way `identify.resolved`
+        # does. The waiter polls and decides based on the new job status.
+        self._wake_waiter(job_id)
+
+    def _wake_waiter(self, job_id: str) -> bool:
+        """Set the wait event of the pipeline parked on this job, if one is; True when there was one."""
+        event = self._resolution_events.get(job_id)
+        if event is None:
+            return False
+        event.set()
+        return True
 
     def _handle_abandon(self, job_id: str, *, delete_raw: bool, off_drive: bool = False) -> None:
         """Cancel the active pipeline if it owns this job (or the remux lane's
@@ -403,24 +466,27 @@ class JobController:
             logger.info("job.abandoned: cancelling the remux for job_id=%s", job_id)
             remux.cancel()
         if delete_raw:
-            task = asyncio.create_task(self._wipe_raw(job_id))
-            self._wipe_tasks.add(task)
-            task.add_done_callback(self._wipe_tasks.discard)
-        # Abandon means "done with this disc — give it back". The lifecycle's
-        # post-rip eject (end of _run_rip) never runs on an abandon exit, so
-        # eject here: when this job owns the drive's pipeline (ripping or
-        # parked — _eject_with_retry's EBUSY retries absorb the cancelled
-        # makemkvcon's teardown), or when the drive is idle with a disc still
-        # seated (pipeline already exited, e.g. after a rip-start abort). A
-        # stale abandon while a DIFFERENT job's rip owns the drive must not
-        # pop the tray mid-rip.
-        idle = active is None or active.done()
+            _spawn_tracked(self._wipe_raw(job_id), self._wipe_tasks)
         # A rip that already gave its disc back may have a new disc in the
         # tray by now; that one isn't this job's to eject.
         if off_drive:
             return
-        if (owns and not self.drive_released) or (idle and self._disc_seated()):
+        if self._abandon_ejects(owns):
             self._spawn_eject()
+
+    def _abandon_ejects(self, owns: bool) -> bool:
+        """Whether an abandon gives the disc back: "done with this disc, give it back".
+
+        The lifecycle's post-rip eject (end of _run_rip) never runs on an abandon exit, so eject here: when this
+        job owns the drive's pipeline (ripping or parked; _eject_with_retry's EBUSY retries absorb the cancelled
+        makemkvcon's teardown), or when the drive is idle with a disc still seated (pipeline already exited, e.g.
+        after a rip-start abort). A stale abandon while a DIFFERENT job's rip owns the drive must not pop the
+        tray mid-rip.
+        """
+        active = self._active_task
+        idle = active is None or active.done()
+        # Fork: a rip that gave its disc back (ejected after its backup) has none of its own left to eject.
+        return (owns and not self.drive_released) or (idle and self._disc_seated())
 
     async def _wipe_raw(self, job_id: str) -> None:
         """Delete `/raw/<job_id>/` off the event loop."""
@@ -507,107 +573,104 @@ class JobController:
             logger.debug("disc-inserted ignored: drive already busy")
             return
         # Auto-rip-on-insert is the global Config switch; default true so
-        # this is a no-op on standard deployments. Fail-open on lookup
-        # error: a flapping backend must not silently halt ripping.
-        try:
-            cfg = await self._client.get_ripper_config()
-            if not cfg.auto_rip_on_insert:
-                logger.info("disc-inserted ignored: auto_rip_on_insert=false; trigger via UI to start a rip")
-                return
-        except httpx.HTTPError as e:
-            logger.warning("auto-rip config lookup failed (%s); proceeding fail-open", e)
+        # this is a no-op on standard deployments.
+        if not await self._auto_rip_enabled():
+            logger.info("disc-inserted ignored: auto_rip_on_insert=false; trigger via UI to start a rip")
+            return
         await self._run_pipeline(device_path, pending_session_id=None)
 
+    async def _auto_rip_enabled(self) -> bool:
+        """Whether a disc insert should start a rip: the auto_rip_on_insert switch, or True when the config can't be
+        read (fail-open, so a flapping backend never silently halts ripping)."""
+        cfg = await self._ripper_config_or_none("auto-rip config lookup", "proceeding fail-open")
+        return cfg is None or cfg.auto_rip_on_insert
+
     async def _run_pipeline(self, device_path: str, *, pending_session_id: str | None) -> None:
-        async with self._active_lock:
-            self._active_task = asyncio.current_task()
-            try:
-                # Refresh the MakeMKV key before makemkvcon first touches
-                # the disc (the scan probe runs it for every disc), so a
-                # container up across a beta-key rotation doesn't scan/rip
-                # protected discs with a stale key.
-                await refresh_makemkv_key(key=await self._configured_makemkv_key())
-                self._spawn_keydb_refresh(enabled=await self._community_keydb_enabled())
-                self._spawn_sdf_refresh(enabled=await self._makemkv_sdf_enabled())
-                try:
-                    scan_result = await self._scan_with_ready_retry(device_path)
-                except ScanError as e:
-                    logger.error("scan failed device=%s err=%s", device_path, e)
+        async with self._claim(None):
+            # Refresh the MakeMKV key before makemkvcon first touches
+            # the disc (the scan probe runs it for every disc), so a
+            # container up across a beta-key rotation doesn't scan/rip
+            # protected discs with a stale key.
+            await self._prepare_makemkv()
+            scan_result = await self._scan_or_none(device_path)
+            if scan_result is None:
+                return
+
+            job = await self._identify_or_none(scan_result, device_path, pending_session_id=pending_session_id)
+            if job is None:
+                return
+            self._active_job_id = job.id
+
+            # Phase 12 — every log line below carries job_id once identify lands.
+            with with_log_context(job_id=job.id):
+                if not await self._pass_gate(job, _IDENTIFY_WAIT):
                     return
-                except OSError as e:
-                    if e.errno not in _ABSENT_ERRNOS:
-                        raise
-                    logger.warning("drive went absent during scan device=%s — pipeline abandoned", device_path)
+
+                # Timed review gate: the backend parks an identified disc here
+                # when hold_for_review is on. Wait for Start (-> ripping) or the
+                # auto-start path (-> identified); either proceeds to the rip.
+                if not await self._pass_gate(job, _REVIEW_WAIT):
                     return
 
-                try:
-                    job = await self._identify_with_retry(scan_result, pending_session_id=pending_session_id)
-                except httpx.HTTPStatusError as e:
-                    if _previously_ripped(e.response):
-                        # on_previously_ripped=reject: the backend made no job
-                        # and told the operator; give the disc back.
-                        logger.info("disc already ripped (on_previously_ripped=reject); ejecting %s", device_path)
-                        await self._eject_with_retry(device_path)
-                        return
-                    # Non-retriable identify rejection (e.g. 409 ripping-paused). Park
-                    # the pipeline quietly — the lock releases via the context manager.
-                    logger.info(
-                        "rip pipeline not started: identify rejected (%s) for drive %s",
-                        e.response.status_code,
-                        self._drive_id,
-                    )
+                # Proceed for: identified (normal / operator Start landed),
+                # ripping (operator Start already transitioned), or
+                # awaiting_review (timed auto-start — rip-start transitions it).
+                if job.status not in (JobStatus.IDENTIFIED, JobStatus.RIPPING, JobStatus.AWAITING_REVIEW):
+                    logger.info("job %s in unexpected status %s; not ripping", job.id, job.status.value)
                     return
-                self._active_job_id = job.id
 
-                # Phase 12 — every log line below carries job_id once identify lands.
-                with with_log_context(job_id=job.id):
-                    if job.status == JobStatus.AWAITING_USER_ID:
-                        resolved = await self._await_resolution(job.id, _IDENTIFY_WAIT)
-                        if resolved is None:
-                            return
-                        job.status = resolved.status
+                await self._run_rip_guarded(job, device_path)
 
-                    # Timed review gate: the backend parks an identified disc here
-                    # when hold_for_review is on. Wait for Start (-> ripping) or the
-                    # auto-start path (-> identified); either proceeds to the rip.
-                    if job.status == JobStatus.AWAITING_REVIEW:
-                        resolved = await self._await_resolution(job.id, _REVIEW_WAIT)
-                        if resolved is None:
-                            return
-                        job.status = resolved.status
+    async def _pass_gate(self, job: Job, spec: _WaitSpec) -> bool:
+        """Wait a job parked at `spec`'s gate until it leaves, recording the status it left in; True unless it left
+        the gate some other way (abandoned). A job not parked there passes straight through."""
+        if job.status != spec.parked:
+            return True
+        resolved = await self._await_resolution(job.id, spec)
+        if resolved is None:
+            return False
+        job.status = resolved.status
+        return True
 
-                    # Proceed for: identified (normal / operator Start landed),
-                    # ripping (operator Start already transitioned), or
-                    # awaiting_review (timed auto-start — rip-start transitions it).
-                    if job.status not in (JobStatus.IDENTIFIED, JobStatus.RIPPING, JobStatus.AWAITING_REVIEW):
-                        logger.info("job %s in unexpected status %s; not ripping", job.id, job.status.value)
-                        return
+    async def _run_rip_guarded(self, job: Job, device_path: str) -> None:
+        """Run the rip. A backend rejection of a state transition is logged and ends the pipeline; a cancel (abandon)
+        is logged and propagates."""
+        try:
+            await self._run_rip(job, device_path)
+        except httpx.HTTPStatusError as e:
+            # Backend rejected a state transition (e.g. rip-start
+            # 422 because identify produced an empty scan_result).
+            # Retrying won't fix it — log clearly and let the
+            # pipeline exit so the operator can abandon the job.
+            logger.error(
+                "rip pipeline aborted: backend returned %s for %s — abandon job_id=%s manually",
+                e.response.status_code,
+                e.request.url,
+                job.id,
+            )
+            return
+        except asyncio.CancelledError:
+            # Backend abandon → WS `job.abandoned` → task cancel.
+            # makemkvcon (or the abcde/dd subprocess) gets killed
+            # by its own finally-block subprocess cleanup; we just
+            # log and let the cancellation propagate so the lock
+            # releases without calling rip-complete.
+            logger.info("rip cancelled job_id=%s", job.id)
+            raise
 
-                    try:
-                        await self._run_rip(job, device_path)
-                    except httpx.HTTPStatusError as e:
-                        # Backend rejected a state transition (e.g. rip-start
-                        # 422 because identify produced an empty scan_result).
-                        # Retrying won't fix it — log clearly and let the
-                        # pipeline exit so the operator can abandon the job.
-                        logger.error(
-                            "rip pipeline aborted: backend returned %s for %s — abandon job_id=%s manually",
-                            e.response.status_code,
-                            e.request.url,
-                            job.id,
-                        )
-                        return
-                    except asyncio.CancelledError:
-                        # Backend abandon → WS `job.abandoned` → task cancel.
-                        # makemkvcon (or the abcde/dd subprocess) gets killed
-                        # by its own finally-block subprocess cleanup; we just
-                        # log and let the cancellation propagate so the lock
-                        # releases without calling rip-complete.
-                        logger.info("rip cancelled job_id=%s", job.id)
-                        raise
-            finally:
-                self._active_task = None
-                self._active_job_id = None
+    async def _scan_or_none(self, device_path: str) -> ScanResult | None:
+        """Scan the disc, or None after a log line when the scan fails or the drive goes absent mid-scan (which ends
+        the pipeline). Any other OSError propagates."""
+        try:
+            return await self._scan_with_ready_retry(device_path)
+        except ScanError as e:
+            logger.error("scan failed device=%s err=%s", device_path, e)
+            return None
+        except OSError as e:
+            if e.errno not in _ABSENT_ERRNOS:
+                raise
+            logger.warning("drive went absent during scan device=%s — pipeline abandoned", device_path)
+            return None
 
     async def _scan_with_ready_retry(self, device_path: str) -> ScanResult:
         """Scan the disc (`_scan_until_ready`), reporting it as scan activity
@@ -651,41 +714,11 @@ class JobController:
             # An ISO file has no drive to settle: the CDROM_DRIVE_STATUS ioctl
             # below is invalid on a regular file (ENOTTY) and would crash the
             # one-shot source pipeline. Zero titles from a file is final.
-            if is_file_source(device_path):
-                logger.warning("scan: 0 titles from ISO source %s — nothing to retry", device_path)
+            if self._zero_titles_are_final(device_path):
                 return result
 
-            state = read_drive_status(device_path)
-            if state != DriveState.DISC_OK:
-                logger.info(
-                    "scan: 0 titles and drive no longer DISC_OK (state=%s) device=%s — stopping",
-                    state.name,
-                    device_path,
-                )
+            if attempt < SCAN_NOT_READY_MAX_ATTEMPTS and not await self._back_off_before_rescan(device_path, attempt):
                 return result
-
-            if attempt < SCAN_NOT_READY_MAX_ATTEMPTS:
-                backoff = SCAN_NOT_READY_BACKOFFS[attempt - 1]
-                logger.warning(
-                    "scan returned 0 titles while drive=DISC_OK (data not ready?) "
-                    "device=%s titles=0 retry=%d/%d backoff=%.0fs",
-                    device_path,
-                    attempt,
-                    SCAN_NOT_READY_MAX_ATTEMPTS,
-                    backoff,
-                )
-                await asyncio.sleep(backoff)
-                # Re-check status after the sleep — disc may have been pulled
-                # while we were waiting; stop before wasting another scan probe.
-                post_sleep_state = read_drive_status(device_path)
-                if post_sleep_state != DriveState.DISC_OK:
-                    logger.info(
-                        "scan: drive left DISC_OK during backoff (state=%s) device=%s — stopping",
-                        post_sleep_state.name,
-                        device_path,
-                    )
-                    assert last is not None
-                    return result
 
         logger.error(
             "DISC_UNREADABLE_AFTER_RETRIES device=%s drive_state=DISC_OK attempts=%d — "
@@ -698,12 +731,78 @@ class JobController:
         assert last is not None
         return last
 
+    @staticmethod
+    def _zero_titles_are_final(device_path: str) -> bool:
+        """Whether a zero-title scan is the answer rather than a drive still settling: an ISO source has nothing to
+        settle, and a drive no longer DISC_OK has lost its disc."""
+        if is_file_source(device_path):
+            logger.warning("scan: 0 titles from ISO source %s — nothing to retry", device_path)
+            return True
+        state = read_drive_status(device_path)
+        if state != DriveState.DISC_OK:
+            logger.info(
+                "scan: 0 titles and drive no longer DISC_OK (state=%s) device=%s — stopping",
+                state.name,
+                device_path,
+            )
+            return True
+        return False
+
+    @staticmethod
+    async def _back_off_before_rescan(device_path: str, attempt: int) -> bool:
+        """Wait out this attempt's back-off, then report whether the drive still holds its disc and is worth
+        scanning again."""
+        backoff = SCAN_NOT_READY_BACKOFFS[attempt - 1]
+        logger.warning(
+            "scan returned 0 titles while drive=DISC_OK (data not ready?) device=%s titles=0 retry=%d/%d backoff=%.0fs",
+            device_path,
+            attempt,
+            SCAN_NOT_READY_MAX_ATTEMPTS,
+            backoff,
+        )
+        await asyncio.sleep(backoff)
+        # Re-check status after the sleep — disc may have been pulled
+        # while we were waiting; stop before wasting another scan probe.
+        post_sleep_state = read_drive_status(device_path)
+        if post_sleep_state != DriveState.DISC_OK:
+            logger.info(
+                "scan: drive left DISC_OK during backoff (state=%s) device=%s — stopping",
+                post_sleep_state.name,
+                device_path,
+            )
+            return False
+        return True
+
+    async def _identify_or_none(
+        self, scan_result: ScanResult, device_path: str, *, pending_session_id: str | None
+    ) -> Job | None:
+        """Identify the scanned disc, or None when the backend refuses it: a disc ripped before is ejected, and any
+        other rejection parks the pipeline."""
+        try:
+            return await self._identify_with_retry(scan_result, pending_session_id=pending_session_id)
+        except httpx.HTTPStatusError as e:
+            if _previously_ripped(e.response):
+                # on_previously_ripped=reject: the backend made no job
+                # and told the operator; give the disc back.
+                logger.info("disc already ripped (on_previously_ripped=reject); ejecting %s", device_path)
+                await self._eject_with_retry(device_path)
+                return None
+            # Non-retriable identify rejection (e.g. 409 ripping-paused). Park
+            # the pipeline quietly; the caller's claim releases the drive.
+            logger.info(
+                "rip pipeline not started: identify rejected (%s) for drive %s",
+                e.response.status_code,
+                self._drive_id,
+            )
+            return None
+
     async def _identify_with_retry(
         self,
         scan_result: ScanResult,
         *,
         pending_session_id: str | None = None,
     ) -> Job:
+        """Identify the scanned disc, retrying a transient failure and re-raising a 4xx other than 429."""
         delay = IDENTIFY_RETRY_INITIAL_SECONDS
         while True:
             try:
@@ -712,9 +811,9 @@ class JobController:
                     scan_result=scan_result,
                     pending_session_id=pending_session_id,
                 )
-            except httpx.HTTPStatusError as e:
-                status_code = e.response.status_code
-                if 400 <= status_code < 500 and status_code != 429:
+            except httpx.HTTPError as e:
+                status_code = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None
+                if status_code is not None and 400 <= status_code < 500 and status_code != 429:
                     # Non-retriable client error (e.g. 409 ripping-paused). Retrying
                     # spins forever holding _active_lock and deadlocks the drive —
                     # re-raise so the pipeline exits and the lock releases.
@@ -724,10 +823,6 @@ class JobController:
                         self._drive_id,
                     )
                     raise
-                logger.warning("identify failed (%s); retrying in %.1fs", e, delay)
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, IDENTIFY_RETRY_MAX_SECONDS)
-            except httpx.HTTPError as e:
                 logger.warning("identify failed (%s); retrying in %.1fs", e, delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, IDENTIFY_RETRY_MAX_SECONDS)
@@ -771,47 +866,58 @@ class JobController:
         return ("abandon", None)
 
     async def _wait_for_resolution(self, job_id: str, event: asyncio.Event, spec: _WaitSpec) -> JobView | None:
-        # First-wait window: covers the boot race where we missed the
-        # gate-leaving broadcast before subscribing.
-        try:
-            await asyncio.wait_for(event.wait(), timeout=RESOLUTION_WS_FIRST_WAIT_SECONDS)
-        except asyncio.TimeoutError:
-            outcome, view = self._classify_wait(await self._safe_get_job(job_id), job_id, spec)
-            if outcome == "proceed":
-                return view
-            if outcome == "abandon":
-                return None
+        """Wait out the first window, then run long-wait cycles until one settles or the deadline passes; None on
+        abandon or timeout."""
+        outcome, view = await self._first_wait(job_id, event, spec)
+        if outcome != "wait":
+            return view
 
         # Long wait: WS-driven, with periodic REST sanity polls so we
-        # don't hang forever on a torn WS connection. `deadline is None`
-        # means wait indefinitely (source mode): the periodic POLL_MAX_SECONDS
-        # sanity poll below still runs unchanged, just with no ceiling on it.
-        timeout = self._resolution_timeout
-        deadline = None if timeout is None else asyncio.get_event_loop().time() + timeout
+        # don't hang forever on a torn WS connection.
+        deadline = self._resolution_deadline()
         while deadline is None or asyncio.get_event_loop().time() < deadline:
-            woke_via_ws = True
-            try:
-                await asyncio.wait_for(event.wait(), timeout=POLL_MAX_SECONDS)
-            except asyncio.TimeoutError:
-                woke_via_ws = False  # periodic sanity poll — handles torn WS connections
-            view = await self._safe_get_job(job_id)
-            outcome, proceed_view = self._classify_wait(view, job_id, spec)
-            if outcome == "proceed":
-                return proceed_view
-            if outcome == "abandon":
-                return None
-            # Still parked. Timed review gate: if the countdown has elapsed and the
-            # disc is not paused, auto-start — return the parked view so the
-            # pipeline proceeds to _run_rip (rip-start transitions the status).
-            if spec.timed and view is not None and await self._review_countdown_expired(view):
-                logger.info("job %s review countdown elapsed; auto-starting rip", job_id)
+            outcome, view = await self._wait_cycle(job_id, event, spec)
+            if outcome != "wait":
                 return view
-            # If a WS wake was spurious, clear+re-arm the Event.
-            if woke_via_ws:
-                event.clear()
 
-        logger.warning("job %s %s wait timed out after %.0fs", job_id, spec.label, timeout)
+        logger.warning("job %s %s wait timed out after %.0fs", job_id, spec.label, self._resolution_timeout)
         return None
+
+    def _resolution_deadline(self) -> float | None:
+        """The event-loop time at which a resolution wait gives up, or None to wait indefinitely (source mode). With
+        no deadline the periodic POLL_MAX_SECONDS sanity poll still runs, just with no ceiling on it."""
+        timeout = self._resolution_timeout
+        return None if timeout is None else asyncio.get_event_loop().time() + timeout
+
+    async def _first_wait(self, job_id: str, event: asyncio.Event, spec: _WaitSpec) -> tuple[str, JobView | None]:
+        """The short first wait for a WS wake. On a timeout, one REST read covers a gate-leaving broadcast that went
+        out before the subscription was up. Returns the `_classify_wait` outcome, or ("wait", None) after a wake."""
+        if await _woken_within(event, RESOLUTION_WS_FIRST_WAIT_SECONDS):
+            return ("wait", None)
+        return self._classify_wait(await self._safe_get_job(job_id), job_id, spec)
+
+    async def _wait_cycle(self, job_id: str, event: asyncio.Event, spec: _WaitSpec) -> tuple[str, JobView | None]:
+        """One long-wait cycle: wait up to POLL_MAX_SECONDS for a wake, re-read the job and decide. Returns ("proceed",
+        view), ("abandon", None) or ("wait", None); a wake that finds the job still parked re-arms the Event."""
+        # A timeout is the periodic sanity poll that handles torn WS connections.
+        woke_via_ws = await _woken_within(event, POLL_MAX_SECONDS)
+        view = await self._safe_get_job(job_id)
+        outcome, proceed_view = self._classify_wait(view, job_id, spec)
+        if outcome != "wait":
+            return (outcome, proceed_view)
+        # Still parked. At a timed review gate whose countdown ran out, auto-start: return
+        # the parked view so the pipeline proceeds to _run_rip (rip-start transitions the status).
+        if await self._auto_start_due(view, spec):
+            logger.info("job %s review countdown elapsed; auto-starting rip", job_id)
+            return ("proceed", view)
+        # If a WS wake was spurious, clear+re-arm the Event.
+        if woke_via_ws:
+            event.clear()
+        return ("wait", None)
+
+    async def _auto_start_due(self, view: JobView | None, spec: _WaitSpec) -> bool:
+        """True when a still-parked job sits at a timed review gate whose countdown has run out (and is not paused)."""
+        return spec.timed and view is not None and await self._review_countdown_expired(view)
 
     async def _review_countdown_expired(self, view: JobView) -> bool:
         """True when a held disc may start by itself (`stop_may_start`, the rule
@@ -828,14 +934,18 @@ class JobController:
             # The episode placement is a guess: never auto-start on it. Start
             # rip by hand still works; the hold lifts when a Fix match or a
             # re-run leaves a confident placement.
-            if view.id not in self._held_for_guess:
-                self._held_for_guess.add(view.id)
-                logger.info("job %s: countdown held, its episode placement is a guess", view.id)
+            self._note_guess_hold(view.id)
             return False
         cfg = await self._safe_get_ripper_config()
         if cfg is None:
             return False
         return stop_may_start(cfg, view, datetime.now(timezone.utc))
+
+    def _note_guess_hold(self, job_id: str) -> None:
+        """Log, once per job, that its countdown is held because its episode placement is a guess."""
+        if job_id not in self._held_for_guess:
+            self._held_for_guess.add(job_id)
+            logger.info("job %s: countdown held, its episode placement is a guess", job_id)
 
     async def _safe_get_job(self, job_id: str) -> JobView | None:
         try:
@@ -844,16 +954,19 @@ class JobController:
             logger.warning("get_job %s failed (%s); will retry on next signal", job_id, e)
             return None
 
-    async def _safe_get_ripper_config(self) -> RipperConfigView | None:
-        """Ripper config (ripping_paused, manual_wait_seconds,
-        review_requires_confirm) for the review countdown. None on transport
-        error → the caller treats it as 'can't tell; keep waiting' (fail-safe:
-        never auto-rip on a config blip)."""
+    async def _ripper_config_or_none(self, what: str, fallback: str) -> RipperConfigView | None:
+        """The ripper config, or None after a warning when the backend can't be reached."""
         try:
             return await self._client.get_ripper_config()
         except httpx.HTTPError as e:
-            logger.warning("get_ripper_config failed (%s); keeping countdown suspended", e)
+            logger.warning("%s failed (%s); %s", what, e, fallback)
             return None
+
+    async def _safe_get_ripper_config(self) -> RipperConfigView | None:
+        """Ripper config (ripping_paused, manual_wait_seconds,
+        review_requires_confirm) for the review countdown. None on transport error → the caller treats it as 'can't tell;
+        keep waiting' (fail-safe: never auto-rip on a config blip)."""
+        return await self._ripper_config_or_none("get_ripper_config", "keeping countdown suspended")
 
     async def _configured_makemkv_key(self) -> str | None:
         """The operator's UI-set MakeMKV key, or None to fall back to the
@@ -863,31 +976,28 @@ class JobController:
         error we return None, which leaves the legacy env/scrape behaviour
         intact rather than wiping a key the operator already configured.
         """
-        try:
-            cfg = await self._client.get_ripper_config()
-        except httpx.HTTPError as e:
-            logger.warning("makemkv key lookup failed (%s); using env/scrape fallback", e)
-            return None
-        return cfg.makemkv_key
+        cfg = await self._ripper_config_or_none("makemkv key lookup", "using env/scrape fallback")
+        return None if cfg is None else cfg.makemkv_key
 
     async def _community_keydb_enabled(self) -> bool:
         """Whether the operator has the community-keydb auto-fetch enabled.
         Fail-open to True (the default) so a flapping backend doesn't silently
         disable the feature."""
-        try:
-            cfg = await self._client.get_ripper_config()
-        except httpx.HTTPError as e:
-            logger.warning("community keydb toggle lookup failed (%s); defaulting enabled", e)
-            return True
-        return cfg.community_keydb_enabled
+        cfg = await self._ripper_config_or_none("community keydb toggle lookup", "defaulting enabled")
+        return True if cfg is None else cfg.community_keydb_enabled
+
+    async def _prepare_makemkv(self) -> None:
+        """Get MakeMKV ready for a disc: refresh its key now, and start the KEYDB and SDF
+        refreshes in the background."""
+        await refresh_makemkv_key(key=await self._configured_makemkv_key())
+        self._spawn_keydb_refresh(enabled=await self._community_keydb_enabled())
+        self._spawn_sdf_refresh(enabled=await self._makemkv_sdf_enabled())
 
     def _spawn_keydb_refresh(self, *, enabled: bool) -> None:
         """Fire-and-forget community-keydb refresh. The rip proceeds immediately
         with the on-disk keydb; a fresh keydb benefits the next rip. Errors are
         swallowed — a keydb hiccup must never abort a rip."""
-        task = asyncio.create_task(self._keydb_refresh_and_report(enabled=enabled))
-        self._keydb_tasks.add(task)
-        task.add_done_callback(self._keydb_tasks.discard)
+        _spawn_tracked(self._keydb_refresh_and_report(enabled=enabled), self._keydb_tasks)
 
     async def _keydb_refresh_and_report(self, *, enabled: bool) -> None:
         try:
@@ -911,20 +1021,14 @@ class JobController:
     async def _makemkv_sdf_enabled(self) -> bool:
         """Whether the operator has the MakeMKV SDF auto-refresh enabled.
         Fail-open to True so a flapping backend doesn't silently disable it."""
-        try:
-            cfg = await self._client.get_ripper_config()
-        except httpx.HTTPError as e:
-            logger.warning("makemkv sdf toggle lookup failed (%s); defaulting enabled", e)
-            return True
-        return cfg.makemkv_sdf_enabled
+        cfg = await self._ripper_config_or_none("makemkv sdf toggle lookup", "defaulting enabled")
+        return True if cfg is None else cfg.makemkv_sdf_enabled
 
     def _spawn_sdf_refresh(self, *, enabled: bool) -> None:
         """Fire-and-forget MakeMKV SDF refresh. The rip proceeds immediately
         with the on-disk SDF; a fresh SDF benefits the next rip. Errors are
         swallowed — an SDF hiccup must never abort a rip."""
-        task = asyncio.create_task(self._sdf_refresh_and_report(enabled=enabled))
-        self._sdf_tasks.add(task)
-        task.add_done_callback(self._sdf_tasks.discard)
+        _spawn_tracked(self._sdf_refresh_and_report(enabled=enabled), self._sdf_tasks)
 
     async def _sdf_refresh_and_report(self, *, enabled: bool) -> None:
         try:
@@ -962,23 +1066,17 @@ class JobController:
         the disc never ripped. A re-parked disc waits for an explicit Start; it
         does not auto-rip on boot even if its countdown had expired.
         """
-        async with self._active_lock:
-            self._active_task = asyncio.current_task()
-            self._active_job_id = job.id
-            try:
-                with with_log_context(job_id=job.id):
-                    logger.info("reboot recovery: re-parking held job %s", job.id)
-                    resolved = await self._await_resolution(job.id, _REVIEW_WAIT)
-                    if resolved is None:
-                        return
-                    job = resolved
-                    if job.status not in (JobStatus.IDENTIFIED, JobStatus.RIPPING):
-                        logger.info("recovered job %s in status %s; not ripping", job.id, job.status.value)
-                        return
-                    await self._run_rip(job, device_path)
-            finally:
-                self._active_task = None
-                self._active_job_id = None
+        async with self._claim(job.id):
+            with with_log_context(job_id=job.id):
+                logger.info("reboot recovery: re-parking held job %s", job.id)
+                resolved = await self._await_resolution(job.id, _REVIEW_WAIT)
+                if resolved is None:
+                    return
+                job = resolved
+                if job.status not in (JobStatus.IDENTIFIED, JobStatus.RIPPING):
+                    logger.info("recovered job %s in status %s; not ripping", job.id, job.status.value)
+                    return
+                await self._run_rip(job, device_path)
 
     async def resume_inflight_job(self, job: JobView, device_path: str) -> None:
         """Phase 9 — drive a crash-recovered rip from the boot probe.
@@ -992,27 +1090,19 @@ class JobController:
         `is_idle()` False (no double-rip from the heartbeat re-probe or from
         a reattach boot probe).
         """
-        async with self._active_lock:
-            self._active_task = asyncio.current_task()
-            self._active_job_id = job.id
-            try:
-                with with_log_context(job_id=job.id):
-                    # Crash-resume skips the scan path, so refresh the key here too —
-                    # a rip resumed days after a crash must not run on a stale key.
-                    await refresh_makemkv_key(key=await self._configured_makemkv_key())
-                    self._spawn_keydb_refresh(enabled=await self._community_keydb_enabled())
-                    self._spawn_sdf_refresh(enabled=await self._makemkv_sdf_enabled())
-                    rip_start = await self._client.resume(job.id)
-                    logger.info("rip-resume job_id=%s tracks=%d", job.id, len(rip_start.tracks))
-                    await self._execute_rip(
-                        job_id=job.id,
-                        disc_type=job.disc_type,
-                        device_path=device_path,
-                        rip_start=rip_start,
-                    )
-            finally:
-                self._active_task = None
-                self._active_job_id = None
+        async with self._claim(job.id):
+            with with_log_context(job_id=job.id):
+                # Crash-resume skips the scan path, so refresh the key here too —
+                # a rip resumed days after a crash must not run on a stale key.
+                await self._prepare_makemkv()
+                rip_start = await self._client.resume(job.id)
+                logger.info("rip-resume job_id=%s tracks=%d", job.id, len(rip_start.tracks))
+                await self._execute_rip(
+                    job_id=job.id,
+                    disc_type=job.disc_type,
+                    device_path=device_path,
+                    rip_start=rip_start,
+                )
 
     async def _execute_rip(
         self,
@@ -1219,7 +1309,7 @@ class JobController:
                 # A backup an earlier pass finished was reused, so nothing gave the disc back yet.
                 run.drive_released = True
                 await self._eject_with_retry(self._device_path or device_path)
-            await self._end_rip_with_retry("rip-parked", self._client.rip_parked, job_id)
+            await self._retry_backend_call(lambda: self._client.rip_parked(job_id), f"rip-parked {job_id}")
             logger.info("rip-parked job_id=%s: backed up; its titles wait to be chosen", job_id)
             return
         completed = await self._rip_complete_with_retry(job_id)
@@ -1276,11 +1366,7 @@ class JobController:
         self, tracks: list[TrackView], unfinished: set[str], started: set[str], resumes: int
     ) -> None:
         """The drive did not come back: fail what it left, saying why."""
-        reason = (
-            f"the drive disconnected mid-rip and did not come back within {DEVICE_RETURN_WAIT_SECONDS:.0f}s"
-            if resumes < MAX_DEVICE_RESUMES
-            else f"the drive disconnected mid-rip {resumes + 1} times; giving up"
-        )
+        reason = _disconnect_reason(resumes)
         logger.error("%s; %d title(s) not ripped", reason, len(unfinished))
         for track in tracks:
             if track.id not in unfinished:
@@ -1322,13 +1408,23 @@ class JobController:
             logger.info("eject skipped: source is ISO file %s", device_path)
             return
         await self._run_command("umount", device_path, log_failure=False)
+        if not await self._try_eject(device_path):
+            logger.error(
+                "eject %s failed after %d attempts; check host auto-mount config",
+                device_path,
+                len(EJECT_RETRY_DELAYS),
+            )
+
+    async def _try_eject(self, device_path: str) -> bool:
+        """Run eject once per EJECT_RETRY_DELAYS entry, waiting that long first, until one succeeds; True if one
+        did."""
         for attempt, delay in enumerate(EJECT_RETRY_DELAYS, start=1):
             if delay > 0:
                 await asyncio.sleep(delay)
             rc, stderr = await self._run_command("eject", "-sv", device_path)
             if rc == 0:
                 logger.info("ejected %s on attempt %d", device_path, attempt)
-                return
+                return True
             logger.warning(
                 "eject %s attempt %d failed (rc=%s): %s",
                 device_path,
@@ -1336,12 +1432,7 @@ class JobController:
                 rc,
                 stderr or "<no stderr>",
             )
-
-        logger.error(
-            "eject %s failed after %d attempts; check host auto-mount config",
-            device_path,
-            len(EJECT_RETRY_DELAYS),
-        )
+        return False
 
     @staticmethod
     async def _run_command(*argv: str, log_failure: bool = True) -> tuple[int | None, str]:
@@ -1377,35 +1468,28 @@ class JobController:
             return False
         return True
 
-    async def _rip_start_with_retry(self, job_id: str) -> RipStartResponse:
+    async def _retry_backend_call[T](self, call: Callable[[], Awaitable[T]], what: str) -> T:
+        """Run one backend call, retrying a transient failure with doubling backoff up to PATCH_RETRY_MAX_SECONDS and
+        re-raising a rejection."""
         delay = PATCH_RETRY_INITIAL_SECONDS
         while True:
             try:
-                return await self._client.rip_start(job_id)
+                return await call()
             except httpx.HTTPError as e:
                 if not self._is_retryable(e):
-                    logger.error("rip-start %s rejected by backend (%s); giving up", job_id, e)
+                    logger.error("%s rejected by backend (%s); giving up", what, e)
                     raise
-                logger.warning("rip-start %s failed (%s); retrying in %.1fs", job_id, e, delay)
+                logger.warning("%s failed (%s); retrying in %.1fs", what, e, delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, PATCH_RETRY_MAX_SECONDS)
+
+    async def _rip_start_with_retry(self, job_id: str) -> RipStartResponse:
+        """Mark the job ripping on the backend, retrying a transient failure."""
+        return await self._retry_backend_call(lambda: self._client.rip_start(job_id), f"rip-start {job_id}")
 
     async def _rip_complete_with_retry(self, job_id: str) -> JobView:
-        return await self._end_rip_with_retry("rip-complete", self._client.rip_complete, job_id)
-
-    async def _end_rip_with_retry(self, name: str, call: Callable[[str], Awaitable[JobView]], job_id: str) -> JobView:
-        """`call(job_id)` (rip-complete or rip-parked), retried with backoff while the backend can't be reached."""
-        delay = PATCH_RETRY_INITIAL_SECONDS
-        while True:
-            try:
-                return await call(job_id)
-            except httpx.HTTPError as e:
-                if not self._is_retryable(e):
-                    logger.error("%s %s rejected by backend (%s); giving up", name, job_id, e)
-                    raise
-                logger.warning("%s %s failed (%s); retrying in %.1fs", name, job_id, e, delay)
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, PATCH_RETRY_MAX_SECONDS)
+        """Mark the job's rip complete on the backend, retrying a transient failure."""
+        return await self._retry_backend_call(lambda: self._client.rip_complete(job_id), f"rip-complete {job_id}")
 
     async def _publish_progress(
         self, job_id: str, track_id: str, fraction: float, stats: TransferStats | None = None
@@ -1432,18 +1516,8 @@ class JobController:
         )
 
     async def _patch_track_with_retry(self, track_id: str, **fields: object) -> None:
-        delay = PATCH_RETRY_INITIAL_SECONDS
-        while True:
-            try:
-                await self._client.update_track(track_id, **fields)
-                return
-            except httpx.HTTPError as e:
-                if not self._is_retryable(e):
-                    logger.error("PATCH track %s rejected by backend (%s); giving up", track_id, e)
-                    raise
-                logger.warning("PATCH track %s failed (%s); retrying in %.1fs", track_id, e, delay)
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, PATCH_RETRY_MAX_SECONDS)
+        """PATCH one track's fields on the backend, retrying a transient failure."""
+        await self._retry_backend_call(lambda: self._client.update_track(track_id, **fields), f"PATCH track {track_id}")
 
 
 class _MenuRow:
