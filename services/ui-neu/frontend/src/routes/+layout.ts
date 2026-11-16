@@ -2,6 +2,8 @@ import { redirect } from '@sveltejs/kit';
 import type { LayoutLoad } from './$types';
 import { hydrateConfig } from '$lib/stores/config';
 import { getToken } from '$lib/api/client';
+import { persistedRole } from '$lib/stores/auth';
+import { probeFirstRun, probeGuestAccess } from '$lib/api/probes';
 
 export const prerender = false;
 export const ssr = false;
@@ -27,61 +29,57 @@ let anonymousVisitAllowedCached = false;
 // fetch, not the API client, whose 401 handler must not fire for a probe.
 async function anonymousVisitAllowed(fetchFn: typeof fetch): Promise<boolean> {
 	if (anonymousVisitAllowedCached || getToken() !== null) return true;
-	try {
-		const resp = await fetchFn('/api/system/version');
-		if (resp.status === 401) return false;
-	} catch {
-		// ARM unreachable - let the normal UI handle it
-	}
+	if ((await probeGuestAccess(fetchFn)) === 'closed') return false;
 	anonymousVisitAllowedCached = true;
 	return true;
 }
 
 function isAdminSession(): boolean {
 	try {
-		return getToken() !== null && localStorage.getItem('arm_role') === 'admin';
+		return getToken() !== null && persistedRole() === 'admin';
 	} catch {
 		return false;
 	}
 }
 
-export const load: LayoutLoad = async ({ url, fetch }) => {
-	// The sign-in pages need neither the config nor a session.
-	if (url.pathname.startsWith('/login') || url.pathname.startsWith('/change-password')) return {};
+// The sign-in pages need neither the config nor a session.
+function isSignInPage(url: URL): boolean {
+	return url.pathname.startsWith('/login') || url.pathname.startsWith('/change-password');
+}
 
-	if (!(await anonymousVisitAllowed(fetch))) redirect(307, '/login');
+async function hydrateConfigOnce(): Promise<void> {
+	if (configHydrated) return;
+	await hydrateConfig();
+	configHydrated = true;
+}
 
-	if (!configHydrated) {
-		await hydrateConfig();
-		configHydrated = true;
-	}
-
+function skipsSetupCheck(url: URL): boolean {
 	// The walkthrough itself.
-	if (url.pathname.startsWith('/setup')) return {};
+	if (url.pathname.startsWith('/setup')) return true;
 
 	// Skip if we already know setup is done (cached from a previous navigation)
-	if (setupConfirmedComplete) return {};
+	if (setupConfirmedComplete) return true;
 
 	// Only the admin runs setup; guests browse normally. "Finish later" is
 	// server-wide: the status endpoint then reports first_run=false.
-	if (!isAdminSession()) return {};
+	return !isAdminSession();
+}
 
-	try {
-		const resp = await fetch('/api/setup/status');
-		if (resp.ok) {
-			const status = await resp.json();
-			if (status.first_run === true) {
-				redirect(307, '/setup');
-			}
-			// Setup is complete or deferred - cache this so we don't re-check on every click
-			setupConfirmedComplete = true;
-		}
-		// Non-ok response (503, etc.) - ARM unreachable, don't redirect
-	} catch (e) {
-		// Re-throw SvelteKit redirects (they use throw internally)
-		if (e && typeof e === 'object' && 'status' in e && 'location' in e) throw e;
-		// ARM unreachable - don't redirect, let the normal UI handle it
-	}
+export const load: LayoutLoad = async ({ url, fetch }) => {
+	if (isSignInPage(url)) return {};
+
+	if (!(await anonymousVisitAllowed(fetch))) redirect(307, '/login');
+
+	await hydrateConfigOnce();
+
+	if (skipsSetupCheck(url)) return {};
+
+	// null = ARM unreachable or erroring (503, etc.): don't redirect, let the
+	// normal UI handle it.
+	const firstRun = await probeFirstRun(fetch);
+	if (firstRun === true) redirect(307, '/setup');
+	// Setup is complete or deferred - cache this so we don't re-check on every click
+	if (firstRun === false) setupConfirmedComplete = true;
 
 	return {};
 };

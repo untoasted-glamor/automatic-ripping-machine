@@ -36,7 +36,6 @@ vi.mock('$lib/api/jobs', () => ({
 	searchMusicMetadata: vi.fn(),
 	fetchMusicDetail: vi.fn(),
 	updateJobTitle: vi.fn(() => Promise.resolve(createJob())),
-	updateJobConfig: vi.fn(() => Promise.resolve(createJob())),
 	updateTrackTitle: vi.fn(() => Promise.resolve(createJob())),
 	clearTrackTitle: vi.fn(() => Promise.resolve(createJob())),
 	fetchNamingVariables: vi.fn(() => Promise.resolve({ variables: {} })),
@@ -44,10 +43,6 @@ vi.mock('$lib/api/jobs', () => ({
 	validatePattern: vi.fn(() => Promise.resolve({ valid: true })),
 	fetchTrackSelection: vi.fn(() => Promise.reject(new Error('not loaded'))),
 	saveTrackSelection: vi.fn()
-}));
-
-vi.mock('$lib/api/settings', () => ({
-	fetchTranscoderPresets: vi.fn(() => Promise.resolve(null))
 }));
 
 // ApplySessionDialog (opened by the "Apply session" button) fetches these.

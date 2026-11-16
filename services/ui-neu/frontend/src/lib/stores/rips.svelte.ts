@@ -8,7 +8,6 @@
 // runes idiom (module-level $state, like lib/stores/toast.svelte.ts).
 
 import { wsClient, type WSEnvelope } from '$lib/api/ws';
-import { formatBytes } from '$lib/utils/format';
 
 interface RipperProgressPayload {
 	track_id: string;
@@ -91,64 +90,58 @@ export function reconcileSubscriptions(activeRippingJobIds: string[]): void {
 	}
 }
 
-export function onProgress(jobId: string, env: WSEnvelope): void {
-	const payload = env.payload as unknown as RipperProgressPayload;
-	const now = Date.now();
-	const bytes = {
+type ByteFields = Pick<RipLiveProgress, 'bytes_done' | 'bytes_total' | 'rate_bps' | 'phase'>;
+
+function readBytes(payload: RipperProgressPayload): ByteFields {
+	return {
 		bytes_done: payload.bytes_done ?? null,
 		bytes_total: payload.bytes_total ?? null,
 		rate_bps: payload.rate_bps ?? null,
 		phase: payload.phase ?? null
 	};
-	const byteEta =
-		bytes.rate_bps && bytes.rate_bps > 0 && bytes.bytes_total != null && bytes.bytes_done != null
-			? Math.round(Math.max(0, bytes.bytes_total - bytes.bytes_done) / bytes.rate_bps)
-			: null;
-	const baseline = baselines[jobId];
-	// First tick for this track (or track changed) → reset baseline; ETA stays
-	// null until enough has accumulated. Also reset on a sustained backwards
-	// jump (>1 pp) — defensive against a non-monotonic sequence under a stable
-	// track_id; without it pctDelta goes negative and ETA hangs at null.
-	if (baseline === undefined || baseline.trackId !== payload.track_id || payload.progress_pct < baseline.atPct - 1) {
-		baselines[jobId] = { trackId: payload.track_id, atMs: now, atPct: payload.progress_pct };
-		ripProgress.value = {
-			...ripProgress.value,
-			[jobId]: { track_id: payload.track_id, progress_pct: payload.progress_pct, eta_seconds: byteEta, ...bytes }
-		};
-		return;
-	}
+}
+
+function byteEta(bytes: ByteFields): number | null {
+	return bytes.rate_bps && bytes.rate_bps > 0 && bytes.bytes_total != null && bytes.bytes_done != null
+		? Math.round(Math.max(0, bytes.bytes_total - bytes.bytes_done) / bytes.rate_bps)
+		: null;
+}
+
+// First tick for this track (or track changed) → reset baseline; ETA stays
+// null until enough has accumulated. Also reset on a sustained backwards
+// jump (>1 pp) — defensive against a non-monotonic sequence under a stable
+// track_id; without it pctDelta goes negative and ETA hangs at null.
+function isStaleBaseline(baseline: RipBaseline, payload: RipperProgressPayload): boolean {
+	return baseline.trackId !== payload.track_id || payload.progress_pct < baseline.atPct - 1;
+}
+
+function percentEta(baseline: RipBaseline, payload: RipperProgressPayload, now: number): number | null {
 	const elapsedMs = now - baseline.atMs;
 	const pctDelta = payload.progress_pct - baseline.atPct;
-	let eta: number | null = null;
 	if (elapsedMs > ETA_MIN_ELAPSED_MS && pctDelta > ETA_MIN_DELTA) {
 		const pctPerMs = pctDelta / elapsedMs;
 		const remainingPct = Math.max(0, 100 - payload.progress_pct);
-		eta = Math.round(remainingPct / pctPerMs / 1000);
+		return Math.round(remainingPct / pctPerMs / 1000);
 	}
+	return null;
+}
+
+function writeLive(jobId: string, payload: RipperProgressPayload, etaSeconds: number | null, bytes: ByteFields): void {
 	ripProgress.value = {
 		...ripProgress.value,
-		[jobId]: { track_id: payload.track_id, progress_pct: payload.progress_pct, eta_seconds: byteEta ?? eta, ...bytes }
+		[jobId]: { track_id: payload.track_id, progress_pct: payload.progress_pct, eta_seconds: etaSeconds, ...bytes }
 	};
 }
 
-/** "12.3 GB of 20.9 GB · 45.1 MB/s" for a byte copy, or null when none was reported. */
-export function formatTransfer(live: RipLiveProgress | null | undefined): string | null {
-	if (!live || live.bytes_done == null) return null;
-	const parts = [
-		live.bytes_total != null
-			? `${formatBytes(live.bytes_done)} of ${formatBytes(live.bytes_total)}`
-			: formatBytes(live.bytes_done)
-	];
-	if (live.rate_bps != null && live.rate_bps > 0) parts.push(`${formatBytes(live.rate_bps)}/s`);
-	return parts.join(' · ');
-}
-
-export function formatEta(seconds: number): string {
-	if (seconds < 60) return '< 1m';
-	const h = Math.floor(seconds / 3600);
-	const m = Math.floor((seconds % 3600) / 60);
-	const s = seconds % 60;
-	if (h > 0) return `${h}h ${m}m`;
-	if (m >= 5) return `${m}m`;
-	return `${m}m ${s}s`;
+export function onProgress(jobId: string, env: WSEnvelope): void {
+	const payload = env.payload as unknown as RipperProgressPayload;
+	const now = Date.now();
+	const bytes = readBytes(payload);
+	const baseline = baselines[jobId];
+	if (baseline === undefined || isStaleBaseline(baseline, payload)) {
+		baselines[jobId] = { trackId: payload.track_id, atMs: now, atPct: payload.progress_pct };
+		writeLive(jobId, payload, byteEta(bytes), bytes);
+		return;
+	}
+	writeLive(jobId, payload, byteEta(bytes) ?? percentEta(baseline, payload, now), bytes);
 }

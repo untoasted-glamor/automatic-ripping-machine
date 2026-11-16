@@ -170,61 +170,58 @@ export function setJobMediaType(jobId: string, mediaType: 'movie' | 'tv'): Promi
 	return patchJob(jobId, { media_type: mediaType });
 }
 
-export function updateJobConfig(jobId: string, data: JobUpdateRequest): Promise<JobView> {
-	return patchJob(jobId, data);
-}
-
 // ---------------------------------------------------------------------------
 // Identify / resolve + apply-session (EXISTS in v3)
 // ---------------------------------------------------------------------------
+
+export interface ResolveJobBody {
+	title: string;
+	year?: number | null;
+	season?: number | null;
+	disc_number?: number | null;
+	disc_total?: number | null;
+	media_type?: MediaType | null;
+	music?: MusicMeta;
+	external_ids?: ExternalIds | null;
+	match?: ResolveMatch;
+}
 
 // v3 POST /api/jobs/{id}/resolve  body: ResolveRequest { title, year?, season?, disc_number?, disc_total?, media_type?, music? }.
 // Stamps the chosen identity onto the job (status → identified). `year` defaults
 // to null; `music`/`media_type` are only sent by callers that have something
 // typed to say; `external_ids` and `match` carry a picked candidate (the free-form `metadata` bag is gone — unknown keys 422).
-//
+export function resolveJob(jobId: string, body: ResolveJobBody): Promise<ResolveResponse> {
+	return post<ResolveResponse>(`/api/jobs/${jobId}/resolve`, buildResolvePayload(body));
+}
+
+// In wire order; a key the caller left undefined is not sent.
+const OPTIONAL_RESOLVE_KEYS = [
+	'season',
+	'disc_number',
+	'disc_total',
+	'media_type',
+	'music',
+	'external_ids',
+	'match'
+] as const satisfies readonly (keyof ResolveJobBody)[];
+
 // season/disc_number/disc_total are a classification like media_type on the
 // Backend, not part of the identity statement: omitted keeps whatever value
 // is already stored (a disc-hint source may have filled it before the
 // operator ever opened the identify dialog -- Review Focus 5), while an
 // explicit `null` is the operator clearing it. `!== undefined` is the only
 // way to tell "the caller didn't pass this" from "the caller passed null".
-export function resolveJob(
-	jobId: string,
-	body: {
-		title: string;
-		year?: number | null;
-		season?: number | null;
-		disc_number?: number | null;
-		disc_total?: number | null;
-		media_type?: MediaType | null;
-		music?: MusicMeta;
-		external_ids?: ExternalIds | null;
-		match?: ResolveMatch;
-	}
-): Promise<ResolveResponse> {
+function buildResolvePayload(body: ResolveJobBody): Record<string, unknown> {
 	const payload: Record<string, unknown> = {
 		title: body.title,
 		year: body.year ?? null
 	};
-	if (body.season !== undefined) {
-		payload.season = body.season;
+	for (const key of OPTIONAL_RESOLVE_KEYS) {
+		if (body[key] !== undefined) {
+			payload[key] = body[key];
+		}
 	}
-	if (body.disc_number !== undefined) {
-		payload.disc_number = body.disc_number;
-	}
-	if (body.disc_total !== undefined) {
-		payload.disc_total = body.disc_total;
-	}
-	payload.media_type = body.media_type;
-	payload.music = body.music;
-	if (body.external_ids !== undefined) {
-		payload.external_ids = body.external_ids;
-	}
-	if (body.match !== undefined) {
-		payload.match = body.match;
-	}
-	return post<ResolveResponse>(`/api/jobs/${jobId}/resolve`, payload);
+	return payload;
 }
 
 // v3 POST /api/jobs/manual  body: ManualTriggerRequest { drive_id, session_id? }.
@@ -387,8 +384,6 @@ export function fetchNamingVariables(): Promise<NamingVariablesResponse> {
 	return apiFetch<NamingVariablesResponse>('/api/naming/variables');
 }
 
-// Timed review gate: operator Start for a disc held in awaiting_review.
-// Transitions AWAITING_REVIEW -> RIPPING and unblocks the parked ripper.
 // on_previously_ripped: rip a ripped job's disc again. Starts a held copy of
 // the disc if one is waiting, otherwise lets the next insert through once.
 // Queue a ripped job's failed titles again (POST /api/jobs/{id}/retry-failed).
@@ -406,6 +401,8 @@ export function acceptIdentitySuggestion(jobId: string): Promise<ResolveResponse
 	return post<ResolveResponse>(`/api/jobs/${jobId}/identity/accept`);
 }
 
+// Timed review gate: operator Start for a disc held in awaiting_review.
+// Transitions AWAITING_REVIEW -> RIPPING and unblocks the parked ripper.
 export function startWaitingJob(id: string): Promise<JobView> {
 	return apiFetch<JobView>(`/api/jobs/${id}/rip-start-review`, { method: 'POST' });
 }
