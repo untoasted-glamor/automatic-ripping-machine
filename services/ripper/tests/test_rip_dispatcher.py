@@ -2636,6 +2636,7 @@ async def test_a_retry_remuxes_only_the_failed_title_from_the_kept_backup(monkey
     """The remux lane runs beside a rip of the next disc (the disc lane held), never touching the drive.
     Any remux leaves the DONE titles out, a retry or not; only a retry rips into a folder of its own."""
     import arm_ripper.job_controller as jc_module
+    import arm_ripper.makemkv_prep as makemkv_prep_module
     from arm_ripper.drive_handle import DriveHandle
     from arm_ripper.eject import Ejector
     from arm_ripper.job_controller import JobController
@@ -2666,7 +2667,7 @@ async def test_a_retry_remuxes_only_the_failed_title_from_the_kept_backup(monkey
     async def no_key(**_kw: Any) -> None:
         return None
 
-    monkeypatch.setattr(jc_module, "refresh_makemkv_key", no_key)
+    monkeypatch.setattr(makemkv_prep_module, "refresh_makemkv_key", no_key)
     ejected: list[str] = []
 
     async def eject(self: Any, device_path: str) -> None:
