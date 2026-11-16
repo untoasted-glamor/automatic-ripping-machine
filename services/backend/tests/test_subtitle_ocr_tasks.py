@@ -259,13 +259,13 @@ async def test_orphan_sweep_counts_encodes_only() -> None:
     app = db.rows["session_applications"][0]
     app.status, app.created_at = SessionApplicationStatus.RUNNING, old
     disp = _dispatcher(db, MagicMock())
-    assert await disp.sweep_orphaned_applications(db) == 1  # type: ignore[arg-type]
+    assert await disp.sweeps.sweep_orphaned_applications(db) == 1  # type: ignore[arg-type]
     assert app.status == SessionApplicationStatus.DONE
 
     # Only OCR rows left (the encode row was deleted): not a husk.
     db.rows["transcode_tasks"] = [t for t in db.rows["transcode_tasks"] if t.id == "txt_ocr"]
     app.status = SessionApplicationStatus.RUNNING
-    assert await disp.sweep_orphaned_applications(db) == 0  # type: ignore[arg-type]
+    assert await disp.sweeps.sweep_orphaned_applications(db) == 0  # type: ignore[arg-type]
     assert app.status == SessionApplicationStatus.RUNNING
 
 
