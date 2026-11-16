@@ -1,6 +1,6 @@
 // Pure helpers for the LogView log terminal.
 import type { LogEntry } from '$lib/api/logs';
-import { logService, type LogService } from '$lib/utils/log-service';
+import { logService, serviceLabel, type LogService } from '$lib/utils/log-service';
 
 /** A level filter: one level, or every line. */
 export type LogLevelFilter = 'all' | 'error' | 'warning' | 'info' | 'debug';
@@ -60,50 +60,50 @@ export type LogTone = 'warning' | 'danger' | 'debug' | null;
 // tokens), so the chips take fixed-dark recipes mixed towards the ink rather
 // than the mode-flipping tone tokens. Backend tints from primary, ripper
 // from accent-1 (amber) and transcode from accent-3 (violet).
+const CHIP_COLOURS: Record<LogService, { background: string; text: string }> = {
+	backend: {
+		background: 'color-mix(in srgb, var(--color-primary) 26%, transparent)',
+		text: 'color-mix(in srgb, var(--color-primary) 45%, var(--color-terminal-ink))'
+	},
+	ripper: {
+		background: 'color-mix(in srgb, var(--color-accent-1) 28%, transparent)',
+		text: 'color-mix(in srgb, var(--color-accent-1) 60%, var(--color-terminal-ink))'
+	},
+	transcode: {
+		background: 'color-mix(in srgb, var(--color-accent-3) 22%, transparent)',
+		text: 'color-mix(in srgb, var(--color-accent-3) 45%, var(--color-terminal-ink))'
+	},
+	other: {
+		background: 'color-mix(in srgb, var(--color-terminal-ink) 10%, transparent)',
+		text: 'color-mix(in srgb, var(--color-terminal-ink) 70%, transparent)'
+	}
+};
+
 /** The service chip's background colour. */
 export function chipBackground(service: LogService): string {
-	switch (service) {
-		case 'backend':
-			return 'color-mix(in srgb, var(--color-primary) 26%, transparent)';
-		case 'ripper':
-			return 'color-mix(in srgb, var(--color-accent-1) 28%, transparent)';
-		case 'transcode':
-			return 'color-mix(in srgb, var(--color-accent-3) 22%, transparent)';
-		default:
-			return 'color-mix(in srgb, var(--color-terminal-ink) 10%, transparent)';
-	}
+	return CHIP_COLOURS[service].background;
 }
 
 /** The chip's text colour, the partner of `chipBackground`. */
 export function chipText(service: LogService): string {
-	switch (service) {
-		case 'backend':
-			return 'color-mix(in srgb, var(--color-primary) 45%, var(--color-terminal-ink))';
-		case 'ripper':
-			return 'color-mix(in srgb, var(--color-accent-1) 60%, var(--color-terminal-ink))';
-		case 'transcode':
-			return 'color-mix(in srgb, var(--color-accent-3) 45%, var(--color-terminal-ink))';
-		default:
-			return 'color-mix(in srgb, var(--color-terminal-ink) 70%, transparent)';
-	}
+	return CHIP_COLOURS[service].text;
 }
+
+// A Map, not an object literal: a plain object would also answer inherited
+// keys such as 'constructor'.
+const LEVEL_TONES = new Map<string, LogTone>([
+	['warning', 'warning'],
+	['error', 'danger'],
+	['critical', 'danger'],
+	['debug', 'debug']
+]);
 
 /**
  * A line's `data-tone` from its level, matched case-insensitively; null for
  * none.
  */
 export function levelTone(level: string): LogTone {
-	switch ((level ?? '').toLowerCase()) {
-		case 'warning':
-			return 'warning';
-		case 'error':
-		case 'critical':
-			return 'danger';
-		case 'debug':
-			return 'debug';
-		default:
-			return null;
-	}
+	return LEVEL_TONES.get((level ?? '').toLowerCase()) ?? null;
 }
 
 /**
@@ -119,4 +119,14 @@ export function entryTimeLabel(entry: LogEntry): string {
 	// as happening now.
 	if (d.toDateString() === new Date().toDateString()) return time;
 	return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
+}
+
+/**
+ * The plain text Copy writes: one "<time> [<service>] <event>" line per
+ * entry.
+ */
+export function formatCopyText(entries: LogEntry[]): string {
+	return entries
+		.map((e) => `${entryTimeLabel(e)} [${serviceLabel(logService(e.service))}] ${e.event ?? ''}`)
+		.join('\n');
 }

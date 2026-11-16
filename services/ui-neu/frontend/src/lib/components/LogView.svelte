@@ -9,13 +9,17 @@
 		entryTimeLabel,
 		filterEntries,
 		followLabel,
+		formatCopyText,
 		levelTone,
-		matchLabel,
 		type LogLevelFilter,
 		type LogServiceFilter
 	} from '$lib/utils/log-view';
+	import { isTextField } from '$lib/utils/text-field';
 	import { uiPrefs, setUiPref } from '$lib/stores/uiPrefs';
-	import CloseButton from '$lib/components/CloseButton.svelte';
+	import { ClipboardCopy } from '$lib/stores/clipboardCopy.svelte';
+	import { FollowScroll } from '$lib/stores/followScroll.svelte';
+	import LogSearchField from '$lib/components/log-view/LogSearchField.svelte';
+	import LogSegmentGroup from '$lib/components/log-view/LogSegmentGroup.svelte';
 
 	interface Props {
 		entries: LogEntry[];
@@ -49,13 +53,11 @@
 	let levelFilter = $state<LogLevelFilter>('all');
 	let searchText = $state('');
 	let matchCase = $state(false);
-	let following = $state(true);
-	let newWhilePaused = $state(0);
-	let copied = $state(false);
+	const clip = new ClipboardCopy();
 	let frameEl = $state<HTMLDivElement | null>(null);
 	let viewEl = $state<HTMLDivElement | null>(null);
-	let searchEl = $state<HTMLInputElement | null>(null);
-	let copyTimer: ReturnType<typeof setTimeout> | null = null;
+	const follow = new FollowScroll(() => viewEl);
+	let searchField = $state<LogSearchField | null>(null);
 
 	const wrap = $derived($uiPrefs.logWrap);
 
@@ -83,90 +85,29 @@
 		})
 	);
 
-	function isAtBottom(): boolean {
-		if (viewEl === null) return true;
-		return viewEl.scrollHeight - viewEl.scrollTop - viewEl.clientHeight < 24;
-	}
-
-	function onScroll(): void {
-		following = isAtBottom();
-	}
-
-	function jumpToLatest(): void {
-		following = true;
-		scrollToBottom();
-	}
-
-	function scrollToBottom(): void {
-		if (viewEl === null) return;
-		viewEl.scrollTop = viewEl.scrollHeight;
-	}
-
-	function clearSearch(): void {
-		searchText = '';
-		searchEl?.focus();
-	}
-
 	function copyLines(): void {
-		const text = filtered
-			.map((e) => `${entryTimeLabel(e)} [${serviceLabel(logService(e.service))}] ${e.event ?? ''}`)
-			.join('\n');
-		const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard;
-		if (!clipboard) return;
-		clipboard
-			.writeText(text)
-			.then(() => {
-				copied = true;
-				if (copyTimer) clearTimeout(copyTimer);
-				copyTimer = setTimeout(() => (copied = false), 1500);
-			})
-			.catch(() => {
-				/* no clipboard access (http, permissions): the label just stays "Copy" */
-			});
+		clip.copy(formatCopyText(filtered));
 	}
 
 	// "/" focuses the search while focus is somewhere inside the frame and not
 	// already in a text field. Listened on the window (rather than the frame
 	// div) so the frame stays a plain, non-interactive container.
 	function onWindowKeydown(e: KeyboardEvent): void {
-		if (e.key !== '/' || !search || collapsed || searchEl === null || frameEl === null) return;
-		const target = e.target as HTMLElement | null;
-		if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+		if (e.key !== '/' || !search || collapsed || searchField === null || frameEl === null) return;
+		if (isTextField(e.target as HTMLElement | null)) return;
 		if (!frameEl.contains(document.activeElement)) return;
 		e.preventDefault();
-		searchEl.focus();
+		searchField.focus();
 	}
 
-	// Follow new lines while the user hasn't scrolled up; while paused, count
-	// the lines that arrived so the status bar can say how many are waiting.
-	// The terminal div unmounts while collapsed, so a newly bound one (first
-	// render or expand) starts following again at the latest line.
-	let seen = 0;
-	let boundView: HTMLDivElement | null = null;
+	// Tracks the line count, the filter, the bound view and following, and
+	// hands them to follow.sync.
 	$effect(() => {
 		const total = appended ?? entries.length;
 		void filtered.length;
 		const view = viewEl;
-		const follow = following;
-		untrack(() => {
-			seen = Math.min(seen, total);
-			if (view !== boundView) {
-				boundView = view;
-				if (view !== null && !follow) {
-					// re-runs this effect with follow on, which scrolls
-					following = true;
-					seen = total;
-					return;
-				}
-			}
-			if (follow) {
-				newWhilePaused = 0;
-				scrollToBottom();
-			} else if (total > seen) {
-				newWhilePaused += total - seen;
-			}
-			seen = total;
-		});
+		const following = follow.following;
+		untrack(() => follow.sync(total, view, following));
 	});
 </script>
 
@@ -183,62 +124,23 @@
 
 	{#if !collapsed}
 		<div class="log-view-toolbar">
-			<div class="log-view-segment-group" role="radiogroup" aria-label="Log filter">
-				{#each SERVICE_FILTERS as f (f.key)}
-					<button
-						type="button"
-						role="radio"
-						aria-checked={serviceFilter === f.key}
-						data-testid="job-log-filter-{f.key}"
-						onclick={() => {
-							serviceFilter = f.key;
-						}}
-						class="log-view-segment">{f.label}</button
-					>
-				{/each}
-			</div>
+			<LogSegmentGroup
+				label="Log filter"
+				options={SERVICE_FILTERS}
+				value={serviceFilter}
+				testid="job-log-filter"
+				onpick={(k) => (serviceFilter = k)}
+			/>
 			<span class="log-view-divider" aria-hidden="true"></span>
-			<div class="log-view-segment-group" role="radiogroup" aria-label="Log level filter">
-				{#each LEVEL_FILTERS as f (f.key)}
-					<button
-						type="button"
-						role="radio"
-						aria-checked={levelFilter === f.key}
-						data-testid="job-log-level-{f.key}"
-						onclick={() => {
-							levelFilter = f.key;
-						}}
-						class="log-view-segment">{f.label}</button
-					>
-				{/each}
-			</div>
+			<LogSegmentGroup
+				label="Log level filter"
+				options={LEVEL_FILTERS}
+				value={levelFilter}
+				testid="job-log-level"
+				onpick={(k) => (levelFilter = k)}
+			/>
 			{#if search}
-				<div class="log-view-search">
-					<span class="log-view-search-prompt" aria-hidden="true">/</span>
-					<input
-						type="text"
-						bind:value={searchText}
-						bind:this={searchEl}
-						placeholder="Filter lines"
-						aria-label="Filter lines"
-						data-testid="job-log-search"
-					/>
-					{#if searchText}
-						<span class="log-view-search-count" data-testid="job-log-search-count">{matchLabel(filtered.length)}</span>
-						<CloseButton label="Clear filter" class="log-view-search-clear" onclick={clearSearch} />
-					{/if}
-					<button
-						type="button"
-						class="log-view-search-case"
-						aria-pressed={matchCase}
-						aria-label="Match case"
-						title="Match case"
-						data-testid="job-log-search-case"
-						onclick={() => {
-							matchCase = !matchCase;
-						}}>Aa</button
-					>
-				</div>
+				<LogSearchField bind:this={searchField} bind:text={searchText} bind:matchCase matches={filtered.length} />
 			{/if}
 			<div class="log-view-tools">
 				<button
@@ -249,7 +151,7 @@
 					onclick={() => setUiPref('logWrap', !wrap)}>Wrap</button
 				>
 				<button type="button" class="log-view-tool" data-testid="job-log-copy" onclick={copyLines}>
-					<span aria-live="polite">{copied ? 'Copied' : 'Copy'}</span>
+					<span aria-live="polite">{clip.copied ? 'Copied' : 'Copy'}</span>
 				</button>
 			</div>
 		</div>
@@ -257,7 +159,7 @@
 		<div class="relative">
 			<div
 				bind:this={viewEl}
-				onscroll={onScroll}
+				onscroll={follow.onScroll}
 				data-testid="job-log-view"
 				data-wrap={wrap}
 				class="{maxHeightClass} log-view-terminal"
@@ -285,10 +187,10 @@
 					{/each}
 				{/if}
 			</div>
-			{#if !following}
+			{#if !follow.following}
 				<button
 					type="button"
-					onclick={jumpToLatest}
+					onclick={follow.jumpToLatest}
 					data-testid="job-log-jump"
 					class="btn btn-primary btn-sm log-view-jump"
 				>
@@ -300,7 +202,7 @@
 		<div class="log-view-status">
 			<span data-testid="job-log-count">{countLabel(filtered.length, entries.length)}</span>
 			<span aria-hidden="true">·</span>
-			<span data-testid="job-log-follow">{followLabel(following, newWhilePaused)}</span>
+			<span data-testid="job-log-follow">{followLabel(follow.following, follow.newWhilePaused)}</span>
 		</div>
 	{/if}
 </div>
@@ -341,93 +243,10 @@
 		padding: 0.5rem 0.875rem;
 		border-bottom: 1px solid color-mix(in srgb, var(--color-terminal-ink) 6%, transparent);
 	}
-	.log-view-segment-group {
-		display: flex;
-		gap: 2px;
-	}
 	.log-view-divider {
 		width: 1px;
 		height: 18px;
 		background: color-mix(in srgb, var(--color-terminal-ink) 12%, transparent);
-	}
-	.log-view-segment {
-		border-radius: var(--radius-sm);
-		padding: 0.25rem 0.5625rem;
-		font-size: 0.75rem;
-		line-height: 1rem;
-		font-weight: 500;
-		color: color-mix(in srgb, var(--color-terminal-ink) 65%, transparent);
-		background: transparent;
-		transition:
-			background-color var(--motion-fast) var(--ease),
-			color var(--motion-fast) var(--ease);
-	}
-	.log-view-segment:hover {
-		background: color-mix(in srgb, var(--color-terminal-ink) 6%, transparent);
-	}
-	.log-view-segment[aria-checked='true'] {
-		background: color-mix(in srgb, var(--color-primary) 32%, transparent);
-		color: color-mix(in srgb, var(--color-primary) 40%, var(--color-terminal-ink));
-	}
-
-	/* search: a composite field that grows into the leftover toolbar space */
-	.log-view-search {
-		flex: 1 1 140px;
-		min-width: 120px;
-		height: 28px;
-		box-sizing: border-box;
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		padding: 0 6px 0 9px;
-		border-radius: var(--radius-sm);
-		border: 1px solid color-mix(in srgb, var(--color-terminal-ink) 10%, transparent);
-		background: color-mix(in srgb, var(--color-terminal-ink) 4%, transparent);
-	}
-	.log-view-search:focus-within {
-		border-color: color-mix(in srgb, var(--color-primary) 50%, transparent);
-	}
-	.log-view-search-prompt {
-		font: 0.75rem var(--font-mono);
-		color: color-mix(in srgb, var(--color-terminal-ink) 45%, transparent);
-	}
-	.log-view-search input {
-		flex: 1;
-		min-width: 0;
-		border: 0;
-		background: transparent;
-		outline: none;
-		padding: 0;
-		font: 0.75rem var(--font-mono);
-		color: var(--color-terminal-ink);
-	}
-	.log-view-search input::placeholder {
-		color: color-mix(in srgb, var(--color-terminal-ink) 40%, transparent);
-	}
-	.log-view-search-count {
-		font: 0.6875rem var(--font-mono);
-		color: color-mix(in srgb, var(--color-terminal-ink) 50%, transparent);
-		white-space: nowrap;
-	}
-	/* the shared CloseButton, shrunk to sit inside the 28px field */
-	.log-view-search :global(.log-view-search-clear) {
-		min-height: auto;
-		height: auto;
-		width: auto;
-		padding: 2px 3px;
-		border: 0;
-		background: none;
-		font-size: 13px;
-		color: color-mix(in srgb, var(--color-terminal-ink) 60%, transparent);
-	}
-	.log-view-search-case {
-		font: 600 0.6875rem var(--font-mono);
-		padding: 2px 5px;
-		border-radius: 3px;
-		color: color-mix(in srgb, var(--color-terminal-ink) 75%, transparent);
-	}
-	.log-view-search-case[aria-pressed='true'] {
-		background: color-mix(in srgb, var(--color-primary) 32%, transparent);
 	}
 
 	.log-view-tools {
