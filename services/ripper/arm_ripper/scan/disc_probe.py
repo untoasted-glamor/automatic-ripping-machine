@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from arm_common.enums import MenuKind
@@ -111,15 +112,9 @@ async def probe_disc(device_path: str, *, bluray: bool = False, menus: bool = Fa
         return DiscProbe(crc64=None, thediscdb=None, menu_kind=menu_kind)
     if not await await_device_ready(device_path):
         return DiscProbe(crc64=None, thediscdb=None, matrix256=None, menu_kind=MenuKind.UNKNOWN if menus else None)
-    crc64 = await asyncio.to_thread(_compute_crc, device_path)
-    if crc64:
-        logger.info("dvd crc64 device=%s value=%s", device_path, crc64)
-    thediscdb = await asyncio.to_thread(probe_thediscdb_hash, device_path)
-    if thediscdb:
-        logger.info("thediscdb hash device=%s value=%s", device_path, thediscdb)
-    matrix256 = await asyncio.to_thread(probe_matrix256, device_path)
-    if matrix256:
-        logger.info("matrix256 device=%s value=%s", device_path, matrix256)
+    crc64 = await _probe_value("dvd crc64", _compute_crc, device_path)
+    thediscdb = await _probe_value("thediscdb hash", probe_thediscdb_hash, device_path)
+    matrix256 = await _probe_value("matrix256", probe_matrix256, device_path)
     bd_meta = None
     if bluray:
         bd_meta = await asyncio.to_thread(probe_bd_meta, device_path)
@@ -132,6 +127,14 @@ async def probe_disc(device_path: str, *, bluray: bool = False, menus: bool = Fa
         menu_kind = await asyncio.to_thread(probe_menu_kind, device_path)
         logger.info("menu kind device=%s value=%s", device_path, menu_kind.value)
     return DiscProbe(crc64=crc64, thediscdb=thediscdb, matrix256=matrix256, bd_meta=bd_meta, menu_kind=menu_kind)
+
+
+async def _probe_value(label: str, probe: Callable[[str], str | None], device_path: str) -> str | None:
+    """Run one blocking fingerprint probe in a thread; log the value it finds under `label`."""
+    value = await asyncio.to_thread(probe, device_path)
+    if value:
+        logger.info("%s device=%s value=%s", label, device_path, value)
+    return value
 
 
 def _compute_crc(device_path: str) -> str | None:
