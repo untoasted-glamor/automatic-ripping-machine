@@ -5,7 +5,7 @@ import time
 from collections.abc import Awaitable, Callable, Collection, Sequence
 from enum import Enum
 from pathlib import Path
-from typing import NotRequired, Protocol, TypedDict
+from typing import Protocol
 
 from arm_common import DiscType
 from arm_common.enums import TrackKind, TrackStatus
@@ -38,6 +38,7 @@ from arm_ripper.rip.preflight import check_backup_space
 from arm_ripper.rip.result import RipResult
 from arm_ripper.rip.title_hasher import OnHashed, TitleHasher
 from arm_ripper.rip.title_map import match_titles
+from arm_ripper.rip.track_callbacks import OnTrackDone, OnTrackProgress, OnTrackStart, TransferStats
 from arm_ripper.scan.makemkv import ScanError, list_source_titles
 from arm_ripper.source import is_file_source, makemkv_source_url
 
@@ -61,24 +62,8 @@ BACKUP_COMPLETE_MARKER = ".complete"
 # its episodes 19-31 s and its 2:49 play-all 140 s.
 BACKUP_PROGRESS_SHARE = 0.9
 
-OnTrackStart = Callable[[TrackView], Awaitable[None]]
-OnTrackDone = Callable[[TrackView, RipResult], Awaitable[None]]
 # Called once a disc backup finished and nothing more will read the drive.
 OnBackupDone = Callable[[], Awaitable[None]]
-
-
-class TransferStats(TypedDict):
-    """Byte-level detail for a copy whose size is known (the full-disc dump)."""
-
-    bytes_done: int
-    bytes_total: int | None
-    rate_bps: float | None
-    # "verifying" while the ripped files are hashed after makemkvcon exits.
-    phase: NotRequired[str]
-
-
-class OnTrackProgress(Protocol):
-    def __call__(self, track: TrackView, fraction: float, stats: TransferStats | None = None, /) -> Awaitable[None]: ...
 
 
 class MenuSink(Protocol):

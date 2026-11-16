@@ -33,8 +33,8 @@ from arm_ripper.rip.dispatcher import (
     BACKUP_COMPLETE_MARKER,
     DEFAULT_MIN_LENGTH_SECONDS,
     SELECTION_BACKUP_DIRNAME,
-    TransferStats,
 )
+from arm_ripper.rip.track_callbacks import TransferStats
 from arm_ripper.drive_poll import _ABSENT_ERRNOS, DriveState, read_drive_status
 from arm_ripper.scan import ScanError, scan as scan_disc
 from arm_ripper.source import is_file_source
