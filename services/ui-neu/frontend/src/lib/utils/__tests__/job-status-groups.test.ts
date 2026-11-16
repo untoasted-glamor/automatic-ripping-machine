@@ -7,6 +7,7 @@ import {
 	isPostRipStatus,
 	isPreRipStatus,
 	isRipperBusyStatus,
+	isReviewCardStatus,
 	lifecycleStageFor,
 	LIFECYCLE_FAILURE_STATUSES
 } from '../job-status-groups';
@@ -128,5 +129,22 @@ describe('isRipperBusyStatus', () => {
 	});
 	it('takes a missing status', () => {
 		expect(isRipperBusyStatus(undefined)).toBe(false);
+	});
+});
+
+describe('isReviewCardStatus', () => {
+	const REVIEW = ['awaiting_user_id', 'ripped_awaiting_identify', 'awaiting_review', 'identified', 'awaiting_titles'];
+	it.each(REVIEW)('%s is on the review card', (s) => {
+		expect(isReviewCardStatus(s)).toBe(true);
+	});
+	it('lower-cases its argument', () => {
+		expect(isReviewCardStatus('AWAITING_REVIEW')).toBe(true);
+	});
+	it.each(ALL.filter((s) => !REVIEW.includes(s)))('%s is not on the review card', (s) => {
+		expect(isReviewCardStatus(s)).toBe(false);
+	});
+	it('is false for an unknown or empty status', () => {
+		expect(isReviewCardStatus('video_ripping')).toBe(false);
+		expect(isReviewCardStatus('')).toBe(false);
 	});
 });

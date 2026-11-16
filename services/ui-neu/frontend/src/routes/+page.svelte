@@ -25,6 +25,8 @@
 	import { fade, slide } from 'svelte/transition';
 	import { isAwaitingAction } from '$lib/utils/job-status';
 	import { isRipperBusyStatus } from '$lib/utils/job-status-groups';
+
+	import { isReviewCardStatus } from '$lib/utils/job-status-groups';
 	import { transcoderEnabled } from '$lib/stores/config';
 	import { dashboard } from '$lib/stores/dashboard';
 	import { get } from 'svelte/store';
@@ -50,24 +52,9 @@
 	let stickyReviewIds = $state(new Set<string>());
 	let activeJobs = $derived(dash.active_jobs ?? []);
 
-	function isAwaiting(j: JobView): boolean {
-		const s = j.status?.toLowerCase();
-		// `identified` is pre-rip (disc identified, waiting to start) — it belongs
-		// on the review card (with Start rip), NOT in FINISHING. Keep it here so it
-		// shows the review widget even after a page reload, not only while sticky.
-		return (
-			s === 'awaiting_user_id' ||
-			s === 'ripped_awaiting_identify' ||
-			s === 'awaiting_review' ||
-			s === 'identified' ||
-			// Stop 2 (fork only): backed up, its titles wait to be chosen.
-			s === 'awaiting_titles'
-		);
-	}
-
 	// Record jobs seen in review so they stick through a post-apply `identified`.
 	$effect(() => {
-		const toAdd = activeJobs.filter((j) => isAwaiting(j) && !stickyReviewIds.has(j.id));
+		const toAdd = activeJobs.filter((j) => isReviewCardStatus(j.status ?? '') && !stickyReviewIds.has(j.id));
 		if (toAdd.length > 0) {
 			stickyReviewIds = new Set([...stickyReviewIds, ...toAdd.map((j) => j.id)]);
 		}
@@ -83,7 +70,9 @@
 			// (ripped/ripped_partial, no session in flight) — these come BACK as a
 			// rich review card so the operator can apply a session + fix metadata.
 			return (
-				isAwaiting(j) || (stickyReviewIds.has(j.id) && j.status?.toLowerCase() === 'identified') || isAwaitingAction(j)
+				isReviewCardStatus(j.status ?? '') ||
+				(stickyReviewIds.has(j.id) && j.status?.toLowerCase() === 'identified') ||
+				isAwaitingAction(j)
 			);
 		})
 	);
