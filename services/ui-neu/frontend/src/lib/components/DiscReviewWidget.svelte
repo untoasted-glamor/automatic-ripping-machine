@@ -23,9 +23,9 @@
 		reviewStatusLabel
 	} from '$lib/utils/review-card';
 	import { formatDateTime } from '$lib/utils/format';
-	import ReviewWaitStatus from './ReviewWaitStatus.svelte';
 	import { listedScanTitles } from '$lib/utils/scan-titles';
 	import { titleTracks } from '$lib/utils/track-keep';
+	import DiscReviewStatusBar from './disc-review/DiscReviewStatusBar.svelte';
 	import PosterImage from './PosterImage.svelte';
 	import TitleSearch from './TitleSearch.svelte';
 	import MusicSearch from './MusicSearch.svelte';
@@ -148,6 +148,10 @@
 	let suggestion = $derived(identitySuggestionOf(displayJob));
 	// Held for an explicit confirm: no countdown, Start is the only way on.
 	// A held suggestion is its own confirm (use it or search), so it wins.
+	// The status bar's wait (fork): at the review gate (not a previously-ripped
+	// hold, which has no countdown) or once stop 2 opens. Mandatory-confirm
+	// mode shows "Waiting for your confirmation" in place of the countdown.
+	let showWait = $derived((isReviewGate && !previousId) || titlesOpen);
 	let awaitingConfirm = $derived(isReviewGate && requiresConfirm && !previousId && !suggestion);
 	let previous = $derived(reviewData.detail?.previous_rip ?? null);
 	let missLine = $derived(missReason(displayJob));
@@ -244,31 +248,16 @@
 {:else}
 	<div class="disc-review-widget" data-source={isoName ? 'iso' : 'disc'}>
 		<!-- Status bar -->
-		<div class="disc-review-widget-status-bar">
-			<div class="flex items-center gap-2">
-				<div class="disc-review-widget-status-dot"></div>
-				<span class="disc-review-widget-status-label">
-					{statusLabel}
-				</span>
-			</div>
-			<!-- Review gate: "Waiting for your confirmation" in mandatory-confirm mode,
-		     else the cosmetic countdown to auto-start (the ripper owns the real
-		     clock). The timer's pause/resume toggles THIS disc only (per-job
-		     manual_pause); its controls are off while globally paused since one
-		     disc can't un-pause the whole machine. -->
-			{#if (isReviewGate && !previousId) || titlesOpen}
-				<ReviewWaitStatus
-					{job}
-					{requiresConfirm}
-					waitSeconds={manualWaitSeconds}
-					{paused}
-					held={countdownHeld}
-					inverted
-					onpause={!$isAdmin || paused || actions.pauseBusy ? undefined : () => actions.setPaused(job, true)}
-					onresume={!$isAdmin || paused || actions.pauseBusy ? undefined : () => actions.setPaused(job, false)}
-				/>
-			{/if}
-		</div>
+		<DiscReviewStatusBar
+			label={statusLabel}
+			waitStartTime={showWait ? job.wait_start_time : null}
+			confirmWait={showWait && requiresConfirm}
+			waitSeconds={manualWaitSeconds}
+			paused={paused || !!job.manual_pause || !!countdownHeld}
+			held={countdownHeld}
+			onpause={!$isAdmin || paused || actions.pauseBusy ? undefined : () => actions.setPaused(job, true)}
+			onresume={!$isAdmin || paused || actions.pauseBusy ? undefined : () => actions.setPaused(job, false)}
+		/>
 
 		<!-- Body: poster, then the title row and one aligned, labeled row per fact. -->
 		<div class="disc-review-widget-body">
@@ -677,14 +666,6 @@
 		box-shadow: var(--shadow-2);
 		background: var(--color-surface);
 	}
-	.disc-review-widget-status-bar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		background: color-mix(in srgb, var(--color-primary) 32%, var(--color-surface));
-		border-bottom: 1px solid var(--color-border-strong);
-		padding: 0.375rem 1rem;
-	}
 	.disc-review-widget-suggestion {
 		margin: 0 1rem 0.75rem;
 	}
@@ -706,19 +687,6 @@
 	.disc-review-widget-previous-sub {
 		margin-top: 0.25rem;
 		color: var(--color-text-muted);
-	}
-	.disc-review-widget-status-dot {
-		height: 0.5rem;
-		width: 0.5rem;
-		flex-shrink: 0;
-		border-radius: 9999px;
-		background: var(--color-primary);
-		animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-	}
-	@keyframes pulse {
-		50% {
-			opacity: 0.5;
-		}
 	}
 	/* :global: forwarded through PosterImage's class prop onto its own img */
 	/* Same width as a CD's square cover, at the poster's 2:3. */
@@ -747,12 +715,6 @@
 		:global(.disc-review-widget-poster-square) {
 			height: 5.25rem;
 		}
-	}
-	.disc-review-widget-status-label {
-		font-size: 1rem;
-		line-height: 1.5rem;
-		font-weight: 600;
-		color: var(--color-primary-text);
 	}
 	.disc-review-widget-phase-badge {
 		flex-shrink: 0;
