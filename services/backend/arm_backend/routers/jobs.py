@@ -322,9 +322,12 @@ async def _tracks_for_ripping(session: AsyncSession, jobs: list[Job]) -> dict[st
 
 
 async def _apps_and_tasks_for(
-    session: AsyncSession, job_ids: list[str]
+    session: AsyncSession,
+    job_ids: list[str],
+    kinds: tuple[TranscodeTaskKind, ...] = (TranscodeTaskKind.ENCODE,),
 ) -> tuple[dict[str, list[SessionApplication]], dict[str, list[TranscodeTask]]]:
-    """The session applications and transcode tasks of the given jobs, grouped by job id."""
+    """The session applications and transcode tasks (encodes unless `kinds`
+    says otherwise) of the given jobs, grouped by job id."""
     # Batched session_application + transcode_task lookup keyed on ALL job ids
     # in the page (any job can have a session, not just ripping jobs).
     sas_by_job: dict[str, list[SessionApplication]] = {}
@@ -346,7 +349,7 @@ async def _apps_and_tasks_for(
                         select(TranscodeTask)
                         .where(col(TranscodeTask.session_application_id).in_(list(sa_id_to_job.keys())))
                         # The job's transcode rollup counts encodes only.
-                        .where(col(TranscodeTask.kind) == TranscodeTaskKind.ENCODE)
+                        .where(col(TranscodeTask.kind).in_(kinds))
                     )
                 )
                 .scalars()
@@ -377,6 +380,79 @@ async def _job_list_views(session: AsyncSession, jobs: list[Job]) -> list[JobVie
         view.parked_session_ids = _parked_session_ids(sas_by_job.get(j.id, []))
         views.append(view)
     return views
+
+
+def _latest_task_by_track(tasks: list[TranscodeTask]) -> dict[str, TranscodeTask]:
+    """The most recent transcode task of each source track."""
+    # Most-recent transcode task per source track (ULID ids are monotonic,
+    # so the greatest id is the newest task). Built from the already-loaded
+    # job_tasks — no extra query.
+    latest_task: dict[str, TranscodeTask] = {}
+    for task in tasks:
+        prev = latest_task.get(task.source_track_id)
+        if prev is None or task.id > prev.id:
+            latest_task[task.source_track_id] = task
+    return latest_task
+
+
+def _track_view(track: Track, latest_task: dict[str, TranscodeTask], latest_ocr: dict[str, TranscodeTask]) -> TrackView:
+    """The TrackView of a track, with the status and frame rate of its latest
+    encode and the status of its latest subtitle OCR task."""
+    tv = TrackView.model_validate(track)
+    task = latest_task.get(track.id)
+    if task is not None:
+        tv.transcode_status = task.status
+        tv.transcode_fps = task.fps
+        tv.transcode_avg_fps = task.avg_fps
+    ocr = latest_ocr.get(track.id)
+    if ocr is not None:
+        tv.subtitle_ocr_status = ocr.status
+    return tv
+
+
+async def _job_detail_view(session: AsyncSession, job: Job) -> JobDetailView:
+    """The job with its tracks, fingerprints, transcode progress and earlier rip."""
+    tracks = (
+        (await session.execute(select(Track).where(col(Track.job_id) == job.id).order_by(col(Track.index))))
+        .scalars()
+        .all()
+    )
+    fingerprints = (
+        (
+            await session.execute(
+                select(DiscFingerprint).where(col(DiscFingerprint.job_id) == job.id).order_by(col(DiscFingerprint.algo))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    sas_by_job, tasks_by_job = await _apps_and_tasks_for(
+        session, [job.id], kinds=(TranscodeTaskKind.ENCODE, TranscodeTaskKind.SUBTITLE_OCR)
+    )
+    sas = sas_by_job.get(job.id, [])
+    all_tasks = tasks_by_job.get(job.id, [])
+    # Encodes only: the rollup and each track's transcode status are about its
+    # video. The subtitle OCR tasks that share its track have their own status.
+    job_tasks = [t for t in all_tasks if t.kind == TranscodeTaskKind.ENCODE]
+    ocr_tasks = [t for t in all_tasks if t.kind == TranscodeTaskKind.SUBTITLE_OCR]
+    job_view = JobView.model_validate(job)
+    job_view.transcode_progress = _summarize_transcode_progress(
+        sas, job_tasks, parked_settled=_parked_apps_are_settled(job)
+    )
+    job_view.parked_session_ids = _parked_session_ids(sas)
+    latest_task = _latest_task_by_track(job_tasks)
+    latest_ocr = _latest_task_by_track(ocr_tasks)
+    drive = await drive_of(session, job)
+    return JobDetailView(
+        job=job_view,
+        tracks=[_track_view(t, latest_task, latest_ocr) for t in tracks],
+        fingerprints=[DiscFingerprintView.model_validate(fp) for fp in fingerprints],
+        previous_rip=await _previous_rip_view(session, job),
+        raw_backup=describe_backup(job.id),
+        subtitle_ocr=await job_subtitle_ocr_view(session, job, Path(settings.MEDIA_ROOT)),
+        parks_after_backup=job.status in PRE_RIP_JOB_STATUSES and backs_up_first(job, drive, tracks),
+        retry_backs_up=redoes_first_pass(job, drive, tracks),
+    )
 
 
 @router.get("", response_model=list[JobView], responses=_LIST_JOBS_RESPONSES)
@@ -431,80 +507,7 @@ async def get_job_detail(
     job = (await session.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")
-    tracks = (
-        (await session.execute(select(Track).where(col(Track.job_id) == job_id).order_by(col(Track.index))))
-        .scalars()
-        .all()
-    )
-    fingerprints = (
-        (
-            await session.execute(
-                select(DiscFingerprint).where(col(DiscFingerprint.job_id) == job_id).order_by(col(DiscFingerprint.algo))
-            )
-        )
-        .scalars()
-        .all()
-    )
-    sas = (
-        (await session.execute(select(SessionApplication).where(col(SessionApplication.job_id) == job_id)))
-        .scalars()
-        .all()
-    )
-    sa_ids = [sa.id for sa in sas]
-    all_tasks: list[TranscodeTask] = []
-    if sa_ids:
-        all_tasks = list(
-            (await session.execute(select(TranscodeTask).where(col(TranscodeTask.session_application_id).in_(sa_ids))))
-            .scalars()
-            .all()
-        )
-    # Encodes only: the rollup and each track's transcode status are about its
-    # video. The subtitle OCR tasks that share its track have their own status.
-    job_tasks = [t for t in all_tasks if t.kind == TranscodeTaskKind.ENCODE]
-    ocr_tasks = [t for t in all_tasks if t.kind == TranscodeTaskKind.SUBTITLE_OCR]
-    job_view = JobView.model_validate(job)
-    job_view.transcode_progress = _summarize_transcode_progress(
-        list(sas), job_tasks, parked_settled=_parked_apps_are_settled(job)
-    )
-    job_view.parked_session_ids = _parked_session_ids(list(sas))
-
-    # Most-recent task per source track (ULID ids are monotonic, so the
-    # greatest id is the newest task). Built from the already-loaded tasks:
-    # no extra query.
-    def _latest(tasks: list[TranscodeTask]) -> dict[str, TranscodeTask]:
-        latest: dict[str, TranscodeTask] = {}
-        for task in tasks:
-            prev = latest.get(task.source_track_id)
-            if prev is None or task.id > prev.id:
-                latest[task.source_track_id] = task
-        return latest
-
-    latest_task = _latest(job_tasks)
-    latest_ocr = _latest(ocr_tasks)
-
-    def _track_view(t: Track) -> TrackView:
-        tv = TrackView.model_validate(t)
-        task = latest_task.get(t.id)
-        if task is not None:
-            tv.transcode_status = task.status
-            tv.transcode_fps = task.fps
-            tv.transcode_avg_fps = task.avg_fps
-        ocr = latest_ocr.get(t.id)
-        if ocr is not None:
-            tv.subtitle_ocr_status = ocr.status
-        return tv
-
-    drive = await drive_of(session, job)
-    return JobDetailView(
-        job=job_view,
-        tracks=[_track_view(t) for t in tracks],
-        fingerprints=[DiscFingerprintView.model_validate(fp) for fp in fingerprints],
-        previous_rip=await _previous_rip_view(session, job),
-        raw_backup=describe_backup(job.id),
-        subtitle_ocr=await job_subtitle_ocr_view(session, job, Path(settings.MEDIA_ROOT)),
-        parks_after_backup=job.status in PRE_RIP_JOB_STATUSES and backs_up_first(job, drive, tracks),
-        retry_backs_up=redoes_first_pass(job, drive, tracks),
-    )
+    return await _job_detail_view(session, job)
 
 
 async def _previous_rip_view(db: AsyncSession, job: Job) -> PreviousRipView | None:
