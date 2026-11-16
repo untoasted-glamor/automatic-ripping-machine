@@ -11,7 +11,6 @@ vi.mock('$lib/stores/auth', async () => {
 
 vi.mock('$lib/api/jobs', () => ({
 	updateTrack: vi.fn(() => Promise.resolve({})),
-	updateTrackTitle: vi.fn(),
 	clearTrackTitle: vi.fn(),
 	searchMetadata: vi.fn(),
 	fetchMediaDetail: vi.fn()
