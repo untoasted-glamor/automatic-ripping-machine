@@ -1,25 +1,7 @@
+"""Result and error types every metadata provider client shares."""
+
 from dataclasses import dataclass, field
 from typing import Any, Literal
-from datetime import datetime
-
-from arm_common.schemas import ExternalIds, JobIdentity, MusicMeta
-
-# TMDB serves posters from a CDN; `w500` (500px-wide) is the v2 default
-# and renders fine for thumbnail and detail-card use. Full hashed path is
-# `{base}{poster_path}` where poster_path is the leading-slash fragment
-# returned in the API payload.
-TMDB_POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
-# Cover Art Archive front-cover endpoints (sized `front-250` variant, matching
-# neu). Both 404 for entities with no uploaded art.
-#
-# Cover-art strategy (the canonical MusicBrainz Picard model): use the
-# per-RELEASE cover as the primary so distinct pressings show distinct covers,
-# and carry the album's release-GROUP id as a `fallback_group` query param so
-# the image proxy can fall back to the group cover when the specific release
-# has no art. Per-release art keeps covers distinct; the group rescues the
-# (common) case of an art-less regional pressing.
-COVERART_RELEASE_FRONT_URL_TEMPLATE = "https://coverartarchive.org/release/{mbid}/front-250"
-COVERART_GROUP_FRONT_URL_TEMPLATE = "https://coverartarchive.org/release-group/{mbid}/front-250"
 
 
 @dataclass(slots=True)
@@ -31,112 +13,6 @@ class MetadataResult:
     # Stamped by the dispatcher's _call wrapper (the one place that knows
     # which client produced the hit); None for results built outside it.
     provider: str | None = None
-
-
-def first_str(*candidates: Any) -> str | None:
-    for c in candidates:
-        if isinstance(c, str) and c and c != "N/A":
-            return c
-        if isinstance(c, int):
-            return str(c)
-    return None
-
-
-def external_ids_of(result: MetadataResult) -> ExternalIds:
-    """Every id a provider hit carries, plus the kind of its TMDb id.
-
-    The single derivation used by identify (`metadata_with_identity`) and
-    the title-search candidates, so both store the same ids."""
-    payload = result.payload or {}
-    provider = result.provider or "unknown"
-    tmdb = first_str(payload.get("tmdb_id"), payload.get("id") if provider == "tmdb" else None)
-    return ExternalIds(
-        imdb=first_str(payload.get("imdb_id"), payload.get("imdbID")),
-        tmdb=tmdb,
-        tvdb=first_str(payload.get("tvdb_id"), payload.get("id") if provider == "tvdb" else None),
-        tvmaze=first_str(payload.get("tvmaze_id"), payload.get("id") if provider == "tvmaze" else None),
-        musicbrainz_release=first_str(payload.get("id") if provider == "musicbrainz" else None),
-        tmdb_kind=result.kind if tmdb and result.kind in ("movie", "tv") else None,
-    )
-
-
-def metadata_with_identity(
-    metadata_json: dict[str, Any] | None,
-    result: MetadataResult,
-    *,
-    identified_at: datetime,
-) -> dict[str, Any]:
-    """Fold a provider hit into the job's metadata bag (gap analysis §3.4).
-
-    Replaces the old top-level `**result.payload` merge: the raw payload is
-    filed under `provider_raw[<provider>]`, the conclusions land in the
-    typed `identity` section, and a music hit fills `music`. Nothing from a
-    provider reaches the top level, so re-identifying with a different
-    provider can no longer leave contradictory keys behind.
-    """
-    payload = result.payload or {}
-    provider = result.provider or "unknown"
-    external = external_ids_of(result)
-    identity = JobIdentity(
-        provider=provider,
-        external_ids=external,
-        overview=first_str(payload.get("overview"), payload.get("Plot")),
-        identified_at=identified_at,
-    )
-    md = dict(metadata_json or {})
-    md["identity"] = identity.model_dump(mode="json", exclude_none=True)
-    md["provider_raw"] = {**(md.get("provider_raw") or {}), provider: payload}
-    if result.kind == "music":
-        music = MusicMeta(
-            artist=first_str(payload.get("artist")),
-            album=first_str(payload.get("album")),
-            tracks=payload.get("tracks") or [],
-        )
-        md["music"] = music.model_dump(mode="json", exclude_none=True)
-    return md
-
-
-def extract_poster_url(result: MetadataResult) -> str | None:
-    """Pull a renderable poster URL out of a provider hit.
-
-    Order: TMDB poster_path > OMDB Poster (full URL) > Cover Art Archive
-    derived from MusicBrainz release id. Returns None if none apply or if
-    the value isn't a useful absolute URL.
-    """
-    payload = result.payload or {}
-
-    # TMDB returns a leading-slash fragment, e.g. "/abc123.jpg".
-    poster_path = payload.get("poster_path")
-    if isinstance(poster_path, str) and poster_path.startswith("/"):
-        return f"{TMDB_POSTER_BASE_URL}{poster_path}"
-
-    # OMDB returns a full URL or the literal "N/A" when missing.
-    omdb_poster = payload.get("Poster")
-    if isinstance(omdb_poster, str) and omdb_poster.startswith("http") and omdb_poster != "N/A":
-        return omdb_poster
-
-    # TVmaze / TVDB adapters (and anything else) normalise a full URL here.
-    poster_url = payload.get("poster_url")
-    if isinstance(poster_url, str) and poster_url.startswith("http"):
-        return poster_url
-
-    # MusicBrainz: per-release front cover as the primary, with the album's
-    # release-group id appended as `fallback_group` (the image proxy falls back
-    # to the group cover on a release-level 404). Both endpoints may 404; the UI
-    # shows its placeholder only when neither has art.
-    if result.kind == "music":
-        release_id = payload.get("id")
-        if not (isinstance(release_id, str) and release_id):
-            return None
-        url = COVERART_RELEASE_FRONT_URL_TEMPLATE.format(mbid=release_id)
-        group = payload.get("release-group")
-        if isinstance(group, dict):
-            group_id = group.get("id")
-            if isinstance(group_id, str) and group_id:
-                url = f"{url}?fallback_group={group_id}"
-        return url
-
-    return None
 
 
 class LookupError(Exception):

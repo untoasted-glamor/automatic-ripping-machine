@@ -29,7 +29,7 @@ from arm_backend.job_track_selection import default_for_job, disc_languages, edi
 from arm_backend.job_files import delete_job_files
 from arm_backend.job_views import job_detail_view, job_list_views
 from arm_backend.log_reader import per_job_log_path
-from arm_backend.metadata.base import external_ids_of
+from arm_backend.metadata.identity_payload import external_ids_of
 from arm_backend.path_template import TemplateValidationError
 from arm_backend.raw_backup import delete_backup
 from arm_backend.rip_retry import RetryRefused, arm_retry, check_retryable, remaining_tracks

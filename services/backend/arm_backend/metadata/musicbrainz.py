@@ -2,6 +2,7 @@ import asyncio
 import logging
 import math
 import time
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import quote
 
@@ -9,6 +10,7 @@ import httpx
 
 from arm_backend.config import settings
 from arm_backend.metadata.base import LookupError, LookupTimeout, MetadataResult
+from arm_backend.metadata.years import year_from
 
 logger = logging.getLogger("arm_backend.metadata.musicbrainz")
 
@@ -42,6 +44,33 @@ _DISC_NOT_FOUND = "musicbrainz disc_id not found"
 _DISC_NO_RELEASES = "musicbrainz disc_id has no releases"
 TOC_NOT_FOUND = "musicbrainz toc not found"
 _TOC_CANDIDATES = 5
+
+
+# The release-search filters, in the order search_releases ANDs them onto the
+# query: (parameter, Lucene field, quoted, escaped).
+_RELEASE_FILTERS: tuple[tuple[str, str, bool, bool], ...] = (
+    ("artist", "artist", True, True),
+    ("track_count", "tracks", False, False),
+    ("release_type", "primarytype", False, True),
+    ("format", "format", True, True),
+    ("country", "country", False, True),
+    ("status", "status", False, True),
+)
+
+
+def _lucene_query(query: str, filters: Mapping[str, str | int | None]) -> str:
+    """`query` with each present filter AND-ed on as a Lucene term, in `_RELEASE_FILTERS` order.
+
+    A filter is absent when it is None or the empty string, so a track count of 0 still counts.
+    """
+    lucene = query
+    for name, field, quoted, escaped in _RELEASE_FILTERS:
+        value = filters.get(name)
+        if value is None or value == "":
+            continue
+        text = _escape_lucene(str(value)) if escaped else str(value)
+        lucene = f'{lucene} AND {field}:"{text}"' if quoted else f"{lucene} AND {field}:{text}"
+    return lucene
 
 
 class MusicBrainzClient:
@@ -126,7 +155,7 @@ class MusicBrainzClient:
     def _project_disc(self, releases: list[dict[str, Any]], disc_id: str | None, toc: str | None) -> MetadataResult:
         top = releases[0]
         title_val = top.get("title")
-        year_val = _parse_year(top.get("date") or "")
+        year_val = year_from(top.get("date") or "")
         if not title_val:
             raise LookupError("musicbrainz top release missing title")
 
@@ -187,7 +216,7 @@ class MusicBrainzClient:
         title_val = body.get("title")
         if not title_val:
             raise LookupError("musicbrainz release missing title")
-        year_val = _parse_year(body.get("date") or "")
+        year_val = year_from(body.get("date") or "")
         artist = _join_artist_credit(body.get("artist-credit") or [])
         media = body.get("media") or []
         tracks: list[dict[str, Any]] = []
@@ -197,7 +226,7 @@ class MusicBrainzClient:
         catalog_number = None
         if label_info and isinstance(label_info[0], dict):
             catalog_number = label_info[0].get("catalog-number")
-        fmt = media[0].get("format") if media and isinstance(media[0], dict) else None
+        fmt = _first_medium_format(media)
         payload: dict[str, Any] = {
             "artist": artist,
             "album": title_val,
@@ -224,40 +253,45 @@ class MusicBrainzClient:
     ) -> list[MetadataResult]:
         """Lucene release search for interactive lookup. Returns up to `limit`.
         Each present filter is AND-ed into the Lucene query."""
-        lucene = query
-        if artist:
-            lucene = f'{lucene} AND artist:"{_escape_lucene(artist)}"'
-        if track_count is not None:
-            lucene = f"{lucene} AND tracks:{track_count}"
-        if release_type:
-            lucene = f"{lucene} AND primarytype:{_escape_lucene(release_type)}"
-        if format:
-            lucene = f'{lucene} AND format:"{_escape_lucene(format)}"'
-        if country:
-            lucene = f"{lucene} AND country:{_escape_lucene(country)}"
-        if status:
-            lucene = f"{lucene} AND status:{_escape_lucene(status)}"
+        lucene = _lucene_query(
+            query,
+            {
+                "artist": artist,
+                "track_count": track_count,
+                "release_type": release_type,
+                "format": format,
+                "country": country,
+                "status": status,
+            },
+        )
         body = await self._get(
             "/release",
             params={"query": lucene, "fmt": "json", "limit": limit},
         )
         results: list[MetadataResult] = []
         for rel in (body.get("releases") or [])[:limit]:
-            title = rel.get("title")
-            if not title:
-                continue
-            year = _parse_year(rel.get("date") or "")
-            artist_name = _join_artist_credit(rel.get("artist-credit") or [])
-            media = rel.get("media") or []
-            fmt = media[0].get("format") if media and isinstance(media[0], dict) else None
-            payload: dict[str, Any] = {"artist": artist_name, "album": title, "format": fmt, **rel}
-            results.append(MetadataResult(title=title, year=year, kind="music", payload=payload))
+            result = _release_to_result(rel)
+            if result is not None:
+                results.append(result)
         return results
 
 
-def _parse_year(date: str) -> int | None:
-    """Year from a MusicBrainz date string ("1973-03-01" -> 1973), or None."""
-    return int(date[:4]) if date[:4].isdigit() else None
+def _first_medium_format(media: list[Any]) -> Any:
+    """The first medium's `format` (e.g. "CD"), or None without a dict medium."""
+    return media[0].get("format") if media and isinstance(media[0], dict) else None
+
+
+def _release_to_result(rel: dict[str, Any]) -> MetadataResult | None:
+    """One search-result release as a music MetadataResult, or None without a title."""
+    title = rel.get("title")
+    if not title:
+        return None
+    year = year_from(rel.get("date") or "")
+    artist_name = _join_artist_credit(rel.get("artist-credit") or [])
+    media = rel.get("media") or []
+    fmt = _first_medium_format(media)
+    payload: dict[str, Any] = {"artist": artist_name, "album": title, "format": fmt, **rel}
+    return MetadataResult(title=title, year=year, kind="music", payload=payload)
 
 
 def _escape_lucene(term: str) -> str:

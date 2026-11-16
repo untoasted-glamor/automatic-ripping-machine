@@ -46,6 +46,58 @@ def test_series_to_result_maps_ids_year_and_poster():
     )
 
 
+@pytest.mark.parametrize("entry", [{"name": "Lost"}, {"name": "Lost", "id": ""}])
+def test_series_to_result_skips_tvdb_id_when_absent_or_empty(entry):
+    result = series_to_result(entry)
+    assert result is not None
+    assert "tvdb_id" not in result.payload
+
+
+def test_series_to_result_takes_imdb_id_from_first_imdb_match():
+    result = series_to_result(
+        {
+            "name": "Lost",
+            "remote_ids": [
+                {"id": "x1", "sourceName": "TheMovieDB.com"},
+                {"id": "tt0411008", "sourceName": "imdb"},
+                {"id": "tt9999999", "sourceName": "IMDB"},
+            ],
+        }
+    )
+    assert result is not None
+    assert result.payload["imdb_id"] == "tt0411008"
+
+
+def test_series_to_result_without_a_usable_imdb_remote_id_has_no_imdb_id():
+    result = series_to_result(
+        {
+            "name": "Lost",
+            "remote_ids": ["IMDB", {"id": "x1", "sourceName": "TheMovieDB.com"}, {"id": "", "sourceName": "IMDB"}],
+        }
+    )
+    assert result is not None
+    assert "imdb_id" not in result.payload
+
+
+@pytest.mark.parametrize(
+    ("entry_year", "expected"),
+    [
+        (None, None),
+        ("2004", 2004),
+        ("2004-09-22", 2004),
+        (2004, 2004),
+        (20041, 2004),  # cut to four characters, not rejected
+        ("unknown", None),
+        ("", None),
+    ],
+)
+def test_series_to_result_year_parsing(entry_year, expected):
+    entry = {"name": "Lost"} if entry_year is None else {"name": "Lost", "year": entry_year}
+    result = series_to_result(entry)
+    assert result is not None
+    assert result.year == expected
+
+
 @respx.mock
 async def test_search_series_logs_in_then_searches(http_client):
     login = respx.post(f"{_BASE}/login").mock(return_value=httpx.Response(200, json=_LOGIN))
@@ -201,3 +253,50 @@ async def test_series_details_missing_name_is_a_lookup_error(http_client):
     respx.get(f"{_BASE}/series/1/extended").mock(return_value=httpx.Response(200, json={"data": {"id": 1}}))
     with pytest.raises(LookupError):
         await TVDBClient("k", http_client).series_details("1")
+
+
+@respx.mock
+async def test_get_authed_timeout_is_a_lookup_timeout(http_client):
+    login = respx.post(f"{_BASE}/login").mock(return_value=httpx.Response(200, json=_LOGIN))
+    respx.get(f"{_BASE}/search").mock(side_effect=httpx.ReadTimeout("slow"))
+    with pytest.raises(LookupTimeout) as exc:
+        await TVDBClient("k", http_client).search_series("lost")
+    assert str(exc.value) == "tvdb timeout"
+    assert login.call_count == 1
+
+
+@respx.mock
+async def test_get_authed_transport_error_is_a_lookup_error(http_client):
+    respx.post(f"{_BASE}/login").mock(return_value=httpx.Response(200, json=_LOGIN))
+    respx.get(f"{_BASE}/search").mock(side_effect=httpx.ConnectError("refused"))
+    with pytest.raises(LookupError) as exc:
+        await TVDBClient("k", http_client).search_series("lost")
+    assert not isinstance(exc.value, LookupTimeout)
+    assert str(exc.value).startswith("tvdb transport error: ")
+
+
+@respx.mock
+async def test_get_authed_404_is_a_miss(http_client):
+    respx.post(f"{_BASE}/login").mock(return_value=httpx.Response(200, json=_LOGIN))
+    respx.get(f"{_BASE}/series/1/extended").mock(return_value=httpx.Response(404))
+    with pytest.raises(LookupError) as exc:
+        await TVDBClient("k", http_client).series_details("1")
+    assert str(exc.value) == "tvdb miss"
+
+
+@respx.mock
+async def test_get_authed_other_status_is_a_lookup_error(http_client):
+    respx.post(f"{_BASE}/login").mock(return_value=httpx.Response(200, json=_LOGIN))
+    respx.get(f"{_BASE}/search").mock(return_value=httpx.Response(500))
+    with pytest.raises(LookupError) as exc:
+        await TVDBClient("k", http_client).search_series("lost")
+    assert str(exc.value) == "tvdb status=500"
+
+
+@respx.mock
+async def test_get_authed_non_json_200_is_malformed(http_client):
+    respx.post(f"{_BASE}/login").mock(return_value=httpx.Response(200, json=_LOGIN))
+    respx.get(f"{_BASE}/search").mock(return_value=httpx.Response(200, content=b"<html>nope</html>"))
+    with pytest.raises(LookupError) as exc:
+        await TVDBClient("k", http_client).search_series("lost")
+    assert str(exc.value) == "tvdb malformed response"

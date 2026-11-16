@@ -6,12 +6,37 @@ import httpx
 
 from arm_backend.config import settings
 from arm_backend.metadata.base import LookupError, LookupTimeout, MetadataResult
+from arm_backend.metadata.years import year_from
 
 logger = logging.getLogger("arm_backend.metadata.tvdb")
 
 
 def _base_url() -> str:
     return settings.ARM_TVDB_BASE_URL
+
+
+def _tvdb_id_of(entry: dict[str, Any]) -> str | None:
+    """The entry's TVDB id as a string (`tvdb_id`, else `id`), or None without a usable one."""
+    tvdb_id = entry.get("tvdb_id") or entry.get("id")
+    if tvdb_id is not None and str(tvdb_id):
+        return str(tvdb_id)
+    return None
+
+
+def _imdb_from_remote_ids(remote_ids: Any) -> str | None:
+    """The first IMDb id in a TVDB remote-ids list, or None."""
+    for remote in remote_ids or []:
+        if isinstance(remote, dict) and str(remote.get("sourceName", "")).upper() == "IMDB" and remote.get("id"):
+            return str(remote["id"])
+    return None
+
+
+def _poster_of(entry: dict[str, Any]) -> str | None:
+    """The entry's poster URL (`image_url`, else `image`), or None without an http URL."""
+    poster = entry.get("image_url") or entry.get("image")
+    if isinstance(poster, str) and poster.startswith("http"):
+        return poster
+    return None
 
 
 def series_to_result(entry: Any) -> MetadataResult | None:
@@ -23,19 +48,26 @@ def series_to_result(entry: Any) -> MetadataResult | None:
     if not isinstance(name, str) or not name:
         return None
     raw_year = entry.get("year")
-    year = int(str(raw_year)[:4]) if raw_year is not None and str(raw_year)[:4].isdigit() else None
+    year = year_from(str(raw_year)) if raw_year is not None else None
     payload: dict[str, Any] = dict(entry)
-    tvdb_id = entry.get("tvdb_id") or entry.get("id")
-    if tvdb_id is not None and str(tvdb_id):
-        payload["tvdb_id"] = str(tvdb_id)
-    for remote in entry.get("remote_ids") or []:
-        if isinstance(remote, dict) and str(remote.get("sourceName", "")).upper() == "IMDB" and remote.get("id"):
-            payload["imdb_id"] = str(remote["id"])
-            break
-    poster = entry.get("image_url") or entry.get("image")
-    if isinstance(poster, str) and poster.startswith("http"):
+    tvdb_id = _tvdb_id_of(entry)
+    if tvdb_id is not None:
+        payload["tvdb_id"] = tvdb_id
+    imdb_id = _imdb_from_remote_ids(entry.get("remote_ids"))
+    if imdb_id is not None:
+        payload["imdb_id"] = imdb_id
+    poster = _poster_of(entry)
+    if poster is not None:
         payload["poster_url"] = poster
     return MetadataResult(title=name, year=year, kind="tv", payload=payload)
+
+
+def _check_status(r: httpx.Response) -> None:
+    """Raise LookupError for a 404 or any other non-200 response."""
+    if r.status_code == 404:
+        raise LookupError("tvdb miss")
+    if r.status_code != 200:
+        raise LookupError(f"tvdb status={r.status_code}")
 
 
 class TVDBClient:
@@ -79,28 +111,28 @@ class TVDBClient:
 
     async def _get_authed(self, path: str, params: dict[str, Any] | None = None) -> Any:
         token = self._token or await self._login()
-        for attempt in (1, 2):
-            try:
-                r = await self._http.get(
-                    f"{_base_url()}{path}", params=params, headers={"Authorization": f"Bearer {token}"}
-                )
-            except httpx.TimeoutException as e:
-                raise LookupTimeout("tvdb timeout") from e
-            except httpx.HTTPError as e:
-                raise LookupError(f"tvdb transport error: {e}") from e
-            if r.status_code == 401 and attempt == 1:
-                token = await self._login()  # expired token: one re-login
-                continue
+        r = await self._send(path, params, token)
+        if r.status_code == 401:
+            token = await self._login()  # expired token: one re-login
+            r = await self._send(path, params, token)
             if r.status_code == 401:
                 raise LookupError("tvdb auth failed after re-login")
-            if r.status_code == 404:
-                raise LookupError("tvdb miss")
-            if r.status_code != 200:
-                raise LookupError(f"tvdb status={r.status_code}")
-            try:
-                return r.json()
-            except ValueError as e:
-                raise LookupError("tvdb malformed response") from e
+        _check_status(r)
+        try:
+            return r.json()
+        except ValueError as e:
+            raise LookupError("tvdb malformed response") from e
+
+    async def _send(self, path: str, params: dict[str, Any] | None, token: str) -> httpx.Response:
+        """One authenticated GET; transport failures become LookupTimeout/LookupError."""
+        try:
+            return await self._http.get(
+                f"{_base_url()}{path}", params=params, headers={"Authorization": f"Bearer {token}"}
+            )
+        except httpx.TimeoutException as e:
+            raise LookupTimeout("tvdb timeout") from e
+        except httpx.HTTPError as e:
+            raise LookupError(f"tvdb transport error: {e}") from e
 
     async def search_candidates(self, title: str, limit: int = 10) -> list[MetadataResult]:
         body = await self._get_authed("/search", {"query": title, "type": "series"})
@@ -148,8 +180,7 @@ class TVDBClient:
         result = series_to_result(data)
         if result is None or not isinstance(data, dict):
             raise LookupError("tvdb malformed response")
-        for remote in data.get("remoteIds") or []:
-            if isinstance(remote, dict) and str(remote.get("sourceName", "")).upper() == "IMDB" and remote.get("id"):
-                result.payload["imdb_id"] = str(remote["id"])
-                break
+        imdb = _imdb_from_remote_ids(data.get("remoteIds"))
+        if imdb is not None:
+            result.payload["imdb_id"] = imdb
         return result
