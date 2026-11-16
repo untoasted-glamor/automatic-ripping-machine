@@ -34,8 +34,8 @@ from arm_ripper.rip import RipResult, rip_all
 from arm_ripper.rip.dispatcher import DEFAULT_MIN_LENGTH_SECONDS
 from arm_ripper.rip.optical_rip import BACKUP_COMPLETE_MARKER, SELECTION_BACKUP_DIRNAME
 from arm_ripper.rip.track_callbacks import TransferStats
+from arm_ripper.disc_scan import SCAN_NOT_READY_MAX_ATTEMPTS, scan_or_none
 from arm_ripper.drive_poll import DriveErrorKind, DriveState, classify_drive_error, read_drive_status
-from arm_ripper.scan import ScanError, scan as scan_disc
 from arm_ripper.source import is_file_source
 from arm_ripper.ws_client import WSClient
 
@@ -64,16 +64,9 @@ class _RipRun:
     disc inserted meanwhile is the next one."""
 
     drive_released: bool
+
+
 RAW_ROOT = Path("/raw")
-# A freshly-settled disc can report DISC_OK via the CDROM_DRIVE_STATUS ioctl
-# before the medium is *data*-readable, so makemkvcon enumerates zero titles.
-# The disc IS present (per ioctl), so a zero-title scan there means "not ready
-# yet," not "genuinely empty" — retry, letting the drive finish spinning up /
-# the TOC become readable. Generous budget (a quick 1-2s retry would miss a slow
-# settle — the field report saw 4/4 discs fail); bounded so a genuinely
-# unreadable disc resolves to a clear give-up in ~26s.
-SCAN_NOT_READY_MAX_ATTEMPTS = 5
-SCAN_NOT_READY_BACKOFFS = (2.0, 4.0, 8.0, 12.0)  # between attempts 1→2, 2→3, 3→4, 4→5
 
 
 def _disconnect_reason(resumes: int) -> str:
@@ -598,119 +591,23 @@ class JobController:
             raise
 
     async def _scan_or_none(self, device_path: str) -> ScanResult | None:
-        """Scan the disc, or None after a log line when the scan fails or the drive goes absent mid-scan (which ends
-        the pipeline). Any other OSError propagates."""
-        try:
-            return await self._scan_with_ready_retry(device_path)
-        except ScanError as e:
-            logger.error("scan failed device=%s err=%s", device_path, e)
-            return None
-        except OSError as e:
-            if classify_drive_error(e) is not DriveErrorKind.ABSENT:
-                raise
-            logger.warning("drive went absent during scan device=%s — pipeline abandoned", device_path)
-            return None
-
-    async def _scan_with_ready_retry(self, device_path: str) -> ScanResult:
-        """Scan the disc (`_scan_until_ready`), reporting it as scan activity
-        from the first attempt until the scan returns or raises, including
-        a cancellation."""
+        """`disc_scan.scan_or_none`, reported as scan activity from the first attempt until the scan returns or
+        raises, including a cancellation (fork). A DVD/BD scan gets the ripper's title-length baseline: the
+        MakeMKV scan lists every title, and the backend gives Track rows only to those at or above it."""
         started_at = datetime.now(timezone.utc)
-        try:
-            result = await self._scan_until_ready(device_path, started_at=started_at)
-        finally:
-            self._set_scan_activity(None)
-        if result.disc_type in (DiscType.DVD, DiscType.BLURAY):
-            # The MakeMKV scan lists every title; the backend gives Track rows
-            # only to those at or above this baseline.
-            result = result.model_copy(update={"min_length_seconds": self._default_min_length_seconds})
-        return result
 
-    async def _scan_until_ready(self, device_path: str, *, started_at: datetime) -> ScanResult:
-        """Scan the disc, retrying when a DISC_OK drive yields zero titles.
-
-        A `DISC_OK` drive that scans to zero titles is almost certainly not
-        data-ready yet (the medium reports present via ioctl before the first
-        SCSI read succeeds). Retry with backoff to wait out the settle. If the
-        drive leaves DISC_OK (tray opened / disc pulled), stop. On exhaustion,
-        return the last (empty) result — the caller handles the give-up.
-
-        Note: `read_drive_status` (os.open + ioctl) may raise OSError if the
-        device node vanishes mid-retry (USB autosuspend / passthrough teardown);
-        that propagates to the pipeline task boundary by design — the task ends
-        and the drive poller re-arms on the next disc-insert event.
-        """
-        last: ScanResult | None = None
-        for attempt in range(1, SCAN_NOT_READY_MAX_ATTEMPTS + 1):
+        def on_attempt(attempt: int) -> None:
             self._set_scan_activity(
                 RipperScanActivity(started_at=started_at, attempt=attempt, max_attempts=SCAN_NOT_READY_MAX_ATTEMPTS)
             )
-            result = await scan_disc(device_path)
-            last = result
-            if result.titles:
-                return result
 
-            # An ISO file has no drive to settle: the CDROM_DRIVE_STATUS ioctl
-            # below is invalid on a regular file (ENOTTY) and would crash the
-            # one-shot source pipeline. Zero titles from a file is final.
-            if self._zero_titles_are_final(device_path):
-                return result
-
-            if attempt < SCAN_NOT_READY_MAX_ATTEMPTS and not await self._back_off_before_rescan(device_path, attempt):
-                return result
-
-        logger.error(
-            "DISC_UNREADABLE_AFTER_RETRIES device=%s drive_state=DISC_OK attempts=%d — "
-            "disc present per ioctl but no readable titles after retries; check disc/drive "
-            "readiness (dirty/damaged disc, drive spin-up, or container device passthrough); "
-            "the 'makemkvcon found 0 titles' warnings above say what MakeMKV reported",
-            device_path,
-            SCAN_NOT_READY_MAX_ATTEMPTS,
-        )
-        assert last is not None
-        return last
-
-    @staticmethod
-    def _zero_titles_are_final(device_path: str) -> bool:
-        """Whether a zero-title scan is the answer rather than a drive still settling: an ISO source has nothing to
-        settle, and a drive no longer DISC_OK has lost its disc."""
-        if is_file_source(device_path):
-            logger.warning("scan: 0 titles from ISO source %s — nothing to retry", device_path)
-            return True
-        state = read_drive_status(device_path)
-        if state != DriveState.DISC_OK:
-            logger.info(
-                "scan: 0 titles and drive no longer DISC_OK (state=%s) device=%s — stopping",
-                state.name,
-                device_path,
-            )
-            return True
-        return False
-
-    @staticmethod
-    async def _back_off_before_rescan(device_path: str, attempt: int) -> bool:
-        """Wait out this attempt's back-off, then report whether the drive still holds its disc and is worth
-        scanning again."""
-        backoff = SCAN_NOT_READY_BACKOFFS[attempt - 1]
-        logger.warning(
-            "scan returned 0 titles while drive=DISC_OK (data not ready?) device=%s titles=0 retry=%d/%d backoff=%.0fs",
-            device_path,
-            attempt,
-            SCAN_NOT_READY_MAX_ATTEMPTS,
-            backoff,
-        )
-        await asyncio.sleep(backoff)
-        # Re-check status after the sleep — disc may have been pulled
-        # while we were waiting; stop before wasting another scan probe.
-        post_sleep_state = read_drive_status(device_path)
-        if post_sleep_state != DriveState.DISC_OK:
-            logger.info(
-                "scan: drive left DISC_OK during backoff (state=%s) device=%s — stopping",
-                post_sleep_state.name,
-                device_path,
-            )
-            return False
-        return True
+        try:
+            result = await scan_or_none(device_path, on_attempt=on_attempt)
+        finally:
+            self._set_scan_activity(None)
+        if result is not None and result.disc_type in (DiscType.DVD, DiscType.BLURAY):
+            result = result.model_copy(update={"min_length_seconds": self._default_min_length_seconds})
+        return result
 
     async def _identify_or_none(
         self, scan_result: ScanResult, device_path: str, *, pending_session_id: str | None
