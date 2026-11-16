@@ -14,7 +14,7 @@
 	import InlineField from '$lib/components/InlineField.svelte';
 	import JobFactsGrid from '$lib/components/JobFactsGrid.svelte';
 	import type { EditableJobField } from '$lib/utils/job-fields';
-	import JobActions from '$lib/components/JobActions.svelte';
+	import JobHeaderActions from '$lib/components/JobHeaderActions.svelte';
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import JobTracksTable from '$lib/components/JobTracksTable.svelte';
 	import IdentityPanel from '$lib/components/identity/IdentityPanel.svelte';
@@ -26,11 +26,10 @@
 	import ReviewGatePanel from '$lib/components/ReviewGatePanel.svelte';
 	import JobTrackPicker from '$lib/components/JobTrackPicker.svelte';
 	import RawBackupRow from '$lib/components/RawBackupRow.svelte';
-	import MakeTextSubtitlesButton from '$lib/components/MakeTextSubtitlesButton.svelte';
 	import { identitySuggestionOf } from '$lib/utils/job-review';
 	import { effectiveJobStatus, isPartialComplete } from '$lib/utils/job-status';
 	import IdentitySuggestionBanner from '$lib/components/IdentitySuggestionBanner.svelte';
-	import { isAwaitingIdentity, isLive, isPreRipStatus, isRipperBusyStatus } from '$lib/utils/job-status-groups';
+	import { isLive, isPreRipStatus, isRipperBusyStatus } from '$lib/utils/job-status-groups';
 	import {
 		isDiscMenu,
 		isRetryArmed,
@@ -80,11 +79,7 @@
 	let actionNote = $state<string | null>(null);
 	let noteTimer: ReturnType<typeof setTimeout> | null = null;
 
-	// Identify is "Edit identity" once an identity already exists (post-rip /
-	// identified), otherwise "Identify disc" for the auto-id-failed case. A disc
-	// with an Identity panel (video, CD) opens that instead of the dialog.
-	let identifyLabel = $derived(detail && isAwaitingIdentity(detail.job.status) ? 'Identify disc' : 'Edit identity');
-
+	// A disc with an Identity panel (video, CD) opens that instead of the dialog.
 	function openIdentity() {
 		if (!hasIdentityPanel) {
 			showIdentify = true;
@@ -126,8 +121,6 @@
 		else if (running > 0) flashNote('Text subtitles are already being made');
 		else flashNote('Every encode already has text subtitles');
 	}
-
-	let canMakeTextSubtitles = $derived((detail?.subtitle_ocr?.eligible_encodes ?? 0) > 0);
 
 	let hasIdentityPanel = $derived(jobDetail.isVideoDisc || jobDetail.isCdDisc);
 
@@ -383,34 +376,16 @@
 					{/if}
 
 					<!-- Action buttons pushed right -->
-					<div class="flex flex-wrap items-center gap-2 ml-auto">
-						{#if (hasIdentityPanel || jobDetail.canResolve) && $isAdmin}
-							<button
-								type="button"
-								data-testid="identify-open"
-								onclick={openIdentity}
-								class="btn job-detail-header-btn"
-							>
-								{hasIdentityPanel ? 'Identity' : identifyLabel}
-							</button>
-						{/if}
-						{#if jobDetail.canApply && $isAdmin}
-							<button
-								type="button"
-								data-testid="apply-open"
-								onclick={() => (showApply = true)}
-								class="btn job-detail-header-btn"
-							>
-								Apply session
-							</button>
-						{/if}
-						{#if canMakeTextSubtitles && d.subtitle_ocr && $isAdmin}
-							<MakeTextSubtitlesButton jobId={job.id} view={d.subtitle_ocr} ondone={handleTextSubtitles} />
-						{/if}
-						{#if $isAdmin}
-							<JobActions {job} onaction={jobDetail.load} ondelete={() => goto('/')} />
-						{/if}
-					</div>
+					<JobHeaderActions
+						{job}
+						{jobDetail}
+						{hasIdentityPanel}
+						subtitleOcr={d.subtitle_ocr}
+						ontextsubtitles={handleTextSubtitles}
+						onidentify={openIdentity}
+						onapply={() => (showApply = true)}
+						ondelete={() => goto('/')}
+					/>
 				</div>
 
 				<!-- A confident match identify held for confirmation (auto-apply off). -->
@@ -702,14 +677,6 @@
 	.job-detail-suggestion {
 		border-bottom: 1px solid var(--color-border);
 		padding: 0.75rem 1.25rem;
-	}
-	/* the original header buttons were px-3 py-1.5 text-sm (0.75rem/0.375rem,
-	   0.875rem) - between .btn's default and .btn-sm */
-	.job-detail-header-btn {
-		min-height: auto;
-		padding: 0.375rem 0.75rem;
-		font-size: 0.875rem;
-		line-height: 1.25rem;
 	}
 	.job-detail-title {
 		font-size: 1.25rem;
