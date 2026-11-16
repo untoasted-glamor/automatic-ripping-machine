@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { onMount, tick } from 'svelte';
-	import { keepTracks, resolveJob, retryFailedTitles } from '$lib/api/jobs';
+	import { keepTracks, retryFailedTitles } from '$lib/api/jobs';
 	import { posterSrc, posterFallback, jobPoster } from '$lib/utils/poster';
 	import PosterImage from '$lib/components/PosterImage.svelte';
 	import type {
@@ -51,7 +51,6 @@
 	import PlayAllBadge from '$lib/components/PlayAllBadge.svelte';
 	import { fetchSessions } from '$lib/api/sessions';
 	import { buildMetadataFields } from '$lib/utils/job-fields';
-	import { buildResolveBody, tvSeasonOrDiscChanged } from '$lib/utils/job-resolve';
 	import { formatFps } from '$lib/utils/fps';
 	import { trackKindLabel, trackSizeLabel } from '$lib/utils/track-fields';
 	import { trackDuration } from '$lib/utils/duration';
@@ -266,16 +265,8 @@
 		}
 	}
 
-	// A fact edited in place goes through resolve (see buildResolveBody). A TV
-	// job's season or disc change re-runs the episode match, so the panel shows
-	// it matching until the run reports.
 	async function saveFact(field: EditableJobField | 'title', raw: string) {
-		if (!detail) return;
-		const job = detail.job;
-		const body = buildResolveBody(job, field, raw);
-		const resp = await resolveJob(job.id, body);
-		await jobDetail.load();
-		if (tvSeasonOrDiscChanged(job, resp?.job)) matching.start();
+		if (await jobDetail.saveFact(field, raw)) matching.start();
 	}
 
 	function handleSeriesApplied() {
