@@ -2,13 +2,7 @@
 	import { onMount } from 'svelte';
 	import { get } from 'svelte/store';
 	import { fade } from 'svelte/transition';
-	import {
-		fetchTranscoderJobs,
-		fetchTranscoderStats,
-		retryTranscoderJob,
-		deleteTranscoderJob
-	} from '$lib/api/transcoder';
-	import type { TranscodeTaskView } from '$lib/types/api.gen';
+	import { fetchTranscoderStats, retryTranscoderJob, deleteTranscoderJob } from '$lib/api/transcoder';
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
 	import TimeAgo from '$lib/components/TimeAgo.svelte';
@@ -17,9 +11,9 @@
 	import { fadeIn, fadeOut } from '$lib/transitions';
 	import { formatElapsed } from '$lib/utils/format';
 	import { pathBasename } from '$lib/utils/path';
-	import { transcoderStats, transcoderWorkers, getJobsCache, setJobsCache } from '$lib/stores/transcoder';
+	import { transcoderStats, transcoderWorkers, getJobsCache } from '$lib/stores/transcoder';
 	import { GpuInventory } from '$lib/stores/gpuInventory.svelte';
-	import { sortTranscodeTasks } from '$lib/utils/transcode-sort';
+	import { TranscodeJobs } from '$lib/stores/transcodeJobs.svelte';
 	import { ocrTaskCount, taskCount } from '$lib/utils/transcode-stats';
 	import { isAdmin } from '$lib/stores/auth';
 	import { transcoderEnabled, transcodeRuntimeEnabled } from '$lib/stores/config';
@@ -27,54 +21,15 @@
 	import TaskKindChip from '$lib/components/TaskKindChip.svelte';
 	import { encodeTasks } from '$lib/utils/transcode-kind';
 
-	const emptyJobs: TranscodeTaskView[] = [];
-
 	// Singleton stores (see $lib/stores/transcoder) so stats/workers survive
 	// navigation and don't flash the offline/empty state on every visit.
 	const stats = transcoderStats;
 	const statsError = stats.error;
 	const statsInitialized = stats.initialized;
 	const workers = transcoderWorkers;
-	let activeTab = $state('all');
-	// Seed jobs from the per-tab cache so a revisit paints the last cards
-	// immediately instead of dropping to a skeleton.
-	let jobs = $state<TranscodeTaskView[]>(getJobsCache('all') ?? emptyJobs);
-	let sortedJobs = $derived([...jobs].sort(sortTranscodeTasks));
-	let loadingJobs = $state(getJobsCache('all') == null);
-	let jobsError = $state<Error | null>(null);
-
-	// v3 statuses: queued | in_progress | done | failed. The UI tabs map onto
-	// these; "online" is implied by a successful poll (store.initialized).
-	const TAB_STATUS: Record<string, string | undefined> = {
-		all: undefined,
-		queued: 'queued',
-		in_progress: 'in_progress',
-		done: 'done',
-		failed: 'failed'
-	};
+	const transcodeJobs = new TranscodeJobs();
 
 	let s = $derived($stats);
-
-	async function loadJobs(showLoading = true) {
-		if (showLoading) loadingJobs = true;
-		jobsError = null;
-		try {
-			jobs = await fetchTranscoderJobs({ status: TAB_STATUS[activeTab] });
-			setJobsCache(activeTab, jobs);
-		} catch (e) {
-			jobsError = e instanceof Error ? e : new Error('Failed to load jobs');
-			jobs = emptyJobs;
-		} finally {
-			loadingJobs = false;
-		}
-	}
-
-	function switchTab(tab: string) {
-		activeTab = tab;
-		// Show cached cards instantly for a previously-viewed tab; only the
-		// first view of a tab shows the loading skeleton.
-		loadJobs(getJobsCache(tab) == null);
-	}
 
 	let actionError = $state<string | null>(null);
 
@@ -88,7 +43,7 @@
 		} catch (e) {
 			actionError = e instanceof Error ? e.message : `${verb} failed`;
 		}
-		loadJobs();
+		transcodeJobs.load();
 	}
 
 	function handleRetry(id: string) {
@@ -100,28 +55,14 @@
 		return runAction(() => deleteTranscoderJob(id), 'Delete');
 	}
 
-	let jobsTimer: ReturnType<typeof setInterval> | null = null;
-
-	function startJobsPolling() {
-		stopJobsPolling();
-		jobsTimer = setInterval(() => loadJobs(false), 5000);
-	}
-
-	function stopJobsPolling() {
-		if (jobsTimer) {
-			clearInterval(jobsTimer);
-			jobsTimer = null;
-		}
-	}
-
 	// Auto-refresh jobs when any are queued or in progress.
 	$effect(() => {
 		// Encode tasks and subtitle OCR tasks are counted apart.
 		const live = ['in_progress', 'queued'].some((st) => taskCount(s, st) > 0 || ocrTaskCount(s, st) > 0);
 		if (live) {
-			startJobsPolling();
+			transcodeJobs.startPolling();
 		} else {
-			stopJobsPolling();
+			transcodeJobs.stopPolling();
 		}
 	});
 
@@ -152,12 +93,12 @@
 		gpus.load();
 		const stopWatchingGpus = gpus.watch();
 		// Skeleton only when we have nothing cached for the current tab.
-		loadJobs(getJobsCache(activeTab) == null);
+		transcodeJobs.load(getJobsCache(transcodeJobs.activeTab) == null);
 		return () => {
 			stopWatchingGpus();
 			stats.stop();
 			workers.stop();
-			stopJobsPolling();
+			transcodeJobs.stopPolling();
 		};
 	});
 
@@ -354,14 +295,23 @@
 			<!-- Tabs -->
 			<div class="tabs transcoder-page-tabs">
 				{#each tabs as tab (tab)}
-					<button onclick={() => switchTab(tab)} data-selected={activeTab === tab} class="tabs-tab transcoder-page-tab">
+					<button
+						onclick={() => transcodeJobs.switchTab(tab)}
+						data-selected={transcodeJobs.activeTab === tab}
+						class="tabs-tab transcoder-page-tab"
+					>
 						{TAB_LABELS[tab]}
 					</button>
 				{/each}
 			</div>
 
 			<!-- Jobs list -->
-			<LoadState data={sortedJobs} loading={loadingJobs} error={jobsError} isEmpty={(d) => d.length === 0}>
+			<LoadState
+				data={transcodeJobs.sorted}
+				loading={transcodeJobs.loading}
+				error={transcodeJobs.error}
+				isEmpty={(d) => d.length === 0}
+			>
 				{#snippet loadingSlot()}
 					<!-- As many placeholders as the stats poll says there are tasks (it
 				     lands first), so the list does not grow when the jobs arrive. -->
