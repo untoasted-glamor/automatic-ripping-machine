@@ -1549,41 +1549,7 @@ class _DiscRip:
         menu = self._menu
         parked = False
         while True:
-            self._watcher = (
-                asyncio.create_task(self._controller._watch_drive(self._rip_path, self._lost))
-                if self._resumable
-                else None
-            )
-            try:
-                parked = await rip_all(
-                    disc_type=self._disc_type,
-                    device_path=self._rip_path,
-                    tracks=self._tracks,
-                    scan_titles=self._rip_start.scan_titles,
-                    output_dir=self._rip_dir,
-                    on_track_start=self._on_track_start,
-                    on_track_done=self._on_track_done,
-                    on_track_progress=self._on_track_progress,
-                    min_length_seconds=self._min_length_seconds,
-                    stop=self._lost if self._resumable else None,
-                    skip_track_ids=self._skip,
-                    drive_lost=(
-                        functools.partial(self._controller._drive_gone, self._rip_path) if self._resumable else None
-                    ),
-                    backup_full_selections=self._controller._backup_full_selections,
-                    # The job's, whichever folder this pass rips into, so a
-                    # resume remuxes from a backup an earlier pass finished.
-                    backup_dir=self._output_dir / SELECTION_BACKUP_DIRNAME,
-                    on_backup_done=self._on_backup_done,
-                    # Until a pass settles it: a resume after the drive
-                    # dropped during the backup copies it then.
-                    menu=menu if menu is not None and not menu.settled else None,
-                    drive_free=self._drive_free,
-                    park_after_backup=self._rip_start.park_after_backup and not self._drive_free,
-                )
-            finally:
-                if self._watcher is not None:
-                    self._watcher.cancel()
+            parked = await self._run_pass()
             if not (self._lost.is_set() and self._unfinished):
                 break
             # The drive dropped off the bus mid-rip. Keep the disc's finished
@@ -1638,6 +1604,45 @@ class _DiscRip:
         # the rip (USB replug); the path captured at rip start is a hint only.
         await controller._eject_with_retry(controller._device_path or self._start_path)
         await asyncio.sleep(EJECT_GRACE_SECONDS)
+
+    async def _run_pass(self) -> bool:
+        """One `mkv all` pass over the disc on its current node, with a watcher that stops makemkvcon if the drive
+        leaves that node (resumable rips only). Fork: returns whether the rip parked after its backup (stop 2); the
+        watcher is a field so `_on_backup_done` can stop it."""
+        menu = self._menu
+        self._watcher = (
+            asyncio.create_task(self._controller._watch_drive(self._rip_path, self._lost)) if self._resumable else None
+        )
+        try:
+            return await rip_all(
+                disc_type=self._disc_type,
+                device_path=self._rip_path,
+                tracks=self._tracks,
+                scan_titles=self._rip_start.scan_titles,
+                output_dir=self._rip_dir,
+                on_track_start=self._on_track_start,
+                on_track_done=self._on_track_done,
+                on_track_progress=self._on_track_progress,
+                min_length_seconds=self._min_length_seconds,
+                stop=self._lost if self._resumable else None,
+                skip_track_ids=self._skip,
+                drive_lost=(
+                    functools.partial(self._controller._drive_gone, self._rip_path) if self._resumable else None
+                ),
+                backup_full_selections=self._controller._backup_full_selections,
+                # The job's, whichever folder this pass rips into, so a
+                # resume remuxes from a backup an earlier pass finished.
+                backup_dir=self._output_dir / SELECTION_BACKUP_DIRNAME,
+                on_backup_done=self._on_backup_done,
+                # Until a pass settles it: a resume after the drive
+                # dropped during the backup copies it then.
+                menu=menu if menu is not None and not menu.settled else None,
+                drive_free=self._drive_free,
+                park_after_backup=self._rip_start.park_after_backup and not self._drive_free,
+            )
+        finally:
+            if self._watcher is not None:
+                self._watcher.cancel()
 
 
 def _remove_partial_outputs(output_dir: Path, kept: set[Path]) -> None:
