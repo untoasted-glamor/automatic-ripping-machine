@@ -9,11 +9,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-import arm_ripper.job_controller as jc_module
+import arm_ripper.disc_rip as disc_rip_module
 import arm_ripper.scan.disc_probe as disc_probe
 from arm_common import JobStatus, MenuKind, TrackStatus
 from arm_common.schemas import MenuExtract, RipStartResponse, TrackView
-from arm_ripper.job_controller import MENU_NOT_COPIED, JobController
+from arm_ripper.disc_rip import MENU_NOT_COPIED
+from arm_ripper.job_controller import JobController
 from arm_ripper.menus.extract import MenuOutcome
 
 from tests import _disc_menu_builders as b
@@ -64,7 +65,7 @@ def _fake_rip(monkeypatch: pytest.MonkeyPatch, outcome: MenuOutcome | None) -> l
         if outcome is not None:
             await menu.finish(outcome)  # type: ignore[attr-defined]
 
-    monkeypatch.setattr(jc_module, "rip_all", fake_rip_all)
+    monkeypatch.setattr(disc_rip_module, "rip_all", fake_rip_all)
     return seen
 
 
@@ -113,7 +114,7 @@ async def test_no_menu_ticked_sends_none(monkeypatch, stub_scan, stub_eject) -> 
     async def fake_rip_all(**kw: object) -> None:
         seen.append(kw["menu"])
 
-    monkeypatch.setattr(jc_module, "rip_all", fake_rip_all)
+    monkeypatch.setattr(disc_rip_module, "rip_all", fake_rip_all)
     client = FakeClient()
     client.identify_responses.append(_job(JobStatus.IDENTIFIED, title="Test Movie"))
     await asyncio.wait_for(JobController(client, "drv_test").handle_disc_inserted("/dev/sr0"), timeout=2.0)

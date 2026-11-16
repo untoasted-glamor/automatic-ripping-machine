@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-import arm_ripper.job_controller as jc_module
+import arm_ripper.disc_rip as disc_rip_module
 from arm_common import DiscType, JobStatus
 from arm_common.enums import TrackStatus
 from arm_common.schemas import JobView, RipStartResponse, TrackView
@@ -194,7 +194,7 @@ async def test_a_parked_rip_calls_rip_parked_and_gives_the_disc_back_once(monkey
         calls.append(kw)
         return await backed_up(**kw)
 
-    monkeypatch.setattr(jc_module, "rip_all", fake_rip_all)
+    monkeypatch.setattr(disc_rip_module, "rip_all", fake_rip_all)
     tracks = [_track(0), _track(1)]
 
     await controller._execute_rip(
