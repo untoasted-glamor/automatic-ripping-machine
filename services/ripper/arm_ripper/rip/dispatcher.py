@@ -409,6 +409,27 @@ async def _fail_unsupported(rip_as: DiscType, tracks: list[TrackView], on_track_
         )
 
 
+def _index_tracks(
+    tracks: list[TrackView], skip_track_ids: Collection[str]
+) -> tuple[dict[int, TrackView], list[TrackView]]:
+    """Map each track to its source title index; also return, in order, the tracks whose `source_ref` isn't an int
+    and that no earlier pass settled (and, fork, that are kept), which the caller fails."""
+    # Pre-compute source_ref → track lookup so the rip-side callbacks
+    # are O(1). Skip tracks already settled; collect malformed ones.
+    track_by_index: dict[int, TrackView] = {}
+    invalid: list[TrackView] = []
+    for track in tracks:
+        try:
+            idx = int(track.source_ref)
+        except ValueError:
+            # Fork: an excluded track is never ripped, so it isn't failed either.
+            if track.id not in skip_track_ids and not track.excluded:
+                invalid.append(track)
+            continue
+        track_by_index[idx] = track
+    return track_by_index, invalid
+
+
 async def _rip_optical(
     *,
     disc_type: DiscType,
@@ -445,27 +466,15 @@ async def _rip_optical(
     a kept one or a new read of the disc. `drive_free`: only from a kept
     backup (see `rip_all`). `park`: stop after the backup (see `rip_all`);
     returns True when it did."""
-    # Pre-compute source_ref → track lookup so the rip-side callbacks
-    # are O(1). Skip and pre-fail tracks with malformed source_ref.
-    track_by_index: dict[int, TrackView] = {}
-    for track in tracks:
-        try:
-            idx = int(track.source_ref)
-        except ValueError:
-            if track.id in skip_track_ids or track.excluded:
-                continue
-            # No need to fire on_track_start for an invalid-source_ref
-            # track — the backend rejects the track entirely via the
-            # FAILED-from-QUEUED guard. Falling through to on_track_done
-            # is consistent with how the per-title implementation handled
-            # it, and the upstream patch_with_retry catches the 409 if
-            # it ever shows up here.
-            await on_track_done(
-                track,
-                RipResult(ok=False, error=f"invalid source_ref: {track.source_ref!r}"),
-            )
-            continue
-        track_by_index[idx] = track
+    track_by_index, invalid = _index_tracks(tracks, skip_track_ids)
+    # No need to fire on_track_start for an invalid-source_ref
+    # track — the backend rejects the track entirely via the
+    # FAILED-from-QUEUED guard. Falling through to on_track_done
+    # is consistent with how the per-title implementation handled
+    # it, and the upstream patch_with_retry catches the 409 if
+    # it ever shows up here.
+    for track in invalid:
+        await on_track_done(track, RipResult(ok=False, error=f"invalid source_ref: {track.source_ref!r}"))
 
     if not track_by_index and menu is None and not park:
         return False
