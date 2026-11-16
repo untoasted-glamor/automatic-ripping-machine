@@ -15,9 +15,12 @@
 		isScanning,
 		mediaLabel,
 		scanRetryLabel,
-		DETACHED_LABEL,
 		UNAVAILABLE_HINT,
-		UNAVAILABLE_TITLE
+		UNAVAILABLE_TITLE,
+		isDriveDetached,
+		isRipperOfflinePresent,
+		prescanOverrideCount,
+		startRipBlockedReason
 	} from '$lib/utils/drives';
 	import { elapsedTime } from '$lib/utils/format';
 	import StatusStrip from './StatusStrip.svelte';
@@ -225,14 +228,6 @@
 		}
 	}
 
-	let statusText = $derived(drive ? driveStatusLabel(drive) : '');
-	let isDetached = $derived(statusText === DETACHED_LABEL);
-	let isError = $derived(drive?.status === 'error');
-	let isOfflinePresent = $derived(!isError && !isDetached && drive?.status === 'offline' && drive?.present === true);
-	// Present but not openable (permissions): an error the operator must fix,
-	// shown as visible text rather than a neutral chip.
-	let isUnavailable = $derived(!!drive && !isError && !isDetached && isMediaUnavailable(drive));
-
 	// The ripper scans the disc (MakeMKV, maybe several not-ready retries)
 	// before identify creates a job, so without this the card reads "Idle"
 	// through a scan that can take minutes.
@@ -251,31 +246,6 @@
 	let scanElapsed = $derived.by(() => {
 		void scanTick;
 		return drive?.scan_started_at ? elapsedTime(drive.scan_started_at) : '';
-	});
-
-	// Why Start rip cannot work right now, or null when it can (D-208). The
-	// backend refuses a trigger while the drive rips (409) or reports no disc
-	// ready (400), and the ripper silently drops one while it owns any job or
-	// when no ripper is listening, so gate the button up front instead of
-	// letting the click spin and fail (or do nothing). `unknown` is let through
-	// like the backend does: the ripper decides once it scans.
-	let startRipBlocked = $derived.by((): string | null => {
-		if (!drive) return null;
-		if (hasLiveJob(drive)) return 'The drive already has a job in progress';
-		if (isDetached) return 'The drive is not connected';
-		if (isOfflinePresent) return "The drive's ripper is offline";
-		switch (drive.media_status) {
-			case 'no_disc':
-				return 'No disc in the drive';
-			case 'tray_open':
-				return 'The tray is open';
-			case 'not_ready':
-				return 'The drive is not ready yet';
-			case 'unavailable':
-				return 'The drive cannot be opened: check its permissions';
-			default:
-				return null;
-		}
 	});
 
 	async function startManualRip() {
@@ -499,6 +469,15 @@
 		{/if}
 	</div>
 {:else}
+	{@const statusText = driveStatusLabel(drive)}
+	{@const isDetached = isDriveDetached(drive)}
+	{@const isError = drive.status === 'error'}
+	{@const isOfflinePresent = isRipperOfflinePresent(drive)}
+	<!-- Present but not openable (permissions): an error the operator must fix,
+	     shown as visible text rather than a neutral chip. -->
+	{@const isUnavailable = !isError && !isDetached && isMediaUnavailable(drive)}
+	{@const startRipBlocked = startRipBlockedReason(drive)}
+	{@const prescanOverrides = prescanOverrideCount(drive)}
 	<!-- Plain `card`, deliberately NOT `card card-status`: the original card shell
      (git 441d35d2, `rounded-lg border border-primary/20 bg-surface p-2.5
      shadow-xs`) carried no status-driven styling at all. Drive status only ever
@@ -567,7 +546,7 @@
 					<span class="drive-card-info-value">{drive.hostname}</span>
 				</div>
 			{/if}
-			{#if drive.rip_speed != null || [drive.prescan_cache_mb, drive.prescan_timeout, drive.prescan_retries, drive.disc_enum_timeout].some((v) => v != null)}
+			{#if drive.rip_speed != null || prescanOverrides > 0}
 				<div class="flex flex-wrap items-center gap-1 pt-0.5">
 					{#if drive.rip_speed != null}
 						<span in:reveal class="drive-card-chip drive-card-chip-speed">
@@ -575,15 +554,9 @@
 							{drive.rip_speed}x speed
 						</span>
 					{/if}
-					{#if [drive.prescan_cache_mb, drive.prescan_timeout, drive.prescan_retries, drive.disc_enum_timeout].some((v) => v != null)}
-						{@const prescanOverrideCount = [
-							drive.prescan_cache_mb,
-							drive.prescan_timeout,
-							drive.prescan_retries,
-							drive.disc_enum_timeout
-						].filter((v) => v != null).length}
+					{#if prescanOverrides > 0}
 						<span in:reveal class="drive-card-chip drive-card-chip-warning">
-							{prescanOverrideCount} custom
+							{prescanOverrides} custom
 						</span>
 					{/if}
 				</div>
