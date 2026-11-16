@@ -596,9 +596,8 @@ def test_jellyfin_tv_session_without_season_or_fallback_disc_422s(columns: dict[
 def _ctx_for(**track_kwargs: object) -> dict[str, str]:
     job = _tv_job()
     track = _tv_track(1, **track_kwargs)
-    sess = _tv_session("{episode}")
     tp = _tv_preset()
-    return _build_track_ctx(job, track, sess, tp)
+    return _build_track_ctx(job, track, tp)
 
 
 def test_episode_token_renders_two_episode_range() -> None:
