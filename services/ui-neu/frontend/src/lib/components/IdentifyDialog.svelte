@@ -2,7 +2,7 @@
 	import { resolveJob } from '$lib/api/jobs';
 	import type { JobView, ResolveResponse } from '$lib/types/api.gen';
 	import TitleSearch from './TitleSearch.svelte';
-	import { missReason } from '$lib/utils/job-status';
+	import { missReason } from '$lib/utils/job-review';
 	import { driveLabel } from '$lib/utils/drive-name';
 	import { isAwaitingIdentity } from '$lib/utils/job-status-groups';
 	import { changedPosition } from '$lib/utils/identity-position';

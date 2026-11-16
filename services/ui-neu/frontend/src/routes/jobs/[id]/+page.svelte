@@ -28,7 +28,8 @@
 	import RawBackupRow from '$lib/components/RawBackupRow.svelte';
 	import MakeTextSubtitlesButton from '$lib/components/MakeTextSubtitlesButton.svelte';
 	import TaskKindChip from '$lib/components/TaskKindChip.svelte';
-	import { effectiveJobStatus, identitySuggestionOf, isPartialComplete } from '$lib/utils/job-status';
+	import { identitySuggestionOf } from '$lib/utils/job-review';
+	import { effectiveJobStatus, isPartialComplete } from '$lib/utils/job-status';
 	import IdentitySuggestionBanner from '$lib/components/IdentitySuggestionBanner.svelte';
 	import {
 		isAwaitingIdentity,

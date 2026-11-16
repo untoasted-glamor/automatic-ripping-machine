@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { JobView } from '$lib/types/api.gen';
 	import { pauseWaitingJob, retryFailedTitles, startWaitingJob } from '$lib/api/jobs';
-	import { previouslyRippedJobId } from '$lib/utils/job-status';
+	import { previouslyRippedJobId } from '$lib/utils/job-review';
 	import { isAdmin } from '$lib/stores/auth';
 	import ReviewWaitStatus from './ReviewWaitStatus.svelte';
 	import JobTrackPicker from './JobTrackPicker.svelte';

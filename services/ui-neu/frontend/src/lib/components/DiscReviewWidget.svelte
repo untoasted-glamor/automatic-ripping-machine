@@ -15,15 +15,15 @@
 	import { fetchSessions } from '$lib/api/sessions';
 	import { parkedSessionLine, readJobMetadata, videoTypeLabel } from '$lib/utils/job-fields';
 	import { driveLabel } from '$lib/utils/drive-name';
+	import { episodeStatus } from '$lib/utils/episode-status';
 	import {
-		episodeStatus,
 		identitySuggestionOf,
 		isIdentifyMiss,
 		missReason,
 		previouslyRippedJobId,
-		providerLabel,
 		reviewPhaseBadge
-	} from '$lib/utils/job-status';
+	} from '$lib/utils/job-review';
+	import { providerLabel } from '$lib/utils/job-status';
 	import { formatDateTime } from '$lib/utils/format';
 	import ReviewWaitStatus from './ReviewWaitStatus.svelte';
 	import { discTypeLabel } from '$lib/utils/job-type';
