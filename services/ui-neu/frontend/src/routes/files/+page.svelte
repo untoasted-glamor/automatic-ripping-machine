@@ -1,48 +1,33 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
+	import { renameFile, moveFile, deleteFile, createDirectory, fixPermissions } from '$lib/api/files';
+	import { FilesBrowser } from '$lib/stores/filesBrowser.svelte';
+	import { MovePicker } from '$lib/stores/movePicker.svelte';
+	import { OrphanFolders } from '$lib/stores/orphanFolders.svelte';
+	import type { BulkFeedback } from '$lib/utils/bulk-delete-feedback';
 	import {
-		fetchRoots,
-		fetchDirectory,
-		renameFile,
-		moveFile,
-		deleteFile,
-		createDirectory,
-		fixPermissions
-	} from '$lib/api/files';
-	import type { FileRoot, DirectoryListing } from '$lib/api/files';
-	import { formatBytes } from '$lib/utils/format';
-	import {
-		fetchOrphanFolders,
-		deleteFolder as deleteOrphanFolder,
-		bulkDeleteFolders,
-		cleanupTranscoder
-	} from '$lib/api/maintenance';
-	import type { OrphanFoldersResponse } from '$lib/api/maintenance';
+		parseSelectionKey,
+		orderForDelete,
+		bulkResultFeedback,
+		cleanupFeedback,
+		fixedPermissionsMessage
+	} from '$lib/utils/files';
+	import { cleanupTranscoder } from '$lib/api/maintenance';
 	import BreadcrumbNav from '$lib/components/BreadcrumbNav.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import FileRow from '$lib/components/FileRow.svelte';
+	import FileMoveDialog from '$lib/components/FileMoveDialog.svelte';
 	import LoadState from '$lib/components/LoadState.svelte';
+	import OrphanFoldersModal from '$lib/components/OrphanFoldersModal.svelte';
 	import { isAdmin } from '$lib/stores/auth';
 	import { features } from '$lib/features';
 	import SortIndicator from '$lib/components/SortIndicator.svelte';
 	import Glyph from '$lib/components/Glyph.svelte';
 
-	let roots = $state<FileRoot[]>([]);
-	// Current navigation position: root key + subpath within that root
-	let current = $state<{ root: string; subpath: string }>({ root: '', subpath: '' });
-	let listing = $state<DirectoryListing | null>(null);
-	let loading = $state(true);
-	let error = $state<string | null>(null);
-	let filesError = $derived<Error | null>(error ? new Error(error) : null);
+	const browser = new FilesBrowser();
+	const movePicker = new MovePicker(browser);
 	let feedback = $state<{ type: 'success' | 'error'; message: string } | null>(null);
-
-	// Sort state
-	let sortKey = $state<'name' | 'size' | 'modified'>('name');
-	let sortDir = $state<'asc' | 'desc'>('asc');
-
-	// Selection state — key is `subpath/name` within the current root
-	let selectedKeys = $state(new Set<string>());
 
 	// Delete confirmation (single item)
 	let deleteDialog = $state({ open: false, root: '', subpath: '', name: '' });
@@ -50,285 +35,106 @@
 	// Bulk delete confirmation
 	let bulkDeleteOpen = $state(false);
 
-	// Move dialog — browsable directory picker
-	let moveDialogOpen = $state(false);
-	let picker = $state<{ root: string; subpath: string }>({ root: '', subpath: '' });
-	let pickerListing = $state<DirectoryListing | null>(null);
-	let pickerLoading = $state(false);
-
 	// New folder
 	let creatingFolder = $state(false);
 	let newFolderName = $state('');
 
 	// Orphan folders modal
-	let orphanFoldersOpen = $state(false);
-	let orphanFoldersData = $state<OrphanFoldersResponse | null>(null);
-	let orphanFoldersLoading = $state(false);
-	let orphanFoldersSelected = $state<Set<string>>(new Set());
-	let orphanFoldersBusy = $state(false);
-	let orphanFoldersFeedback = $state<{ type: 'success' | 'error'; message: string } | null>(null);
+	const orphans = new OrphanFolders();
 
 	// Transcoder cleanup
 	let transcoderCleanupOpen = $state(false);
-
-	let isReadonly = $derived(listing?.readonly === true);
-
-	let sortedEntries = $derived.by(() => {
-		if (!listing) return [];
-		return [...listing.entries].sort((a, b) => {
-			if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
-			let cmp: number;
-			if (sortKey === 'size') {
-				cmp = (a.size ?? 0) - (b.size ?? 0);
-			} else if (sortKey === 'modified') {
-				cmp = (a.modified ?? '').localeCompare(b.modified ?? '');
-			} else {
-				cmp = a.name.toLowerCase().localeCompare(b.name.toLowerCase());
-			}
-			return sortDir === 'asc' ? cmp : -cmp;
-		});
-	});
-
-	// Build the item subpath for a named entry in the current directory
-	function itemSubpath(entryName: string): string {
-		return current.subpath ? `${current.subpath}/${entryName}` : entryName;
-	}
-
-	// Build a selection key (root::subpath) for an entry
-	function selectionKey(entryName: string): string {
-		return `${current.root}::${itemSubpath(entryName)}`;
-	}
-
-	// Subfolders in the picker (excluding items being moved)
-	let pickerFolders = $derived.by(() => {
-		if (!pickerListing) return [];
-		// Only exclude selected folders when the picker is browsing the same dir as the source.
-		// When the picker is in a different dir, none of the source selection applies.
-		const sameDir = picker.root === current.root && picker.subpath === current.subpath;
-		const movingNames = sameDir
-			? new Set([...selectedKeys].map((k) => k.split('::')[1].split('/').pop()))
-			: new Set<string | undefined>();
-		return pickerListing.entries.filter((e) => e.type === 'directory' && !movingNames.has(e.name));
-	});
-
-	// Can we go up from picker?
-	let pickerCanGoUp = $derived(picker.subpath !== '' || picker.root !== current.root);
-
-	let allSelected = $derived(
-		sortedEntries.length > 0 && sortedEntries.every((e) => selectedKeys.has(selectionKey(e.name)))
-	);
-
-	function toggleSort(key: 'name' | 'size' | 'modified') {
-		if (sortKey === key) {
-			sortDir = sortDir === 'asc' ? 'desc' : 'asc';
-		} else {
-			sortKey = key;
-			sortDir = key === 'modified' ? 'desc' : 'asc';
-		}
-	}
-
-	function sortIconDir(key: string): 'asc' | 'desc' | null {
-		if (sortKey !== key) return null;
-		return sortDir;
-	}
 
 	function clearFeedback() {
 		setTimeout(() => (feedback = null), 3000);
 	}
 
-	function toggleSelect(entryName: string) {
-		const key = selectionKey(entryName);
-		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- copy-on-write; reassigning the $state variable triggers updates
-		const next = new Set(selectedKeys);
-		if (next.has(key)) next.delete(key);
-		else next.add(key);
-		selectedKeys = next;
+	function showFeedback(next: BulkFeedback) {
+		feedback = next;
+		clearFeedback();
 	}
 
-	function toggleSelectAll() {
-		if (!listing) return;
-		if (allSelected) {
-			selectedKeys = new Set();
-		} else {
-			selectedKeys = new Set(sortedEntries.map((e) => selectionKey(e.name)));
-		}
-	}
-
-	const rootOrder: Record<string, number> = { raw: 0, transcode: 1, completed: 2, music: 3 };
-
-	async function loadRoots() {
+	async function runWithFeedback(action: () => Promise<void>, fallback: string) {
 		try {
-			roots = (await fetchRoots()).sort((a, b) => (rootOrder[a.key ?? ''] ?? 99) - (rootOrder[b.key ?? ''] ?? 99));
-			if (roots.length > 0 && !current.root) {
-				current = { root: roots[0].key, subpath: '' };
-			}
+			await action();
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load roots';
-		}
-	}
-
-	async function navigate(root: string, subpath: string) {
-		loading = true;
-		error = null;
-		current = { root, subpath };
-		selectedKeys = new Set();
-		try {
-			listing = await fetchDirectory(root, subpath);
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load directory';
-			listing = null;
-		} finally {
-			loading = false;
+			showFeedback({ type: 'error', message: e instanceof Error ? e.message : fallback });
 		}
 	}
 
 	async function handleRename(entryName: string, newName: string) {
-		try {
-			await renameFile(current.root, itemSubpath(entryName), newName);
-			feedback = { type: 'success', message: `Renamed to ${newName}` };
-			clearFeedback();
-			await navigate(current.root, current.subpath);
-		} catch (e) {
-			feedback = { type: 'error', message: e instanceof Error ? e.message : 'Rename failed' };
-			clearFeedback();
-		}
+		await runWithFeedback(async () => {
+			await renameFile(browser.current.root, browser.itemSubpath(entryName), newName);
+			showFeedback({ type: 'success', message: `Renamed to ${newName}` });
+			await browser.navigate(browser.current.root, browser.current.subpath);
+		}, 'Rename failed');
 	}
 
 	async function handleFixPermissions(entryName: string, displayName: string) {
-		try {
-			const result = await fixPermissions(current.root, itemSubpath(entryName));
-			feedback = {
+		await runWithFeedback(async () => {
+			const result = await fixPermissions(browser.current.root, browser.itemSubpath(entryName));
+			showFeedback({
 				type: 'success',
-				message: `Fixed permissions on ${displayName} (${result.fixed} item${result.fixed !== 1 ? 's' : ''})`
-			};
-			clearFeedback();
-			await navigate(current.root, current.subpath);
-		} catch (e) {
-			feedback = { type: 'error', message: e instanceof Error ? e.message : 'Failed to fix permissions' };
-			clearFeedback();
-		}
+				message: fixedPermissionsMessage(displayName, result.fixed)
+			});
+			await browser.navigate(browser.current.root, browser.current.subpath);
+		}, 'Failed to fix permissions');
 	}
 
 	function handleDeleteRequest(entryName: string, displayName: string) {
-		deleteDialog = { open: true, root: current.root, subpath: itemSubpath(entryName), name: displayName };
+		deleteDialog = {
+			open: true,
+			root: browser.current.root,
+			subpath: browser.itemSubpath(entryName),
+			name: displayName
+		};
 	}
 
 	async function confirmDelete() {
-		try {
+		await runWithFeedback(async () => {
 			await deleteFile(deleteDialog.root, deleteDialog.subpath);
-			feedback = { type: 'success', message: `Deleted ${deleteDialog.name}` };
-			clearFeedback();
+			showFeedback({ type: 'success', message: `Deleted ${deleteDialog.name}` });
 			deleteDialog = { open: false, root: '', subpath: '', name: '' };
-			await navigate(current.root, current.subpath);
-		} catch (e) {
-			feedback = { type: 'error', message: e instanceof Error ? e.message : 'Delete failed' };
-			clearFeedback();
-		}
+			await browser.navigate(browser.current.root, browser.current.subpath);
+		}, 'Delete failed');
 	}
 
 	// --- Bulk move with browsable picker ---
-	async function openMoveDialog() {
-		if (selectedKeys.size === 0) return;
-		picker = { root: current.root, subpath: current.subpath };
-		moveDialogOpen = true;
-		await loadPickerLocation(current.root, current.subpath);
-	}
-
-	async function loadPickerLocation(root: string, subpath: string) {
-		pickerLoading = true;
-		try {
-			pickerListing = await fetchDirectory(root, subpath);
-			picker = { root, subpath };
-		} catch {
-			// stay on current listing
-		} finally {
-			pickerLoading = false;
-		}
-	}
-
-	async function pickerNavigate(root: string, subpath: string) {
-		await loadPickerLocation(root, subpath);
-	}
-
-	async function pickerGoUp() {
-		if (!pickerCanGoUp) return;
-		if (pickerListing?.parent_subpath != null) {
-			// go up within the same root
-			await loadPickerLocation(picker.root, pickerListing.parent_subpath);
-		} else if (picker.subpath === '') {
-			// already at root of this root key — nothing to do (root switching not in picker)
-		}
-	}
-
-	function closeMoveDialog() {
-		moveDialogOpen = false;
-		pickerListing = null;
-	}
-
-	function pickerDisplayPath(): string {
-		const rootObj = roots.find((r) => r.key === picker.root);
-		const rootLabel = rootObj?.label ?? picker.root;
-		if (!picker.subpath) return rootLabel;
-		return `${rootLabel}/${picker.subpath}`;
-	}
-
 	async function confirmBulkMove() {
 		let moved = 0;
 		let failed = 0;
-		for (const key of selectedKeys) {
-			const [srcRoot, srcSubpath] = key.split('::');
+		for (const key of browser.selectedKeys) {
+			const { root: srcRoot, subpath: srcSubpath } = parseSelectionKey(key);
 			try {
-				await moveFile(srcRoot, srcSubpath, picker.root, picker.subpath);
+				await moveFile(srcRoot, srcSubpath, movePicker.location.root, movePicker.location.subpath);
 				moved++;
 			} catch {
 				failed++;
 			}
 		}
-		closeMoveDialog();
-		selectedKeys = new Set();
-		if (failed > 0) {
-			feedback = { type: 'error', message: `Moved ${moved}, failed ${failed}` };
-		} else {
-			feedback = { type: 'success', message: `Moved ${moved} item${moved !== 1 ? 's' : ''}` };
-		}
-		clearFeedback();
-		await navigate(current.root, current.subpath);
+		movePicker.close();
+		browser.selectedKeys = new Set();
+		showFeedback(bulkResultFeedback('Moved', moved, failed));
+		await browser.navigate(browser.current.root, browser.current.subpath);
 	}
 
 	// --- Bulk delete ---
 	async function confirmBulkDelete() {
 		let deleted = 0;
 		let failed = 0;
-		// Sort by subpath length descending so children are deleted before parents
-		const items = [...selectedKeys]
-			.map((k) => {
-				const [r, sp] = k.split('::');
-				return { root: r, subpath: sp };
-			})
-			.sort((a, b) => b.subpath.length - a.subpath.length);
-		const deletedSubpaths: string[] = [];
+		const items = orderForDelete([...browser.selectedKeys].map(parseSelectionKey));
 		for (const item of items) {
-			if (deletedSubpaths.some((dp) => item.subpath.startsWith(dp + '/'))) {
-				deleted++;
-				continue;
-			}
 			try {
 				await deleteFile(item.root, item.subpath);
 				deleted++;
-				deletedSubpaths.push(item.subpath);
 			} catch {
 				failed++;
 			}
 		}
 		bulkDeleteOpen = false;
-		selectedKeys = new Set();
-		if (failed > 0) {
-			feedback = { type: 'error', message: `Deleted ${deleted}, failed ${failed}` };
-		} else {
-			feedback = { type: 'success', message: `Deleted ${deleted} item${deleted !== 1 ? 's' : ''}` };
-		}
-		clearFeedback();
-		await navigate(current.root, current.subpath);
+		browser.selectedKeys = new Set();
+		showFeedback(bulkResultFeedback('Deleted', deleted, failed));
+		await browser.navigate(browser.current.root, browser.current.subpath);
 	}
 
 	// --- New folder ---
@@ -338,18 +144,14 @@
 	}
 
 	async function confirmNewFolder() {
-		if (!newFolderName.trim() || !current.root) return;
-		try {
-			await createDirectory(current.root, current.subpath, newFolderName.trim());
-			feedback = { type: 'success', message: `Created folder "${newFolderName.trim()}"` };
-			clearFeedback();
+		if (!newFolderName.trim() || !browser.current.root) return;
+		await runWithFeedback(async () => {
+			await createDirectory(browser.current.root, browser.current.subpath, newFolderName.trim());
+			showFeedback({ type: 'success', message: `Created folder "${newFolderName.trim()}"` });
 			creatingFolder = false;
 			newFolderName = '';
-			await navigate(current.root, current.subpath);
-		} catch (e) {
-			feedback = { type: 'error', message: e instanceof Error ? e.message : 'Failed to create folder' };
-			clearFeedback();
-		}
+			await browser.navigate(browser.current.root, browser.current.subpath);
+		}, 'Failed to create folder');
 	}
 
 	function cancelNewFolder() {
@@ -362,71 +164,12 @@
 		if (e.key === 'Escape') cancelNewFolder();
 	}
 
-	// --- Orphan folders ---
-	async function openOrphanFoldersModal() {
-		orphanFoldersOpen = true;
-		orphanFoldersLoading = true;
-		orphanFoldersFeedback = null;
-		try {
-			orphanFoldersData = await fetchOrphanFolders();
-			orphanFoldersSelected = new Set();
-		} catch {
-			orphanFoldersData = null;
-		}
-		orphanFoldersLoading = false;
-	}
-
-	function toggleOrphanFolderSelect(path: string) {
-		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- copy-on-write; reassigning the $state variable triggers updates
-		const next = new Set(orphanFoldersSelected);
-		if (next.has(path)) next.delete(path);
-		else next.add(path);
-		orphanFoldersSelected = next;
-	}
-
-	async function handleDeleteOrphanFolder(path: string) {
-		const name = path.split('/').pop();
-		orphanFoldersBusy = true;
-		try {
-			await deleteOrphanFolder(path);
-			orphanFoldersFeedback = { type: 'success', message: `Folder "${name}" deleted` };
-			orphanFoldersData = await fetchOrphanFolders();
-			orphanFoldersSelected = new Set();
-		} catch (e) {
-			orphanFoldersFeedback = { type: 'error', message: e instanceof Error ? e.message : 'Delete failed' };
-		}
-		orphanFoldersBusy = false;
-	}
-
-	async function handleBulkDeleteOrphanFolders() {
-		orphanFoldersBusy = true;
-		try {
-			const result = await bulkDeleteFolders([...orphanFoldersSelected]);
-			orphanFoldersFeedback = {
-				type: result.errors.length ? 'error' : 'success',
-				message: `Deleted ${result.removed.length} folder${result.removed.length !== 1 ? 's' : ''}${result.errors.length ? `, ${result.errors.length} error(s)` : ''}`
-			};
-			orphanFoldersData = await fetchOrphanFolders();
-			orphanFoldersSelected = new Set();
-		} catch (e) {
-			orphanFoldersFeedback = { type: 'error', message: e instanceof Error ? e.message : 'Bulk delete failed' };
-		}
-		orphanFoldersBusy = false;
-	}
-
 	// --- Transcoder cleanup ---
 	async function handleCleanupTranscoder() {
-		try {
+		await runWithFeedback(async () => {
 			const result = await cleanupTranscoder();
-			feedback = {
-				type: result.errors.length ? 'error' : 'success',
-				message: `Deleted ${result.deleted} transcoder job${result.deleted !== 1 ? 's' : ''}${result.errors.length ? `, ${result.errors.length} error(s)` : ''}`
-			};
-			clearFeedback();
-		} catch (e) {
-			feedback = { type: 'error', message: e instanceof Error ? e.message : 'Cleanup failed' };
-			clearFeedback();
-		}
+			showFeedback(cleanupFeedback(result.deleted, 'transcoder job', result.errors.length));
+		}, 'Cleanup failed');
 		transcoderCleanupOpen = false;
 	}
 
@@ -439,29 +182,29 @@
 			const key = `${paramRoot}::${paramSubpath}`;
 			if (key !== lastParamKey) {
 				lastParamKey = key;
-				navigate(paramRoot, paramSubpath);
+				browser.navigate(paramRoot, paramSubpath);
 			}
 		}
 	});
 
 	onMount(async () => {
-		await loadRoots();
+		await browser.loadRoots();
 		const paramRoot = $page.url.searchParams.get('root');
 		const paramSubpath = $page.url.searchParams.get('subpath') ?? '';
 		if (paramRoot) {
-			current = { root: paramRoot, subpath: paramSubpath };
+			browser.current = { root: paramRoot, subpath: paramSubpath };
 			lastParamKey = `${paramRoot}::${paramSubpath}`;
 		}
-		if (current.root) {
-			await navigate(current.root, current.subpath);
+		if (browser.current.root) {
+			await browser.navigate(browser.current.root, browser.current.subpath);
 		} else {
-			loading = false;
+			browser.loading = false;
 		}
 	});
 </script>
 
 {#snippet sortIcon(key: string)}
-	<SortIndicator dir={sortIconDir(key)} />
+	<SortIndicator dir={browser.sortIconDir(key)} />
 {/snippet}
 
 <svelte:head>
@@ -485,21 +228,21 @@
 	{/if}
 
 	<!-- Error -->
-	{#if error}
+	{#if browser.error}
 		<div class="alert alert-danger alert-lg">
-			{error}
+			{browser.error}
 		</div>
 	{/if}
 
 	<!-- Root tabs -->
-	{#if roots.length > 0}
+	{#if browser.roots.length > 0}
 		<div class="tabs" role="group" aria-label="File root tabs" data-file-roots>
-			{#each roots as root (root.key)}
+			{#each browser.roots as root (root.key)}
 				<button
 					type="button"
-					onclick={() => navigate(root.key, '')}
-					data-selected={root.key === current.root}
-					aria-pressed={root.key === current.root}
+					onclick={() => browser.navigate(root.key, '')}
+					data-selected={root.key === browser.current.root}
+					aria-pressed={root.key === browser.current.root}
 					class="tabs-tab"
 				>
 					{root.label}
@@ -509,7 +252,7 @@
 	{/if}
 
 	<!-- Read-only mount banner -->
-	{#if isReadonly}
+	{#if browser.isReadonly}
 		<div class="alert alert-warning cluster files-page-readonly-banner">
 			<svg
 				class="h-4 w-4 shrink-0 files-page-readonly-icon"
@@ -529,16 +272,21 @@
 	{/if}
 
 	<!-- Breadcrumb + toolbar row -->
-	{#if current.root && roots.length > 0}
+	{#if browser.current.root && browser.roots.length > 0}
 		<div class="flex items-center justify-between gap-3">
-			<BreadcrumbNav root={current.root} subpath={current.subpath} {roots} onnavigate={navigate} />
+			<BreadcrumbNav
+				root={browser.current.root}
+				subpath={browser.current.subpath}
+				roots={browser.roots}
+				onnavigate={browser.navigate}
+			/>
 			<div class="cluster shrink-0 files-page-toolbar">
 				<!-- Bulk move (visible when items selected) -->
-				{#if selectedKeys.size > 0 && $isAdmin}
+				{#if browser.selectedKeys.size > 0 && $isAdmin}
 					<button
 						type="button"
-						onclick={openMoveDialog}
-						disabled={isReadonly}
+						onclick={movePicker.open}
+						disabled={browser.isReadonly}
 						class="btn btn-primary files-page-bulk-btn"
 					>
 						<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -549,12 +297,12 @@
 								d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"
 							/>
 						</svg>
-						Move {selectedKeys.size}
+						Move {browser.selectedKeys.size}
 					</button>
 					<button
 						type="button"
 						onclick={() => (bulkDeleteOpen = true)}
-						disabled={isReadonly}
+						disabled={browser.isReadonly}
 						class="btn files-page-bulk-btn files-page-bulk-btn-danger"
 					>
 						<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -565,14 +313,14 @@
 								d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
 							/>
 						</svg>
-						Delete {selectedKeys.size}
+						Delete {browser.selectedKeys.size}
 					</button>
 				{/if}
 				{#if $isAdmin && features.maintenance}
 					<!-- Orphan folders -->
 					<button
 						type="button"
-						onclick={openOrphanFoldersModal}
+						onclick={orphans.open}
 						class="btn btn-icon files-page-toolbar-btn"
 						title="Orphan folders"
 					>
@@ -608,9 +356,9 @@
 					<button
 						type="button"
 						onclick={startNewFolder}
-						disabled={isReadonly}
+						disabled={browser.isReadonly}
 						class="btn btn-icon files-page-toolbar-btn"
-						title={isReadonly ? 'Read-only mount' : 'New folder'}
+						title={browser.isReadonly ? 'Read-only mount' : 'New folder'}
 					>
 						<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 							<path
@@ -625,12 +373,12 @@
 				<!-- Refresh -->
 				<button
 					type="button"
-					onclick={() => navigate(current.root, current.subpath)}
-					disabled={loading}
+					onclick={() => browser.navigate(browser.current.root, browser.current.subpath)}
+					disabled={browser.loading}
 					class="btn btn-icon files-page-toolbar-btn"
 					title="Refresh"
 				>
-					<svg class="h-5 w-5 {loading ? 'spin' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<svg class="h-5 w-5 {browser.loading ? 'spin' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 						<path
 							stroke-linecap="round"
 							stroke-linejoin="round"
@@ -645,11 +393,10 @@
 
 	<!-- File listing -->
 	<LoadState
-		data={listing}
-		loading={loading && !listing}
-		error={filesError}
+		data={browser.listing}
+		loading={browser.loading && !browser.listing}
+		error={browser.filesError}
 		isEmpty={() => false}
-		transitionKey={`files-${current.root}-${current.subpath}`}
 	>
 		{#snippet loadingSlot()}
 			<div class="files-page-listing">
@@ -677,7 +424,7 @@
 				{#if lst.parent_subpath != null}
 					<button
 						type="button"
-						onclick={() => navigate(current.root, lst.parent_subpath!)}
+						onclick={() => browser.navigate(browser.current.root, lst.parent_subpath!)}
 						class="flex w-full items-center gap-2 files-page-nav-row"
 					>
 						<span class="w-10"></span>
@@ -721,11 +468,11 @@
 					</div>
 				{/if}
 
-				{#if listing?.unavailable}
+				{#if browser.listing?.unavailable}
 					<div class="files-page-empty">This root is not mounted on the server.</div>
-				{:else if sortedEntries.length === 0 && !creatingFolder}
+				{:else if browser.sortedEntries.length === 0 && !creatingFolder}
 					<div class="files-page-empty">This directory is empty</div>
-				{:else if sortedEntries.length > 0}
+				{:else if browser.sortedEntries.length > 0}
 					<table class="table">
 						<thead>
 							<tr>
@@ -733,25 +480,25 @@
 									{#if $isAdmin}
 										<input
 											type="checkbox"
-											checked={allSelected}
-											onchange={toggleSelectAll}
+											checked={browser.allSelected}
+											onchange={browser.toggleSelectAll}
 											class="files-page-select-all"
 										/>
 									{/if}
 								</th>
 								<th class="table-header">
-									<button type="button" onclick={() => toggleSort('name')} class="files-page-sort-btn">
+									<button type="button" onclick={() => browser.toggleSort('name')} class="files-page-sort-btn">
 										Name {@render sortIcon('name')}
 									</button>
 								</th>
 								<th class="table-header files-page-cell-lg">Permissions</th>
 								<th class="table-header table-right">
-									<button type="button" onclick={() => toggleSort('size')} class="files-page-sort-btn">
+									<button type="button" onclick={() => browser.toggleSort('size')} class="files-page-sort-btn">
 										Size {@render sortIcon('size')}
 									</button>
 								</th>
 								<th class="table-header files-page-cell-md">
-									<button type="button" onclick={() => toggleSort('modified')} class="files-page-sort-btn">
+									<button type="button" onclick={() => browser.toggleSort('modified')} class="files-page-sort-btn">
 										Modified {@render sortIcon('modified')}
 									</button>
 								</th>
@@ -759,28 +506,23 @@
 							</tr>
 						</thead>
 						<tbody>
-							{#each sortedEntries as entry (entry.name)}
+							{#each browser.sortedEntries as entry (entry.name)}
 								<FileRow
 									{entry}
-									currentPath={current.subpath}
-									selected={selectedKeys.has(selectionKey(entry.name))}
-									readonly={isReadonly}
+									currentPath={browser.current.subpath}
+									selected={browser.selectedKeys.has(browser.selectionKey(entry.name))}
+									readonly={browser.isReadonly}
 									showActions={$isAdmin}
-									onnavigate={() => navigate(current.root, itemSubpath(entry.name))}
+									onnavigate={() => browser.navigate(browser.current.root, browser.itemSubpath(entry.name))}
 									onrename={(_, newName) => handleRename(entry.name, newName)}
 									ondelete={(_, name) => handleDeleteRequest(entry.name, name)}
-									ontoggle={() => toggleSelect(entry.name)}
+									ontoggle={() => browser.toggleSelect(entry.name)}
 									onfixpermissions={(_, name) => handleFixPermissions(entry.name, name)}
 								/>
 							{/each}
 						</tbody>
 					</table>
 				{/if}
-			</div>
-		{/snippet}
-		{#snippet empty()}
-			<div class="panel files-page-empty-panel">
-				<p class="files-page-empty-panel-text">No media directories configured</p>
 			</div>
 		{/snippet}
 	</LoadState>
@@ -800,8 +542,8 @@
 <!-- Bulk delete confirmation -->
 <ConfirmDialog
 	open={bulkDeleteOpen}
-	title="Delete {selectedKeys.size} item{selectedKeys.size !== 1 ? 's' : ''}"
-	message="This will permanently delete {selectedKeys.size} selected item{selectedKeys.size !== 1
+	title="Delete {browser.selectedKeys.size} item{browser.selectedKeys.size !== 1 ? 's' : ''}"
+	message="This will permanently delete {browser.selectedKeys.size} selected item{browser.selectedKeys.size !== 1
 		? 's'
 		: ''}, including all contents of any folders. This cannot be undone."
 	confirmLabel="Delete All"
@@ -823,237 +565,9 @@
 	/>
 {/if}
 
-<!-- Orphan folders modal -->
-{#if features.maintenance && orphanFoldersOpen}
-	<div class="modal">
-		<button
-			type="button"
-			class="modal-backdrop files-page-modal-backdrop"
-			aria-label="Close dialog"
-			onclick={() => (orphanFoldersOpen = false)}
-		></button>
-		<div class="modal-panel files-page-orphan-panel">
-			<!-- Header -->
-			<div class="shrink-0 files-page-modal-header">
-				<h3 class="modal-title">Orphan Folders</h3>
-				<p class="files-page-modal-subtitle">Folders not associated with any job</p>
-			</div>
+<OrphanFoldersModal {orphans} />
 
-			<!-- Feedback -->
-			{#if orphanFoldersFeedback}
-				<div class="shrink-0 files-page-modal-feedback-row">
-					<div
-						class="alert files-page-orphan-feedback {orphanFoldersFeedback.type === 'success'
-							? 'alert-success'
-							: 'alert-danger'}"
-					>
-						{orphanFoldersFeedback.message}
-					</div>
-				</div>
-			{/if}
-
-			<!-- Content (scrollable) -->
-			<div class="min-h-0 flex-1 overflow-y-auto">
-				{#if orphanFoldersLoading}
-					<div class="flex items-center justify-center p-8">
-						<svg class="mr-2 h-5 w-5 spin files-page-spinner" viewBox="0 0 24 24">
-							<circle class="spinner-track" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" />
-							<path class="spinner-fill" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-						</svg>
-						<span class="files-page-loading-text">Loading...</span>
-					</div>
-				{:else if orphanFoldersData && orphanFoldersData.folders.length > 0}
-					{#each orphanFoldersData.folders as folder (folder.path)}
-						<div class="list-row files-page-orphan-row">
-							<input
-								type="checkbox"
-								checked={orphanFoldersSelected.has(folder.path)}
-								onchange={() => toggleOrphanFolderSelect(folder.path)}
-								disabled={orphanFoldersBusy}
-								class="files-page-select-all"
-							/>
-							<svg
-								class="h-5 w-5 shrink-0 files-page-folder-icon"
-								fill="none"
-								stroke="currentColor"
-								viewBox="0 0 24 24"
-							>
-								<path
-									stroke-linecap="round"
-									stroke-linejoin="round"
-									stroke-width="1.5"
-									d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-								/>
-							</svg>
-							<div class="min-w-0 flex-1">
-								<div class="truncate files-page-orphan-name">{folder.name}</div>
-								<div class="files-page-orphan-size">{formatBytes(folder.size_bytes)}</div>
-							</div>
-							<span class="badge files-page-category-badge" data-category={folder.category}>
-								{folder.category}
-							</span>
-							<button
-								type="button"
-								onclick={() => handleDeleteOrphanFolder(folder.path)}
-								disabled={orphanFoldersBusy}
-								class="btn btn-icon files-page-orphan-delete"
-								title="Delete folder"
-							>
-								<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-									<path
-										stroke-linecap="round"
-										stroke-linejoin="round"
-										stroke-width="2"
-										d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-									/>
-								</svg>
-							</button>
-						</div>
-					{/each}
-				{:else if orphanFoldersData}
-					<div class="files-page-empty">No orphan folders found</div>
-				{:else}
-					<div class="files-page-empty files-page-empty-error">Failed to load orphan folders</div>
-				{/if}
-			</div>
-
-			<!-- Footer -->
-			<div class="shrink-0 files-page-modal-footer">
-				<div class="flex items-center justify-between">
-					<div>
-						{#if orphanFoldersSelected.size > 0}
-							<button
-								type="button"
-								onclick={handleBulkDeleteOrphanFolders}
-								disabled={orphanFoldersBusy}
-								class="btn files-page-bulk-btn files-page-bulk-btn-danger"
-							>
-								<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-									<path
-										stroke-linecap="round"
-										stroke-linejoin="round"
-										stroke-width="2"
-										d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-									/>
-								</svg>
-								Delete {orphanFoldersSelected.size} selected
-							</button>
-						{/if}
-					</div>
-					<button type="button" onclick={() => (orphanFoldersOpen = false)} class="btn"> Close </button>
-				</div>
-			</div>
-		</div>
-	</div>
-{/if}
-
-<!-- Bulk move dialog — browsable directory picker -->
-{#if moveDialogOpen}
-	<div class="modal">
-		<button
-			type="button"
-			class="modal-backdrop files-page-modal-backdrop"
-			aria-label="Close dialog"
-			onclick={closeMoveDialog}
-		></button>
-		<div class="modal-panel files-page-orphan-panel">
-			<!-- Header -->
-			<div class="shrink-0 files-page-modal-header">
-				<h3 class="modal-title">
-					Move {selectedKeys.size} item{selectedKeys.size !== 1 ? 's' : ''}
-				</h3>
-				<p class="files-page-modal-subtitle">Browse to the destination folder</p>
-			</div>
-
-			<!-- Current picker location -->
-			<div class="shrink-0 files-page-picker-location">
-				<div class="flex items-center gap-2 files-page-picker-location-text">
-					<svg class="h-4 w-4 shrink-0 files-page-folder-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="1.5"
-							d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-						/>
-					</svg>
-					<span class="files-page-picker-path">{pickerDisplayPath()}</span>
-					{#if picker.root === current.root && picker.subpath === current.subpath}
-						<span class="badge files-page-current-badge">current</span>
-					{/if}
-				</div>
-			</div>
-
-			<!-- Folder list (scrollable) -->
-			<div class="min-h-0 flex-1 overflow-y-auto">
-				{#if pickerLoading}
-					<div class="flex items-center justify-center p-8">
-						<svg class="mr-2 h-5 w-5 spin files-page-spinner" viewBox="0 0 24 24">
-							<circle class="spinner-track" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" />
-							<path class="spinner-fill" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-						</svg>
-					</div>
-				{:else}
-					<!-- Go up -->
-					{#if pickerCanGoUp}
-						<button type="button" onclick={pickerGoUp} class="flex w-full items-center gap-3 files-page-picker-row">
-							<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 17l-5-5m0 0l5-5m-5 5h12" />
-							</svg>
-							..
-						</button>
-					{/if}
-
-					{#if pickerFolders.length === 0 && !pickerCanGoUp}
-						<div class="files-page-picker-empty">No subfolders</div>
-					{/if}
-
-					{#each pickerFolders as folder (folder.name)}
-						<button
-							type="button"
-							onclick={() =>
-								pickerNavigate(picker.root, picker.subpath ? `${picker.subpath}/${folder.name}` : folder.name)}
-							class="flex w-full items-center gap-3 files-page-picker-row files-page-picker-row-folder"
-						>
-							<svg
-								class="h-5 w-5 shrink-0 files-page-folder-icon"
-								fill="none"
-								stroke="currentColor"
-								viewBox="0 0 24 24"
-							>
-								<path
-									stroke-linecap="round"
-									stroke-linejoin="round"
-									stroke-width="1.5"
-									d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-								/>
-							</svg>
-							{folder.name}
-							<Glyph name="chevron-right" class="ml-auto h-4 w-4 files-page-chevron" />
-						</button>
-					{/each}
-				{/if}
-			</div>
-
-			<!-- Footer -->
-			<div class="shrink-0 files-page-modal-footer">
-				<div class="flex justify-end gap-3">
-					<button type="button" onclick={closeMoveDialog} class="btn"> Cancel </button>
-					<button
-						type="button"
-						onclick={confirmBulkMove}
-						disabled={picker.root === current.root && picker.subpath === current.subpath}
-						class="btn btn-primary"
-						title={picker.root === current.root && picker.subpath === current.subpath
-							? 'Navigate to a different folder first'
-							: ''}
-					>
-						Move here
-					</button>
-				</div>
-			</div>
-		</div>
-	</div>
-{/if}
+<FileMoveDialog picker={movePicker} count={browser.selectedKeys.size} onconfirm={confirmBulkMove} />
 
 <style>
 	/* the original was bg-primary-light-bg/text-primary-dark (blue-100 /
@@ -1075,10 +589,6 @@
 	/* original was px-4 py-2 (1rem/0.5rem) */
 	.files-page-feedback {
 		padding: 0.5rem 1rem;
-	}
-	/* original was px-3 py-1.5 (0.75rem/0.375rem) */
-	.files-page-orphan-feedback {
-		padding: 0.375rem 0.75rem;
 	}
 	.files-page-readonly-icon {
 		color: var(--color-warning);
@@ -1173,13 +683,6 @@
 		line-height: 1.25rem;
 		color: var(--color-text-muted);
 	}
-	.files-page-empty-panel {
-		padding: 2rem;
-		text-align: center;
-	}
-	.files-page-empty-panel-text {
-		color: var(--color-text-muted);
-	}
 	.files-page-select-all {
 		height: 1rem;
 		width: 1rem;
@@ -1192,142 +695,5 @@
 	}
 	.files-page-sort-btn:hover {
 		color: var(--color-text-secondary);
-	}
-	/* the backdrop fills .modal's box; the panel stacks above it, or the
-	   backdrop (positioned, and z-index 50 from .modal-backdrop) takes every
-	   click in the panel and closes the dialog */
-	.files-page-modal-backdrop {
-		position: absolute;
-		inset: 0;
-		z-index: 0;
-	}
-	.files-page-orphan-panel {
-		position: relative;
-		z-index: 1;
-		display: flex;
-		width: 100%;
-		max-width: 32rem;
-		max-height: 80vh;
-		flex-direction: column;
-		padding: 0;
-	}
-	.files-page-modal-header {
-		border-bottom: 1px solid var(--color-border);
-		padding: 1rem 1.5rem;
-	}
-	.files-page-modal-subtitle {
-		margin-top: 0.25rem;
-		font-size: 0.875rem;
-		line-height: 1.25rem;
-		color: var(--color-text-muted);
-	}
-	.files-page-modal-feedback-row {
-		border-bottom: 1px solid var(--color-border);
-		padding: 0.5rem 1.5rem;
-	}
-	.files-page-spinner {
-		color: var(--color-text-faint);
-	}
-	.files-page-loading-text {
-		font-size: 0.875rem;
-		line-height: 1.25rem;
-		color: var(--color-text-muted);
-	}
-	/* the original row was a plain flex row (no hover/pointer affordance -
-	   only its checkbox/delete button are interactive); list-row's own
-	   cursor:pointer/hover-tint are for a clickable row and don't apply here */
-	.files-page-orphan-row {
-		grid-template-columns: auto auto 1fr auto auto;
-		gap: 0.75rem;
-		padding: 0.625rem 1.5rem;
-		cursor: default;
-	}
-	.files-page-orphan-row:hover {
-		background: transparent;
-	}
-	.files-page-orphan-name {
-		font-size: 0.875rem;
-		line-height: 1.25rem;
-		font-weight: 500;
-		color: var(--color-text);
-	}
-	.files-page-orphan-size {
-		font-size: 0.75rem;
-		line-height: 1rem;
-		color: var(--color-text-muted);
-	}
-	/* the original category pill used two literal hues with no shared
-	   badge look (rounded-full px-2 py-0.5 text-xs font-medium); nearest
-	   tones are warning (raw) and success (completed) */
-	.files-page-category-badge {
-		border-radius: 9999px;
-	}
-	.files-page-category-badge[data-category='raw'] {
-		background: var(--color-warning-soft);
-		color: var(--color-on-warning-soft);
-	}
-	.files-page-category-badge[data-category='completed'] {
-		background: var(--color-success-soft);
-		color: var(--color-on-success-soft);
-	}
-	.files-page-orphan-delete {
-		color: var(--color-danger);
-	}
-	.files-page-orphan-delete:hover {
-		background: var(--color-danger-soft);
-		color: var(--color-danger);
-	}
-	.files-page-modal-footer {
-		border-top: 1px solid var(--color-border);
-		padding: 1rem 1.5rem;
-	}
-	.files-page-picker-location {
-		border-bottom: 1px solid var(--color-border);
-		background: var(--color-page);
-		padding: 0.5rem 1.5rem;
-	}
-	.files-page-picker-location-text {
-		font-size: 0.875rem;
-		line-height: 1.25rem;
-	}
-	.files-page-picker-path {
-		font-weight: 500;
-		color: var(--color-text);
-	}
-	/* original was a plain lowercase gray-200/gray-600 tag, not .badge's
-	   primary-tinted pill nor .badge-sm's uppercase transform - no neutral
-	   token exists (spec 5.1), so this keeps .badge's shape (pill, weight,
-	   size) but restates the case and a text-sm-scale padding */
-	.files-page-current-badge {
-		border-radius: var(--radius-sm);
-		padding: 0.125rem 0.375rem;
-		font-size: 0.75rem;
-		line-height: 1rem;
-		text-transform: none;
-		letter-spacing: normal;
-	}
-	.files-page-picker-row {
-		border-bottom: 1px solid var(--color-border);
-		padding: 0.625rem 1.5rem;
-		font-size: 0.875rem;
-		line-height: 1.25rem;
-		color: var(--color-text-secondary);
-	}
-	.files-page-picker-row:hover {
-		background: var(--color-primary-tint-1);
-	}
-	.files-page-picker-row-folder {
-		color: var(--color-text);
-	}
-	.files-page-picker-empty {
-		padding: 1.5rem;
-		text-align: center;
-		font-size: 0.875rem;
-		line-height: 1.25rem;
-		color: var(--color-text-muted);
-	}
-	/* :global: forwarded through Glyph's class prop */
-	:global(.files-page-chevron) {
-		color: var(--color-text-faint);
 	}
 </style>
