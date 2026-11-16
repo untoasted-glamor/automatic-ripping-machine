@@ -5,11 +5,9 @@
 	import { defaultSessionChoices, manualRipSessionChoices } from '$lib/utils/sessions';
 	import { triggerManual } from '$lib/api/jobs';
 	import {
-		driveStatusLabel,
 		hasLiveJob,
 		isDriveDetached,
 		isMediaUnavailable,
-		isRipperOfflinePresent,
 		isScanning,
 		prescanOverrideCount,
 		scanRetryLabel,
@@ -20,7 +18,7 @@
 	import { elapsedTime } from '$lib/utils/format';
 	import type { PrescanKey } from '$lib/utils/drive-settings';
 	import DriveSettingsPanel from './DriveSettingsPanel.svelte';
-	import StatusBadge from '../StatusBadge.svelte';
+	import DriveCardHeader from './DriveCardHeader.svelte';
 	import StatusStrip from '../StatusStrip.svelte';
 	import Glyph from '../Glyph.svelte';
 	import ConfirmDialog from '../ConfirmDialog.svelte';
@@ -47,15 +45,12 @@
 	// DriveCard applies the defaults, so every prop but onupdate is required here.
 	let { drive, onupdate, globalDefaults, sessions, transcodePresets, globalAutoRip }: Props = $props();
 
-	const statusText = $derived(driveStatusLabel(drive));
 	const isDetached = $derived(isDriveDetached(drive));
-	const isError = $derived(drive.status === 'error');
-	const isOfflinePresent = $derived(isRipperOfflinePresent(drive));
 	const startRipBlocked = $derived(startRipBlockedReason(drive));
 	const prescanOverrides = $derived(prescanOverrideCount(drive));
 	// Present but not openable (permissions): an error the operator must fix,
 	// shown as visible text rather than a neutral chip.
-	const isUnavailable = $derived(!isError && !isDetached && isMediaUnavailable(drive));
+	const isUnavailable = $derived(drive.status !== 'error' && !isDetached && isMediaUnavailable(drive));
 
 	// The ripper scans the disc (MakeMKV, maybe several not-ready retries)
 	// before identify creates a job, so without this the card reads "Idle"
@@ -82,9 +77,6 @@
 		defaultSessionChoices(sessions, transcodePresets, $transcoderEnabled, drive.default_session_id)
 	);
 
-	let editing = $state(false);
-	let editName = $state('');
-	let saving = $state(false);
 	let togglingUhd = $state(false);
 	let togglingMode = $state(false);
 	let selectedSessionId = $state('');
@@ -128,28 +120,6 @@
 		}
 	}
 
-	function startEdit() {
-		editName = drive.display_name || '';
-		editing = true;
-	}
-
-	function cancelEdit() {
-		editing = false;
-	}
-
-	async function saveEdit() {
-		saving = true;
-		try {
-			await updateDrive(drive.id, { display_name: editName });
-			editing = false;
-			onupdate?.();
-		} catch {
-			// keep edit mode open on failure
-		} finally {
-			saving = false;
-		}
-	}
-
 	async function toggleUhd() {
 		togglingUhd = true;
 		try {
@@ -160,11 +130,6 @@
 		} finally {
 			togglingUhd = false;
 		}
-	}
-
-	function onKeydown(e: KeyboardEvent) {
-		if (e.key === 'Enter') saveEdit();
-		if (e.key === 'Escape') cancelEdit();
 	}
 
 	// '' = no mode of its own: follow the global auto-rip default (null on the wire).
@@ -190,48 +155,7 @@
      the original had (`opacity-60`), kept here as `data-detached`. -->
 <div class="card drive-card" data-detached={isDetached}>
 	<!-- Header: name + rename + status -->
-	<div class="mb-1 flex items-center justify-between">
-		<div class="flex min-w-0 items-center gap-1.5">
-			<h3 class="truncate drive-card-title">
-				{drive.display_name || drive.device_path || `Drive ${drive.id}`}
-			</h3>
-			{#if isError}
-				<span class="flex-shrink-0 drive-card-status-error" title={statusText}>{statusText}</span>
-			{:else if isDetached}
-				<span class="flex-shrink-0 badge badge-warning badge-sm drive-card-status-pill">{statusText}</span>
-			{:else if isUnavailable}
-				<span class="flex-shrink-0 drive-card-status-error" data-testid="drive-status-label">{UNAVAILABLE_TITLE}</span>
-			{:else if isOfflinePresent}
-				<span class="flex-shrink-0 badge badge-warning badge-sm drive-card-status-pill" data-testid="drive-status-label"
-					>{statusText}</span
-				>
-			{:else if !editing}
-				<button onclick={startEdit} class="btn btn-link btn-sm flex-shrink-0">Rename</button>
-			{/if}
-		</div>
-		{#if drive.current_job}
-			<StatusBadge status={drive.current_job.status} />
-		{:else if scanning}
-			<span class="flex-shrink-0 drive-card-scanning-label">Scanning</span>
-		{:else}
-			<span class="flex-shrink-0 drive-card-idle">Idle</span>
-		{/if}
-	</div>
-
-	<!-- Name editing -->
-	{#if editing}
-		<div class="mb-2 flex items-center gap-2">
-			<input
-				type="text"
-				bind:value={editName}
-				onkeydown={onKeydown}
-				class="field-control drive-card-edit-input"
-				disabled={saving}
-			/>
-			<button onclick={saveEdit} disabled={saving} class="btn btn-primary btn-sm">Save</button>
-			<button onclick={cancelEdit} disabled={saving} class="btn btn-ghost btn-sm">Cancel</button>
-		</div>
-	{/if}
+	<DriveCardHeader {drive} {onupdate} />
 
 	<!-- Drive info: labeled name:value rows -->
 	<div class="mb-1.5 drive-card-info">
@@ -400,35 +324,6 @@
 />
 
 <style>
-	/* DriveCard packs a lot of state into a small footprint (11px title,
-	   9-10px chips, tight action bar) - a fair bit denser than the shared
-	   card/badge/btn metrics, so most of its internals are scoped rather
-	   than block classes. */
-	.drive-card {
-		padding: 0.625rem;
-	}
-	.drive-card[data-detached='true'] {
-		opacity: 0.6;
-	}
-	.drive-card-title {
-		font-weight: 600;
-		font-size: 0.875rem;
-		color: var(--color-text);
-	}
-	/* text-xs text-gray-400 - a plain inline span in a flex row, not
-	   panel-hint's block-level note (whose own margin-top would misalign
-	   it against its row siblings) or its muted (not faint) color. */
-	.drive-card-idle {
-		font-size: 0.75rem;
-		line-height: 1rem;
-		color: var(--color-text-faint);
-	}
-	.drive-card-scanning-label {
-		font-size: 0.75rem;
-		line-height: 1rem;
-		font-weight: 500;
-		color: var(--color-primary-text);
-	}
 	.drive-card-scanning {
 		display: grid;
 		gap: 0.25rem;
@@ -438,20 +333,15 @@
 		color: var(--color-text-muted);
 		font-variant-numeric: tabular-nums;
 	}
-	.drive-card-status-error {
-		font-size: 0.625rem;
-		font-weight: 500;
-		color: var(--color-danger);
+	/* DriveCard packs a lot of state into a small footprint (11px title,
+	   9-10px chips, tight action bar) - a fair bit denser than the shared
+	   card/badge/btn metrics, so most of its internals are scoped rather
+	   than block classes. */
+	.drive-card {
+		padding: 0.625rem;
 	}
-	/* badge-warning is a solid fill; this pill was always a soft amber tint
-	   (bg-amber-500/20 text-amber-700), closer to alert-warning's tone. */
-	.drive-card-status-pill {
-		background: var(--color-warning-soft);
-		color: var(--color-on-warning-soft);
-	}
-	.drive-card-edit-input {
-		font-size: 0.875rem;
-		font-weight: 600;
+	.drive-card[data-detached='true'] {
+		opacity: 0.6;
 	}
 
 	/* the original was space-y-0.5 (0.125rem) - finer than stack-sm's
