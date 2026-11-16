@@ -6,6 +6,7 @@
 	import { parkedSessionLine } from '$lib/utils/parked-session';
 	import { readJobMetadata } from '$lib/utils/job-metadata';
 	import { episodeStatus } from '$lib/utils/episode-status';
+	import { handSetTrackCount } from '$lib/utils/track-fields';
 	import { identitySuggestionOf, previouslyRippedJobId, reviewPhaseBadge } from '$lib/utils/job-review';
 	import { appliedSessionName, reviewSourceRow, reviewStatusLabel } from '$lib/utils/review-card';
 	import DiscReviewActions from './disc-review/DiscReviewActions.svelte';
@@ -90,10 +91,7 @@
 	let nothingKept = $derived(!parks && titleTracks(tracks).length > 0 && titleTracks(tracks).every((t) => t.excluded));
 	// Same cut as the backend's Track rows: titles under the scan's minimum are hidden.
 	let scanTitles = $derived(listedScanTitles(reviewData.detail?.job?.metadata_json?.scan_result));
-	// Tracks whose episode or role the user set by hand (switching to Movie drops them).
-	let handSetCount = $derived(
-		tracks.filter((t) => ['episode_number', 'role'].some((k) => t.identity_provenance?.[k] === 'manual')).length
-	);
+	let handSetCount = $derived(handSetTrackCount(tracks));
 
 	// v3 classifies disc kind via disc_type. cd → music, data → data, the rest
 	// are video.
