@@ -7,6 +7,7 @@
 	import { isAwaitingIdentity } from '$lib/utils/job-status-groups';
 	import { changedPosition } from '$lib/utils/identity-position';
 	import IdentityFields from './identity/IdentityFields.svelte';
+	import { readJobMetadata } from '$lib/utils/job-metadata';
 
 	let {
 		job,
@@ -35,11 +36,7 @@
 	// CD-only: per-track count comes from the preserved scan_result on the
 	// job's metadata_json. If it's absent we skip the per-track inputs and
 	// show a helper line; the resolve still succeeds.
-	const scanTrackCount = $derived(
-		Array.isArray((job.metadata_json?.scan_result as { titles?: unknown[] } | undefined)?.titles)
-			? ((job.metadata_json.scan_result as { titles: unknown[] }).titles.length as number)
-			: 0
-	);
+	const scanTrackCount = $derived(readJobMetadata(job.metadata_json).titleCount ?? 0);
 
 	// Why automatic identification missed, from the identify attempts.
 	const missLine = $derived(missReason(job));
