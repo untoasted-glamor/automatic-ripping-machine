@@ -286,15 +286,6 @@ def test_writes_need_a_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     assert client.get(BASE, headers=auth).status_code == 200
 
 
-def test_ws_hub_dependency(tmp_path: Path) -> None:
-    class _Req:
-        class app:  # noqa: N801
-            class state:  # noqa: N801
-                ws_hub = "hub"
-
-    assert router_module._get_hub(_Req()) == "hub"  # type: ignore[arg-type]
-
-
 def test_a_button_says_which_title_it_lands_on_and_what_its_playlist_plays() -> None:
     """The markers on the menu picture: the title a button lands on (even one with no track), the title of each of its
     playlist's clips, and its play-all title when the button lands on one clip of it."""

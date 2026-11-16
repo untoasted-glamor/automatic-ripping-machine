@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +39,7 @@ from arm_backend.path_template import TemplateValidationError
 from arm_backend.raw_backup import delete_backup, describe_backup
 from arm_backend.choose_titles import backs_up_first, drive_of, redoes_first_pass
 from arm_backend.rip_retry import RetryRefused, arm_retry, check_retryable, remaining_tracks
+from arm_backend.routers._deps import get_hub, get_stage_runner
 from arm_backend.routers._params import JobIdParam
 from arm_backend.routers.logs import per_job_log_path
 from arm_backend.routers.ripper import persist_review_tracks
@@ -131,17 +132,6 @@ from arm_common.ulid import is_valid_id
 logger = logging.getLogger("arm_backend.routers.jobs")
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(job_log_context)])
-
-
-def _get_hub(request: Request) -> WSHub:
-    hub: WSHub = request.app.state.ws_hub
-    return hub
-
-
-def _get_stage_runner(request: Request) -> EpisodeStageRunner | None:
-    """None when `app.state` carries no runner (e.g. an existing router test
-    that never set one up) — callers then just skip scheduling."""
-    return getattr(request.app.state, "episode_stage", None)
 
 
 def _identity_snapshot(job: Job) -> tuple[int | None, int | None, MediaType | None, str | None, dict[str, Any]]:
@@ -573,7 +563,7 @@ async def abandon_job(
     req: AbandonJobRequest | None = None,
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
+    hub: WSHub = Depends(get_hub),
 ) -> Job:
     """Move a non-terminal job to `abandoned` and tell the ripper to clean up.
 
@@ -612,7 +602,7 @@ async def rip_start_review(
     job_id: JobIdParam,
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
+    hub: WSHub = Depends(get_hub),
 ) -> Job:
     """Operator Start for a disc held in the timed review gate (spec §5.2).
 
@@ -678,7 +668,7 @@ async def retry_failed(
     job_id: JobIdParam,
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
+    hub: WSHub = Depends(get_hub),
 ) -> RetryFailedResponse:
     """Rip the job's kept titles that have no file (track-select plan S15):
     the ones that failed, and the ones left out before the rip and kept since.
@@ -729,7 +719,7 @@ async def rip_again(
     job_id: JobIdParam,
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
+    hub: WSHub = Depends(get_hub),
 ) -> RipAgainResponse:
     """Operator "Rip again" on a ripped job (on_previously_ripped hold/reject).
 
@@ -792,7 +782,7 @@ async def review_pause(
     paused: bool = True,
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
+    hub: WSHub = Depends(get_hub),
 ) -> Job:
     """Pause/resume ONE held disc's review countdown (per-job pause, spec §11).
 
@@ -1182,7 +1172,7 @@ async def manual_trigger(
     req: ManualTriggerRequest,
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
+    hub: WSHub = Depends(get_hub),
 ) -> ManualTriggerResponse:
     """Kick the ripper to run a job on a drive that already has a disc in
     the tray. The ripper handles the WS command, scans the disc, and
@@ -1290,8 +1280,8 @@ async def update_job(
     req: JobUpdateRequest,
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
-    stage_runner: EpisodeStageRunner | None = Depends(_get_stage_runner),
+    hub: WSHub = Depends(get_hub),
+    stage_runner: EpisodeStageRunner | None = Depends(get_stage_runner),
 ) -> Job:
     """Edit user-controlled fields on a Job + optional per-track operator edits.
     Job title/year stay behind identify/resolve; track `status` stays ripper-owned
@@ -1463,8 +1453,8 @@ async def resolve(
     req: ResolveRequest,
     _: User = Depends(require_writer),
     session: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
-    stage_runner: EpisodeStageRunner | None = Depends(_get_stage_runner),
+    hub: WSHub = Depends(get_hub),
+    stage_runner: EpisodeStageRunner | None = Depends(get_stage_runner),
 ) -> ResolveResponse:
     # M2: lock the job row before the identity write (lock order: job, then tracks).
     job = (await session.execute(select(Job).where(col(Job.id) == job_id).with_for_update())).scalar_one_or_none()
@@ -1483,8 +1473,8 @@ async def accept_identity_suggestion(
     job_id: JobIdParam,
     _: User = Depends(require_writer),
     session: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
-    stage_runner: EpisodeStageRunner | None = Depends(_get_stage_runner),
+    hub: WSHub = Depends(get_hub),
+    stage_runner: EpisodeStageRunner | None = Depends(get_stage_runner),
 ) -> ResolveResponse:
     """Confirm the confident match identify held because the media type's
     auto-apply switch was off (identification-sources spec D-10).
@@ -1847,7 +1837,7 @@ async def request_subtitle_ocr(
     req: SubtitleOcrRequest = Body(default_factory=SubtitleOcrRequest),
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
+    hub: WSHub = Depends(get_hub),
 ) -> SubtitleOcrResponse:
     """Make text subtitles (`.srt`) for the job's finished encodes that wrote
     image subtitles, after the fact. An encode whose `.srt` files exist is
@@ -1883,7 +1873,7 @@ async def apply_session(
     req: ApplySessionRequest,
     user: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
+    hub: WSHub = Depends(get_hub),
 ) -> ApplySessionResponse:
     job = (await db.execute(select(Job).where(col(Job.id) == job_id))).scalar_one_or_none()
     if job is None:

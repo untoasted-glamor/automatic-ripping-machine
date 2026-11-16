@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
@@ -33,6 +33,7 @@ from arm_backend.disc_menus.rename import RenameRefused, apply_proposal
 from arm_backend.disc_menus.views import job_disc_menu_view, preview_file
 from arm_backend.routers._params import JobIdParam
 from arm_backend.ws import WSHub
+from arm_backend.routers._deps import get_hub
 from arm_common import Job, MenuProposal, MenuProposalStatus, Track, User
 from arm_common.schemas import (
     JobDiscMenuView,
@@ -45,11 +46,6 @@ from arm_common.schemas import (
 logger = logging.getLogger("arm_backend.routers.disc_menus")
 
 router = APIRouter(prefix="/api/jobs", tags=["disc-menus"])
-
-
-def _get_hub(request: Request) -> WSHub:
-    hub: WSHub = request.app.state.ws_hub
-    return hub
 
 
 async def _job(db: AsyncSession, job_id: str) -> Job:
@@ -107,7 +103,7 @@ async def request_disc_menu_preview(
     job_id: JobIdParam,
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
+    hub: WSHub = Depends(get_hub),
 ) -> JobDiscMenuView:
     """Preview the menu again (after a failed preview, or to read it with newer rules). 409 when it can't run."""
     job = await _job(db, job_id)
@@ -124,7 +120,7 @@ async def request_disc_menu_pack(
     job_id: JobIdParam,
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
+    hub: WSHub = Depends(get_hub),
 ) -> JobDiscMenuView:
     """Build the menu pack again from the copied menu and the job's encodes. 409 when it can't (with why)."""
     job = await _job(db, job_id)
@@ -173,7 +169,7 @@ async def update_proposal(
     req: MenuProposalUpdate,
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
+    hub: WSHub = Depends(get_hub),
 ) -> MenuProposal:
     """Edit a proposal's role, name or season 0 number, and accept, reject or reopen it. Accepting an applied
     proposal again with a new name renames the encode again. 409 when it can't be applied (with why)."""
@@ -198,7 +194,7 @@ async def create_proposal(
     req: MenuProposalCreate,
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
+    hub: WSHub = Depends(get_hub),
 ) -> MenuProposal:
     """Name one of the job's titles by hand, and apply it."""
     await _job(db, job_id)
@@ -230,7 +226,7 @@ async def accept_all_proposals(
     job_id: JobIdParam,
     _: User = Depends(require_writer),
     db: AsyncSession = Depends(get_session),
-    hub: WSHub = Depends(_get_hub),
+    hub: WSHub = Depends(get_hub),
 ) -> MenuProposalAcceptAllResponse:
     """Accept every proposed name. One that can't be applied stays proposed, with why."""
     job = await _job(db, job_id)
