@@ -23,7 +23,7 @@
 		previouslyRippedJobId,
 		reviewPhaseBadge
 	} from '$lib/utils/job-review';
-	import { providerLabel } from '$lib/utils/job-status';
+	import { providerLabel } from '$lib/utils/provider-labels';
 	import { formatDateTime } from '$lib/utils/format';
 	import ReviewWaitStatus from './ReviewWaitStatus.svelte';
 	import { discTypeLabel } from '$lib/utils/job-type';
