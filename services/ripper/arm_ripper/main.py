@@ -48,6 +48,27 @@ configure_service_logging(settings.HOSTNAME, level=settings.ARM_LOG_LEVEL)
 logger = logging.getLogger("arm_ripper")
 
 
+def _log_refusal(exc: RegisterRefused, last_refusal: str | None) -> str:
+    """Log a register refusal at ERROR the first time its text appears (or when it changes) and at DEBUG on an
+    unchanged repeat; returns the refusal text to compare the next one against.
+    """
+    message = str(exc)
+    # Log at ERROR the first time this refusal is seen and again
+    # whenever its text changes (a new/different problem); an
+    # unchanged repeat is downgraded to DEBUG so a stuck enrollment
+    # doesn't spam the log once a minute forever.
+    level = logging.ERROR if message != last_refusal else logging.DEBUG
+    logger.log(
+        level,
+        "register refused for drive_id=%s: %s — container left running for diagnosis; "
+        "fix the enrollment in the UI; retrying in %.0fs",
+        settings.ARM_DRIVE_ID,
+        exc,
+        REGISTER_REFUSED_RETRY_SECONDS,
+    )
+    return message
+
+
 async def register_with_retry(client: BackendClient, device_path: str) -> str:
     """Retry transport/5xx failures with backoff. A refusal (unknown drive,
     not enrolled, identity mismatch) is self-healing rather than fatal: the
@@ -68,21 +89,7 @@ async def register_with_retry(client: BackendClient, device_path: str) -> str:
             logger.info("registered drive_id=%s device=%s", drive.id, device_path)
             return drive.id
         except RegisterRefused as exc:
-            message = str(exc)
-            # Log at ERROR the first time this refusal is seen and again
-            # whenever its text changes (a new/different problem); an
-            # unchanged repeat is downgraded to DEBUG so a stuck enrollment
-            # doesn't spam the log once a minute forever.
-            level = logging.ERROR if message != last_refusal else logging.DEBUG
-            logger.log(
-                level,
-                "register refused for drive_id=%s: %s — container left running for diagnosis; "
-                "fix the enrollment in the UI; retrying in %.0fs",
-                settings.ARM_DRIVE_ID,
-                exc,
-                REGISTER_REFUSED_RETRY_SECONDS,
-            )
-            last_refusal = message
+            last_refusal = _log_refusal(exc, last_refusal)
             await asyncio.sleep(REGISTER_REFUSED_RETRY_SECONDS)
         except (httpx.HTTPError, OSError) as exc:
             logger.warning("register failed (%s); retrying in %.1fs", exc, delay)
@@ -155,12 +162,7 @@ async def send_heartbeat(
     controller's scan activity (None when not scanning). Returns the status
     and the node it was read from. Raises on transport errors."""
     device_path = handle.current
-    if device_path is None:
-        status = DriveMediaStatus.DETACHED
-    elif is_file_source(device_path):
-        status = DriveMediaStatus.LOADED
-    else:
-        status, _ = probe_drive_media(device_path)
+    status = _media_status(device_path)
     await client.heartbeat(drive_id=drive_id, media_status=status, scan=controller.scan_activity)
     return status, device_path
 
@@ -173,6 +175,18 @@ async def push_scan_activity(
     post can't land after the "ended" one; each reads the state at send time."""
     async with lock:
         await send_heartbeat(client, drive_id, handle, controller)
+
+
+def _media_status(device_path: str | None) -> DriveMediaStatus:
+    """The media status a heartbeat reports: DETACHED while the drive is absent, LOADED for a file source (an ISO
+    is always present), otherwise what the drive's ioctl probe says.
+    """
+    if device_path is None:
+        return DriveMediaStatus.DETACHED
+    if is_file_source(device_path):
+        return DriveMediaStatus.LOADED
+    status, _ = probe_drive_media(device_path)
+    return status
 
 
 async def heartbeat_loop(client: BackendClient, drive_id: str, handle: DriveHandle, controller: JobController) -> None:
@@ -555,6 +569,32 @@ def _build_controller(
     )
 
 
+async def _recover_crashed_rip(
+    client: BackendClient, drive_id: str, handle: DriveHandle, controller: JobController
+) -> None:
+    """Recover a rip that crashed in flight on this drive, if any (Phase 9); logs and swallows every error so a
+    misbehaving probe never blocks boot.
+    """
+    try:
+        await boot_probe(client, drive_id, handle.current or "", controller)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("boot probe failed: %s", exc)
+
+
+async def _run_mode(
+    controller: JobController, handle: DriveHandle, *, client: BackendClient, drive_id: str, source_mode: bool
+) -> None:
+    """Run this container's job until it ends: the one-shot pipeline for the bound ISO in source mode, otherwise the
+    drive poll loop (which runs until cancelled).
+    """
+    if source_mode:
+        logger.info("ARM_SOURCE_PATH=%s; running one-shot pipeline", handle.current)
+        await run_source_mode(controller, settings.ARM_SOURCE_SESSION_ID)
+        logger.info("source pipeline complete; exiting")
+    else:
+        await poll_loop(controller, handle, client=client, drive_id=drive_id)
+
+
 async def amain() -> None:
     client = _build_client()
     ssl_ctx = ssl.create_default_context(cafile=CA_BUNDLE_PATH)
@@ -594,22 +634,12 @@ async def amain() -> None:
             )
             await ws.subscribe(f"ripper.commands.{drive_id}", controller.on_ws_command)
             if not source_mode and not handle.absent:
-                # Phase 9 — recover a crashed in-flight rip on this drive, if any.
-                # Logs + swallows all errors so a misbehaving probe never blocks boot.
                 # (If the drive is absent now, the poll loop re-runs this on reattach.)
-                try:
-                    await boot_probe(client, drive_id, handle.current or "", controller)
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception("boot probe failed: %s", exc)
+                await _recover_crashed_rip(client, drive_id, handle, controller)
             heartbeat_task = asyncio.create_task(heartbeat_loop(client, drive_id, handle, controller))
             keycheck_task = asyncio.create_task(makemkv_keycheck_loop(client))
             try:
-                if source_mode:
-                    logger.info("ARM_SOURCE_PATH=%s; running one-shot pipeline", handle.current)
-                    await run_source_mode(controller, settings.ARM_SOURCE_SESSION_ID)
-                    logger.info("source pipeline complete; exiting")
-                else:
-                    await poll_loop(controller, handle, client=client, drive_id=drive_id)
+                await _run_mode(controller, handle, client=client, drive_id=drive_id, source_mode=source_mode)
             finally:
                 heartbeat_task.cancel()
                 keycheck_task.cancel()
