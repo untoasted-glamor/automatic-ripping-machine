@@ -2637,6 +2637,7 @@ async def test_a_retry_remuxes_only_the_failed_title_from_the_kept_backup(monkey
     Any remux leaves the DONE titles out, a retry or not; only a retry rips into a folder of its own."""
     import arm_ripper.job_controller as jc_module
     from arm_ripper.drive_handle import DriveHandle
+    from arm_ripper.eject import Ejector
     from arm_ripper.job_controller import JobController
 
     fake, scan = await _bd_job(monkeypatch, tmp_path)
@@ -2671,7 +2672,7 @@ async def test_a_retry_remuxes_only_the_failed_title_from_the_kept_backup(monkey
     async def eject(self: Any, device_path: str) -> None:
         ejected.append(device_path)
 
-    monkeypatch.setattr(JobController, "_eject_with_retry", eject)
+    monkeypatch.setattr(Ejector, "eject", eject)
     controller = JobController(client, "drv_x", device_path=DriveHandle("/dev/sr0"))  # type: ignore[arg-type]
 
     if disc_lane_busy:
