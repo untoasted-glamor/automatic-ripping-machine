@@ -8,6 +8,7 @@
 	import { changedPosition } from '$lib/utils/identity-position';
 	import IdentityFields from './identity/IdentityFields.svelte';
 	import { readJobMetadata } from '$lib/utils/job-metadata';
+	import { cdIdentifyBody, videoIdentifyBody } from '$lib/utils/job-resolve';
 
 	let {
 		job,
@@ -84,17 +85,10 @@
 		submitting = true;
 		error = null;
 		try {
-			const music = isCd
-				? {
-						artist: artist.trim(),
-						album: album.trim(),
-						tracks: trackTitles.map((t) => ({ title: t.trim() }))
-					}
-				: undefined;
+			const body = isCd ? cdIdentifyBody({ album, artist, year, trackTitles }) : videoIdentifyBody({ title, year });
+			// Only a changed disc position or season is sent (fork).
 			const resp = await resolveJob(job.id, {
-				title: isCd ? album.trim() : title.trim(),
-				year: year ?? null,
-				music,
+				...body,
 				...changedPosition(job, { season, discNumber, discTotal }, { isCd })
 			});
 			onidentified(resp);
