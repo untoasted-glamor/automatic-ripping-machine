@@ -25,7 +25,7 @@ import shutil
 from pathlib import Path
 
 from arm_common import IsoPreparePhase
-from arm_ripper import prepare
+from arm_ripper import extraction_routes, prepare
 
 logger = logging.getLogger("arm_ripper.iso_extract")
 
@@ -46,13 +46,6 @@ _FILE_ERROR = re.compile(r"^ERROR: [^:\n]+ : (.+)$", re.MULTILINE)
 # " 75% 3 - BDMV/STREAM/00002.m2ts" or just " 12%".
 _PROGRESS = re.compile(r"^\s*(\d{1,3})%(?:\s+\d+)?(?:\s+-\s+(.+?))?\s*$")
 
-# Image path -> the extracted disc folder MakeMKV should read instead.
-_extracted: dict[str, Path] = {}
-
-
-def extracted_dir(image_path: str) -> Path | None:
-    return _extracted.get(image_path)
-
 
 def parse_progress(text: str) -> tuple[int, str | None] | None:
     """The latest (percent, current file) in 7-Zip's `-bsp1` output, or None."""
@@ -65,19 +58,25 @@ def parse_progress(text: str) -> tuple[int, str | None] | None:
 
 def _drive_dir() -> Path:
     # Imported here: arm_ripper.config builds its Settings from the environment
-    # at import time, and source.py (which imports this module) must stay
-    # importable without it.
+    # at import time, and the scan dispatcher (which imports this module) must
+    # stay importable without it.
     from arm_ripper.config import settings
 
     return EXTRACT_ROOT / settings.ARM_DRIVE_ID
 
 
-def _has_space(image: Path, scratch: Path) -> bool:
-    need = image.stat().st_size
-    probe = scratch
+def _existing_ancestor(path: Path) -> Path:
+    """`path` itself when it exists, else its nearest existing parent; the filesystem root when nothing above exists."""
+    probe = path
     while not probe.exists() and probe != probe.parent:
         probe = probe.parent
-    free = shutil.disk_usage(probe).free
+    return probe
+
+
+def _has_space(image: Path, scratch: Path) -> bool:
+    """Whether the scratch volume has room for the whole image; logs an error when it does not."""
+    need = image.stat().st_size
+    free = shutil.disk_usage(_existing_ancestor(scratch)).free
     if free < need:
         logger.error(
             "iso extract: not enough scratch space under %s for %s (need %d bytes, %d free)", scratch, image, need, free
@@ -86,19 +85,24 @@ def _has_space(image: Path, scratch: Path) -> bool:
     return True
 
 
-async def _run_7z(image: Path, dest: Path) -> bool:
+def _find_7z() -> str | None:
+    """The 7-Zip executable on PATH (`7z`, else `7zz`); None, logged as an error, when neither is installed."""
     # Debian 12's `7zip` package (the ripper image) ships only `7zz`; p7zip
     # and newer Debian install `7z`.
     exe = shutil.which("7z") or shutil.which("7zz")
     if exe is None:
         logger.error("iso extract: 7-Zip (7z / 7zz) is not installed")
-        return False
-    proc = await asyncio.create_subprocess_exec(
+    return exe
+
+
+async def _spawn_7z(exe: str, image: Path, dest: Path) -> asyncio.subprocess.Process:
+    """Start 7-Zip unpacking the UDF image into `dest`, with progress on stdout and errors on stderr."""
+    return await asyncio.create_subprocess_exec(
         exe,
         "x",
         "-tudf",
         "-y",
-        "-bsp1",  # progress to stdout, read below for the "preparing" report
+        "-bsp1",  # progress to stdout, which feeds the "preparing" report
         "-bso0",  # no file listing on stdout
         f"-o{dest}",
         "--",
@@ -106,21 +110,29 @@ async def _run_7z(image: Path, dest: Path) -> bool:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+
+
+async def _report_progress(stdout: asyncio.StreamReader) -> None:
+    """Report the extracting phase, then each progress update 7-Zip writes to `stdout` until it closes."""
+    await prepare.report(IsoPreparePhase.EXTRACTING, 0, None)
+    tail = ""
+    while chunk := await stdout.read(4096):
+        tail = (tail + chunk.decode(errors="replace"))[-1024:]
+        parsed = parse_progress(tail)
+        if parsed is not None:
+            await prepare.report(IsoPreparePhase.EXTRACTING, *parsed)
+
+
+async def _collect_7z(proc: asyncio.subprocess.Process) -> bytes:
+    """Stream 7-Zip's progress and read its stderr until it exits; kill and reap it on a timeout or cancellation,
+    which propagates. Returns its stderr.
+    """
     assert proc.stdout is not None and proc.stderr is not None
     stdout, stderr_stream = proc.stdout, proc.stderr
 
-    async def _progress() -> None:
-        await prepare.report(IsoPreparePhase.EXTRACTING, 0, None)
-        tail = ""
-        while chunk := await stdout.read(4096):
-            tail = (tail + chunk.decode(errors="replace"))[-1024:]
-            parsed = parse_progress(tail)
-            if parsed is not None:
-                await prepare.report(IsoPreparePhase.EXTRACTING, *parsed)
-
     try:
         _, stderr = await asyncio.wait_for(
-            asyncio.gather(_progress(), stderr_stream.read()), timeout=_EXTRACT_TIMEOUT_SECONDS
+            asyncio.gather(_report_progress(stdout), stderr_stream.read()), timeout=_EXTRACT_TIMEOUT_SECONDS
         )
         await proc.wait()
     except BaseException:
@@ -129,7 +141,32 @@ async def _run_7z(image: Path, dest: Path) -> bool:
             proc.kill()
         await proc.wait()
         raise
+    return stderr
+
+
+async def _run_7z(image: Path, dest: Path) -> bool:
+    exe = _find_7z()
+    if exe is None:
+        return False
+    proc = await _spawn_7z(exe, image, dest)
+    stderr = await _collect_7z(proc)
     return _usable(image, proc.returncode, stderr.decode(errors="replace"))
+
+
+def _archive_errors(stderr: str) -> list[str]:
+    """7-Zip's stderr lines that are not per-file errors: what it reported about the archive itself."""
+    return [
+        line.strip()
+        for line in stderr.splitlines()
+        if line.strip() and line.strip() != "ERRORS:" and not _FILE_ERROR.match(line.strip())
+    ]
+
+
+def _damage_outside_video_tree(damaged: list[str]) -> bool:
+    """True when 7-Zip named at least one damaged file and none of them is under BDMV / VIDEO_TS (by top-level
+    folder, ignoring case).
+    """
+    return bool(damaged) and not any(p.split("/", 1)[0].upper() in _VIDEO_DIRS for p in damaged)
 
 
 def _usable(image: Path, rc: int | None, stderr: str) -> bool:
@@ -144,7 +181,7 @@ def _usable(image: Path, rc: int | None, stderr: str) -> bool:
     if rc in (0, 1):
         return True
     damaged = _FILE_ERROR.findall(stderr)
-    if rc == 2 and damaged and not any(p.split("/", 1)[0].upper() in _VIDEO_DIRS for p in damaged):
+    if rc == 2 and _damage_outside_video_tree(damaged):
         logger.warning(
             "iso extract: %s: %d unreadable file(s) outside the video tree, ignored: %s",
             image,
@@ -154,11 +191,7 @@ def _usable(image: Path, rc: int | None, stderr: str) -> bool:
         return True
     # The whole picture, never a tail of stderr: a tail once showed only the
     # harmless CERTIFICATE files and hid a hundred unreadable streams.
-    archive_errors = [
-        line.strip()
-        for line in stderr.splitlines()
-        if line.strip() and line.strip() != "ERRORS:" and not _FILE_ERROR.match(line.strip())
-    ]
+    archive_errors = _archive_errors(stderr)
     logger.error(
         "iso extract: %s: 7z exited %s; %d unreadable file(s): %s; archive errors: %s",
         image,
@@ -167,6 +200,16 @@ def _usable(image: Path, rc: int | None, stderr: str) -> bool:
         ", ".join(damaged) or "none",
         "; ".join(archive_errors) or "none",
     )
+    return False
+
+
+def _is_video_folder(image: Path, root: Path) -> bool:
+    """Whether the extraction at `root` holds a BDMV or VIDEO_TS folder; logs a warning that `image` is not a
+    video disc when it holds neither.
+    """
+    if any((root / d).is_dir() for d in _VIDEO_DIRS):
+        return True
+    logger.warning("iso extract: %s has no BDMV or VIDEO_TS folder; not a video disc", image)
     return False
 
 
@@ -191,12 +234,10 @@ async def extract(image_path: str) -> Path | None:
     except BaseException:
         await asyncio.to_thread(shutil.rmtree, base, True)
         raise
-    if not ok or not any((root / d).is_dir() for d in _VIDEO_DIRS):
-        if ok:
-            logger.warning("iso extract: %s has no BDMV or VIDEO_TS folder; not a video disc", image)
+    if not ok or not _is_video_folder(image, root):
         await asyncio.to_thread(shutil.rmtree, base, True)
         return None
-    _extracted[image_path] = root
+    extraction_routes.route(image_path, root)
     logger.info("iso extract: %s extracted; MakeMKV reads file:%s", image, root)
     return root
 
@@ -204,8 +245,7 @@ async def extract(image_path: str) -> Path | None:
 async def discard_all() -> None:
     """Stop routing to every extraction this process made and remove them.
     The removal runs off the event loop: an extraction is a multi-GB tree."""
-    roots = list(_extracted.values())
-    _extracted.clear()
+    roots = extraction_routes.drop_all()
     await asyncio.to_thread(_remove_extractions, roots)
 
 

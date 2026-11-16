@@ -12,7 +12,7 @@ from arm_common import DiscType
 from arm_common.enums import TrackStatus
 from arm_common.schemas import ScanTitle, TrackView
 
-from arm_ripper import iso_extract
+from arm_ripper import extraction_routes
 from arm_ripper.menus import extract as menu_extract
 from arm_ripper.menus.extract import MENU_DIRNAME, MenuOutcome
 from arm_ripper.rip.makemkv_backup import (
@@ -654,7 +654,7 @@ async def _menu_from_file_source(device_path: str, menu_dir: Path, menu: _MenuRu
     made without decrypting) has unusable clips or VOBs, and MakeMKV's `backup` reads only a drive (`disc:<N>`,
     ledger T18), so its menu is skipped saying so."""
     await menu.start()
-    source: str | Path = iso_extract.extracted_dir(device_path) or device_path
+    source: str | Path = extraction_routes.extracted_dir(device_path) or device_path
     if await asyncio.to_thread(menu_extract.source_encrypted, source):
         await menu.finish(menu_extract.skipped(ENCRYPTED_SOURCE))
         return

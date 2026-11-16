@@ -16,6 +16,7 @@ os.environ.setdefault("ARM_DRIVE_ID", "drv_test")
 os.environ.setdefault("ARM_BACKEND_URL", "https://backend.invalid")
 os.environ.setdefault("ARM_SERVICE_TOKEN", "test-token")
 
+import arm_ripper.extraction_routes as extraction_routes  # noqa: E402
 import arm_ripper.iso_extract as iso_extract  # noqa: E402
 import arm_ripper.prepare as prepare  # noqa: E402
 import arm_ripper.scan.dispatcher as scan_dispatcher  # noqa: E402
@@ -100,6 +101,56 @@ async def test_phase_changes_are_sent_and_progress_is_throttled() -> None:
     ]
 
 
+def _reporter(clock: _Clock) -> prepare._Reporter:
+    client: Any = _Client()
+    return prepare._Reporter(client, "drv_iso", min_interval=3.0, keepalive=3600, clock=clock)
+
+
+async def test_due_the_first_report_is_due() -> None:
+    reporter = _reporter(_Clock())
+    assert reporter._due(SCANNING, 1000.0) is True
+
+
+async def test_due_the_same_phase_within_the_interval_is_not_due() -> None:
+    clock = _Clock()
+    reporter = _reporter(clock)
+    await reporter.report(SCANNING, 0, None)  # sent at t=1000
+    try:
+        assert reporter._due(SCANNING, 1002.9) is False
+    finally:
+        await reporter.finish()
+
+
+async def test_due_the_same_phase_exactly_at_the_interval_is_due() -> None:
+    clock = _Clock()
+    reporter = _reporter(clock)
+    await reporter.report(SCANNING, 0, None)
+    try:
+        assert reporter._due(SCANNING, 1003.0) is True
+    finally:
+        await reporter.finish()
+
+
+async def test_due_the_same_phase_after_the_interval_is_due() -> None:
+    clock = _Clock()
+    reporter = _reporter(clock)
+    await reporter.report(SCANNING, 0, None)
+    try:
+        assert reporter._due(SCANNING, 1003.1) is True
+    finally:
+        await reporter.finish()
+
+
+async def test_due_a_phase_change_inside_the_interval_is_due() -> None:
+    clock = _Clock()
+    reporter = _reporter(clock)
+    await reporter.report(SCANNING, 0, None)
+    try:
+        assert reporter._due(EXTRACTING, 1000.1) is True
+    finally:
+        await reporter.finish()
+
+
 async def test_the_current_phase_is_resent_as_a_keepalive_until_finish() -> None:
     """A MakeMKV scan reports nothing for minutes; the keepalive keeps the
     backend's status from ageing out meanwhile."""
@@ -137,13 +188,13 @@ async def test_scan_reports_scanning_then_the_extraction_then_scanning_again(
         phases.append(phase)
 
     async def _makemkv(_p: str) -> ScanResult:
-        if iso_extract.extracted_dir(str(iso)) is None:
+        if extraction_routes.extracted_dir(str(iso)) is None:
             raise ScanError("makemkvcon exited -11")
         return ScanResult(disc_type=DiscType.BLURAY, titles=[{"index": 0, "duration_seconds": 5400}])
 
     async def _extract(path: str) -> Path:
         await prepare.report(EXTRACTING, 50, "BDMV/x")
-        iso_extract._extracted[path] = tmp_path / "m"
+        extraction_routes.route(path, tmp_path / "m")
         return tmp_path / "m"
 
     async def _data(_p: str) -> ScanResult:
@@ -156,7 +207,7 @@ async def test_scan_reports_scanning_then_the_extraction_then_scanning_again(
     try:
         await scan_dispatcher.scan(str(iso))
     finally:
-        iso_extract._extracted.clear()
+        extraction_routes.drop_all()
 
     assert phases == [SCANNING, EXTRACTING, SCANNING]
 

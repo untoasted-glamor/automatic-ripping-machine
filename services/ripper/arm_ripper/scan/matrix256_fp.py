@@ -45,8 +45,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# pycdlib path-keyword per filesystem view, in preference order.
-_VIEW_KEYS = (("udf", "udf_path"), ("rock_ridge", "rr_path"), ("joliet", "joliet_path"), ("iso_path", "iso_path"))
+# (view name, pycdlib path keyword, the image method that reports the view), in IMPLEMENTERS.md §2 preference order.
+_OPTIONAL_VIEWS: tuple[tuple[str, str, str], ...] = (
+    ("udf", "udf_path", "has_udf"),
+    ("rock_ridge", "rr_path", "has_rock_ridge"),
+    ("joliet", "joliet_path", "has_joliet"),
+)
+# Plain ISO 9660 is always present, so it is the view of last resort.
+_ISO9660_VIEW = ("iso9660", "iso_path")
 
 
 class UnsafeRecordError(ValueError):
@@ -97,21 +103,15 @@ def fingerprint_records(records: Iterable[tuple[str, int]]) -> str:
     return digest
 
 
-def _choose_view(iso: Any) -> tuple[str, str] | None:
-    """Pick the filesystem view to walk, per IMPLEMENTERS.md §2 preference."""
-    for view, key in _VIEW_KEYS:
+def _choose_view(iso: Any) -> tuple[str, str]:
+    """Pick the filesystem view to walk, per IMPLEMENTERS.md §2 preference; plain ISO 9660 is the fallback."""
+    for view, key, has_view in _OPTIONAL_VIEWS:
         try:
-            if view == "udf" and iso.has_udf():
+            if getattr(iso, has_view)():
                 return view, key
-            if view == "rock_ridge" and iso.has_rock_ridge():
-                return view, key
-            if view == "joliet" and iso.has_joliet():
-                return view, key
-            if view == "iso_path":
-                return "iso9660", key
         except Exception:  # noqa: BLE001 — a broken descriptor: try the next view
             continue
-    return None
+    return _ISO9660_VIEW
 
 
 def _is_symlink(record: Any) -> bool:
@@ -124,14 +124,23 @@ def _is_symlink(record: Any) -> bool:
         return False
 
 
-def _collect_from_iso(iso: Any) -> tuple[list[tuple[str, int]], str] | None:
+def _hashed_path(full: str, view: str) -> str:
+    """The path matrix256 hashes for a file at pycdlib path `full`: relative to the root, and stripped of its
+    `;1` version suffix on the plain ISO 9660 view.
+    """
+    relative = full.lstrip("/")
+    if view == "iso9660":
+        # Bare ISO 9660 names carry `;1` version suffixes the kernel
+        # never shows on a mount; strip them from the hashed path
+        # (the pycdlib lookup still needs the raw name).
+        relative = relative.split(";", 1)[0]
+    return relative
+
+
+def _collect_from_iso(iso: Any) -> tuple[list[tuple[str, int]], str]:
     """Walk the opened pycdlib image's preferred view into (relative path,
-    size) records for every regular file. Returns (records, view name), or
-    None when no view is walkable."""
-    chosen = _choose_view(iso)
-    if chosen is None:
-        return None
-    view, key = chosen
+    size) records for every regular file. Returns (records, view name)."""
+    view, key = _choose_view(iso)
     records: list[tuple[str, int]] = []
     for dirpath, _dirnames, filenames in iso.walk(**{key: "/"}):
         prefix = dirpath if dirpath.endswith("/") else dirpath + "/"
@@ -140,17 +149,11 @@ def _collect_from_iso(iso: Any) -> tuple[list[tuple[str, int]], str] | None:
             record = iso.get_record(**{key: full})
             if _is_symlink(record):
                 continue
-            relative = full.lstrip("/")
-            if view == "iso9660":
-                # Bare ISO 9660 names carry `;1` version suffixes the kernel
-                # never shows on a mount; strip them from the hashed path
-                # (the pycdlib lookup above still needs the raw name).
-                relative = relative.split(";", 1)[0]
-            records.append((relative, record.get_data_length()))
+            records.append((_hashed_path(full, view), record.get_data_length()))
     return records, view
 
 
-def collect_tree_records(source_path: str) -> tuple[list[tuple[str, int]], str] | None:
+def collect_tree_records(source_path: str) -> tuple[list[tuple[str, int]], str]:
     """Read the full-tree (path, size) records from a device or ISO path."""
     from pycdlib import PyCdlib  # lazy: keep import cost off the hot path
 
@@ -162,6 +165,20 @@ def collect_tree_records(source_path: str) -> tuple[list[tuple[str, int]], str] 
         iso.close()
 
 
+def _collect_records(source_path: str) -> tuple[list[tuple[str, int]], str] | None:
+    """(records, view name) for the source's file tree: the pycdlib walk, or a 7-Zip listing (view "udf-7z") when
+    pycdlib refuses the image; None when 7-Zip lists nothing either.
+    """
+    try:
+        return collect_tree_records(source_path)
+    except Exception as e:  # noqa: BLE001 — pycdlib refuses UDF-only images (no ISO 9660 PVD)
+        logger.debug("matrix256 pycdlib walk failed for %s: %s; trying 7z", source_path, e)
+        from arm_ripper.scan import udf_image
+
+        udf_records = udf_image.list_files(source_path)
+        return (udf_records, "udf-7z") if udf_records else None
+
+
 def probe_matrix256(source_path: str) -> str | None:
     """Compute the matrix256v1 fingerprint for a device/ISO path. Never raises.
 
@@ -171,14 +188,7 @@ def probe_matrix256(source_path: str) -> str | None:
     like thediscdb we never fingerprint nothing.
     """
     try:
-        try:
-            collected = collect_tree_records(source_path)
-        except Exception as e:  # noqa: BLE001 — pycdlib refuses UDF-only images (no ISO 9660 PVD)
-            logger.debug("matrix256 pycdlib walk failed for %s: %s; trying 7z", source_path, e)
-            from arm_ripper.scan import udf_image
-
-            udf_records = udf_image.list_files(source_path)
-            collected = (udf_records, "udf-7z") if udf_records else None
+        collected = _collect_records(source_path)
         if collected is None:
             return None
         records, view = collected

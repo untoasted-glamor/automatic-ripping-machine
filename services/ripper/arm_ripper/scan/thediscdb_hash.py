@@ -17,6 +17,7 @@ import hashlib
 import logging
 import struct
 from collections.abc import Sequence
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,11 @@ def compute_content_hash(sizes: Sequence[int]) -> str | None:
 def _clean_iso_name(name: str) -> str:
     """Strip ISO9660 `;1` version suffixes; UDF names pass through."""
     return name.split(";", 1)[0]
+
+
+def _file_entry(child: Any) -> tuple[str, int]:
+    """(name, size) of one pycdlib directory entry, its name decoded and stripped of any ISO `;1` version suffix."""
+    return _clean_iso_name(child.file_identifier().decode("utf-8", "replace")), child.get_data_length()
 
 
 def _hash_from_listing(files: list[tuple[str, int]]) -> str | None:
@@ -72,6 +78,37 @@ def collect_hash_files_udf(source_path: str) -> list[tuple[str, int]] | None:
     return _files_in(listing, "VIDEO_TS") or None
 
 
+def _bd_stream_files(iso: Any) -> list[tuple[str, int]]:
+    """(name, size) of the `.m2ts` files in the UDF `/BDMV/STREAM` directory; empty when the disc has no UDF tree,
+    no STREAM directory, or no `.m2ts` in it.
+    """
+    try:
+        listing = [
+            _file_entry(child)
+            for child in iso.list_children(udf_path="/BDMV/STREAM")
+            if child is not None and not child.is_dir()
+        ]
+        return [(n, s) for n, s in listing if n.lower().endswith(".m2ts")]
+    except Exception:  # noqa: BLE001 — no UDF / no BDMV: fall through to DVD
+        return []
+
+
+def _dvd_files(iso: Any) -> list[tuple[str, int]] | None:
+    """(name, size) of every file in `/VIDEO_TS`, read from the ISO 9660 tree and else the UDF one; None when
+    neither namespace has the directory (CD, data disc).
+    """
+    for kwargs in ({"iso_path": "/VIDEO_TS"}, {"udf_path": "/VIDEO_TS"}):
+        try:
+            return [
+                _file_entry(child)
+                for child in iso.list_children(**kwargs)
+                if child is not None and not child.is_dir() and not child.is_dot() and not child.is_dotdot()
+            ]
+        except Exception:  # noqa: BLE001 — try next namespace
+            continue
+    return None
+
+
 def collect_hash_files(source_path: str) -> list[tuple[str, int]] | None:
     """Read the hashable file set from a device or ISO path via pycdlib.
 
@@ -84,28 +121,10 @@ def collect_hash_files(source_path: str) -> list[tuple[str, int]] | None:
     iso.open(source_path)
     try:
         # Blu-ray first: UDF filesystem, STREAM directory.
-        try:
-            listing = [
-                (_clean_iso_name(child.file_identifier().decode("utf-8", "replace")), child.get_data_length())
-                for child in iso.list_children(udf_path="/BDMV/STREAM")
-                if child is not None and not child.is_dir()
-            ]
-            m2ts = [(n, s) for n, s in listing if n.lower().endswith(".m2ts")]
-            if m2ts:
-                return m2ts
-        except Exception:  # noqa: BLE001 — no UDF / no BDMV: fall through to DVD
-            pass
-
-        for kwargs in ({"iso_path": "/VIDEO_TS"}, {"udf_path": "/VIDEO_TS"}):
-            try:
-                return [
-                    (_clean_iso_name(child.file_identifier().decode("utf-8", "replace")), child.get_data_length())
-                    for child in iso.list_children(**kwargs)
-                    if child is not None and not child.is_dir() and not child.is_dot() and not child.is_dotdot()
-                ]
-            except Exception:  # noqa: BLE001 — try next namespace
-                continue
-        return None
+        m2ts = _bd_stream_files(iso)
+        if m2ts:
+            return m2ts
+        return _dvd_files(iso)
     finally:
         iso.close()
 

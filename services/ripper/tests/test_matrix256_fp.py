@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pycdlib
 import pytest
 
 from arm_ripper.scan import matrix256_fp
@@ -17,6 +18,9 @@ from arm_ripper.scan.matrix256_fp import (
     UnsafeRecordError,
     _choose_view,
     _collect_from_iso,
+    _collect_records,
+    _hashed_path,
+    collect_tree_records,
     fingerprint_records,
     probe_matrix256,
 )
@@ -304,3 +308,110 @@ def test_choose_view_falls_back_to_plain_iso9660_when_no_extension_is_present() 
 
 def test_choose_view_falls_back_to_iso9660_when_every_extended_check_raises() -> None:
     assert _choose_view(_RaisingIso("udf", "rock_ridge", "joliet")) == ("iso9660", "iso_path")
+
+
+def test_choose_view_prefers_udf_over_every_other_view() -> None:
+    iso = _StubIso("udf_path", [], {}, udf=True, rock_ridge=True, joliet=True)
+    assert _choose_view(iso) == ("udf", "udf_path")
+
+
+def test_choose_view_prefers_rock_ridge_over_joliet() -> None:
+    iso = _StubIso("rr_path", [], {}, rock_ridge=True, joliet=True)
+    assert _choose_view(iso) == ("rock_ridge", "rr_path")
+
+
+def test_choose_view_treats_a_falsy_non_bool_check_as_absent() -> None:
+    class _FalsyIso:
+        def has_udf(self) -> int:
+            return 0
+
+        def has_rock_ridge(self) -> None:
+            return None
+
+        def has_joliet(self) -> str:
+            return ""
+
+    assert _choose_view(_FalsyIso()) == ("iso9660", "iso_path")
+
+
+def test_collect_tree_records_opens_walks_and_closes_the_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _OpenableIso(_StubIso):
+        instances: list["_OpenableIso"] = []
+
+        def __init__(self) -> None:
+            super().__init__("iso_path", [("/", [], ["A.TXT;1"])], {"/A.TXT;1": _Rec(7)})
+            self.opened: str | None = None
+            self.closed = 0
+            _OpenableIso.instances.append(self)
+
+        def open(self, path: str) -> None:
+            self.opened = path
+
+        def close(self) -> None:
+            self.closed += 1
+
+    monkeypatch.setattr(pycdlib, "PyCdlib", _OpenableIso)
+    assert collect_tree_records("/dev/sr0") == ([("A.TXT", 7)], "iso9660")
+    [iso] = _OpenableIso.instances
+    assert iso.opened == "/dev/sr0"
+    assert iso.closed == 1
+
+
+def test_hashed_path_iso9660_strips_version_suffix_and_leading_slash() -> None:
+    assert _hashed_path("/VIDEO_TS/VTS_01_1.VOB;1", "iso9660") == "VIDEO_TS/VTS_01_1.VOB"
+
+
+@pytest.mark.parametrize("view", ["udf", "joliet", "rock_ridge"])
+def test_hashed_path_extended_views_keep_a_semicolon_in_the_name(view: str) -> None:
+    assert _hashed_path("/dir/a;b.txt", view) == "dir/a;b.txt"
+
+
+def test_hashed_path_without_leading_slash_passes_through() -> None:
+    assert _hashed_path("dir/a.txt", "udf") == "dir/a.txt"
+
+
+def test_collect_records_returns_pycdlib_result_without_calling_7zip(monkeypatch: pytest.MonkeyPatch) -> None:
+    from arm_ripper.scan import udf_image
+
+    def _boom(_path: str) -> list[tuple[str, int]]:
+        raise AssertionError("7-Zip must not run when pycdlib succeeds")
+
+    monkeypatch.setattr(udf_image, "list_files", _boom)
+    with mock.patch.object(matrix256_fp, "collect_tree_records", return_value=([("a", 1)], "udf")):
+        assert _collect_records("/dev/sr0") == ([("a", 1)], "udf")
+
+
+def test_collect_records_falls_back_to_7zip_listing_and_logs(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from arm_ripper.scan import udf_image
+
+    monkeypatch.setattr(udf_image, "list_files", lambda _path: [("b", 2)])
+    with (
+        mock.patch.object(matrix256_fp, "collect_tree_records", side_effect=OSError("no PVD")),
+        caplog.at_level(logging.DEBUG, logger=matrix256_fp.logger.name),
+    ):
+        assert _collect_records("/dev/sr0") == ([("b", 2)], "udf-7z")
+    assert [r.getMessage() for r in caplog.records] == ["matrix256 pycdlib walk failed for /dev/sr0: no PVD; trying 7z"]
+
+
+def test_collect_records_none_when_7zip_lists_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from arm_ripper.scan import udf_image
+
+    monkeypatch.setattr(udf_image, "list_files", lambda _path: [])
+    with mock.patch.object(matrix256_fp, "collect_tree_records", side_effect=OSError("no PVD")):
+        assert _collect_records("/dev/sr0") is None
+
+
+def test_collect_records_propagates_a_7zip_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from arm_ripper.scan import udf_image
+
+    def _fail(_path: str) -> list[tuple[str, int]]:
+        raise RuntimeError("7z failed")
+
+    monkeypatch.setattr(udf_image, "list_files", _fail)
+    with (
+        mock.patch.object(matrix256_fp, "collect_tree_records", side_effect=OSError("no PVD")),
+        pytest.raises(RuntimeError, match="7z failed"),
+    ):
+        _collect_records("/dev/sr0")

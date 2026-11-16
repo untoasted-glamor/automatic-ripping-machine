@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 import pytest
@@ -116,3 +117,81 @@ def test_scan_data_blkid_timeout_kills_reaps_and_returns_unknown(monkeypatch: py
     assert out.volume_label is None
     assert proc.killed
     assert proc.waited
+
+
+def test_classify_folder_with_bdmv_dir_is_bluray(tmp_path: Path) -> None:
+    folder = tmp_path / "MY_DISC"
+    (folder / "BDMV").mkdir(parents=True)
+    result = data_module._classify_folder(str(folder))
+    assert result.disc_type == DiscType.BLURAY
+    assert result.volume_label == "MY_DISC"
+
+
+def test_classify_folder_without_bdmv_is_dvd(tmp_path: Path) -> None:
+    folder = tmp_path / "MY_DVD"
+    folder.mkdir()
+    result = data_module._classify_folder(str(folder))
+    assert result.disc_type == DiscType.DVD
+    assert result.volume_label == "MY_DVD"
+
+
+def test_classify_folder_with_bdmv_file_is_dvd(tmp_path: Path) -> None:
+    folder = tmp_path / "ODD_DISC"
+    folder.mkdir()
+    (folder / "BDMV").write_bytes(b"not a dir")
+    assert data_module._classify_folder(str(folder)).disc_type == DiscType.DVD
+
+
+def test_blkid_stdout_returns_stdout_and_spawns_exact_argv(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[object, ...]] = []
+
+    async def _exec(*args: object, **_kwargs: object) -> _Proc:
+        seen.append(args)
+        return _Proc(b"Half_Baked\n")
+
+    monkeypatch.setattr(data_module.asyncio, "create_subprocess_exec", _exec)
+    assert asyncio.run(data_module._blkid_stdout("/dev/sr0")) == b"Half_Baked\n"
+    assert seen == [("blkid", "-o", "value", "-s", "LABEL", "/dev/sr0")]
+
+
+def test_blkid_stdout_timeout_kills_reaps_and_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    proc = _HangingProc()
+
+    async def _exec(*_args: object, **_kwargs: object) -> _HangingProc:
+        return proc
+
+    real_wait_for = asyncio.wait_for
+
+    async def _fast_wait_for(awaitable: object, timeout: float) -> object:
+        return await real_wait_for(awaitable, timeout=0.01)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(data_module.asyncio, "create_subprocess_exec", _exec)
+    monkeypatch.setattr(data_module.asyncio, "wait_for", _fast_wait_for)
+    assert asyncio.run(data_module._blkid_stdout("/dev/sr0")) is None
+    assert proc.killed
+    assert proc.waited
+
+
+def test_sniffed_video_type_logs_found_layout(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    path = _image(tmp_path, "BDMV".encode("utf-16-be"))
+    with caplog.at_level(logging.INFO, logger="arm_ripper.scan.data"):
+        kind = asyncio.run(data_module._sniffed_video_type(path))
+    assert kind is DiscType.BLURAY
+    assert [r.getMessage() for r in caplog.records] == [
+        f"image {path} carries a bluray layout; classifying as bluray with no titles"
+    ]
+
+
+def test_sniffed_video_type_none_without_layout(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.INFO, logger="arm_ripper.scan.data"):
+        kind = asyncio.run(data_module._sniffed_video_type(_image(tmp_path, b"backup files")))
+    assert kind is None
+    assert caplog.records == []
+
+
+def test_sniffed_video_type_skips_sniff_for_device_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(_path: str) -> DiscType | None:
+        raise AssertionError("sniff must not run for a device node")
+
+    monkeypatch.setattr(data_module, "sniff_video_image", _boom)
+    assert asyncio.run(data_module._sniffed_video_type("/dev/sr0")) is None

@@ -489,24 +489,20 @@ async def run_source_mode(controller: JobController, session_id: str | None) -> 
         await iso_extract.discard_all()
 
 
-async def amain() -> None:
-    client = BackendClient(
+def _build_client() -> BackendClient:
+    """The backend client for this ripper, authenticated with its service token and named by its hostname and drive."""
+    return BackendClient(
         settings.ARM_BACKEND_URL,
         settings.ARM_SERVICE_TOKEN,
         hostname=settings.HOSTNAME,
         drive_id=settings.ARM_DRIVE_ID,
     )
-    ssl_ctx = ssl.create_default_context(cafile=CA_BUNDLE_PATH)
-    ws_url = _ws_url_from_backend_url(settings.ARM_BACKEND_URL)
-    # In source mode the device_path is the bound ISO file; everything
-    # downstream (register, JobController, heartbeat) sees it as the bound
-    # device. Boot probe is also skipped — there's no crashed rip to
-    # recover (the backend spawns a fresh container per ISO rip).
-    source_path = settings.ARM_SOURCE_PATH
-    source_mode = source_path is not None
-    if source_path is None and settings.ARM_DRIVE_DEV is None:
-        logger.error("neither ARM_SOURCE_PATH nor ARM_DRIVE_DEV is set; nothing to rip")
-        sys.exit(2)
+
+
+def _initial_handle(source_path: str | None) -> DriveHandle:
+    """The drive handle to start with: fixed on the bound ISO in source mode, otherwise the drive's current node
+    (absent when it isn't plugged in yet; the poll loop keeps looking).
+    """
     # Narrow on `source_path` itself rather than the `source_mode` alias, so
     # mypy can see the str inside the branch without an ignore.
     if source_path is not None:
@@ -518,6 +514,61 @@ async def amain() -> None:
             logger.info("drive present at %s via %s", first.path, first.via)
         if handle.absent:
             logger.warning("starting with the drive absent (by_id=%s); will poll for it", settings.ARM_DRIVE_BY_ID)
+    return handle
+
+
+def _build_controller(
+    client: BackendClient,
+    drive_id: str,
+    ws: WSClient,
+    handle: DriveHandle,
+    *,
+    source_mode: bool,
+    on_scan_activity_change: Callable[[], Awaitable[None]] | None = None,
+) -> JobController:
+    """The job controller for this drive. In source mode it never times out a wait for the operator: the backend's
+    watchdog retires the drive once this container exits, so it must not exit FAILED while the operator is still
+    parked at AWAITING_USER_ID / AWAITING_REVIEW.
+
+    Fork: `on_scan_activity_change` (an immediate heartbeat when a scan starts or ends) and
+    `ARM_BACKUP_FULL_SELECTIONS` are passed through.
+    """
+    if source_mode:
+        return JobController(
+            client,
+            drive_id,
+            ws=ws,
+            device_path=handle,
+            default_min_length_seconds=settings.ARM_MIN_LENGTH_SECONDS,
+            backup_full_selections=settings.ARM_BACKUP_FULL_SELECTIONS,
+            resolution_timeout=None,
+            on_scan_activity_change=on_scan_activity_change,
+        )
+    return JobController(
+        client,
+        drive_id,
+        ws=ws,
+        device_path=handle,
+        default_min_length_seconds=settings.ARM_MIN_LENGTH_SECONDS,
+        backup_full_selections=settings.ARM_BACKUP_FULL_SELECTIONS,
+        on_scan_activity_change=on_scan_activity_change,
+    )
+
+
+async def amain() -> None:
+    client = _build_client()
+    ssl_ctx = ssl.create_default_context(cafile=CA_BUNDLE_PATH)
+    ws_url = _ws_url_from_backend_url(settings.ARM_BACKEND_URL)
+    # In source mode the device_path is the bound ISO file; everything
+    # downstream (register, JobController, heartbeat) sees it as the bound
+    # device. Boot probe is also skipped — there's no crashed rip to
+    # recover (the backend spawns a fresh container per ISO rip).
+    source_path = settings.ARM_SOURCE_PATH
+    source_mode = source_path is not None
+    if source_path is None and settings.ARM_DRIVE_DEV is None:
+        logger.error("neither ARM_SOURCE_PATH nor ARM_DRIVE_DEV is set; nothing to rip")
+        sys.exit(2)
+    handle = _initial_handle(source_path)
     # The backend's register payload needs a device path; the configured
     # node is the honest answer until the poll loop reports the real one.
     device_path: str = handle.current or settings.ARM_DRIVE_DEV or ""
@@ -538,29 +589,9 @@ async def amain() -> None:
                 # Until identify creates the job, the dashboard shows this rip
                 # through its "preparing" reports (scanning / extracting).
                 prepare.configure(client, drive_id)
-                # The backend watchdog retires the drive once this container
-                # exits; it must not time out and exit FAILED while the
-                # operator is still parked at AWAITING_USER_ID / AWAITING_REVIEW.
-                controller = JobController(
-                    client,
-                    drive_id,
-                    ws=ws,
-                    device_path=handle,
-                    default_min_length_seconds=settings.ARM_MIN_LENGTH_SECONDS,
-                    backup_full_selections=settings.ARM_BACKUP_FULL_SELECTIONS,
-                    resolution_timeout=None,
-                    on_scan_activity_change=on_scan_activity_change,
-                )
-            else:
-                controller = JobController(
-                    client,
-                    drive_id,
-                    ws=ws,
-                    device_path=handle,
-                    default_min_length_seconds=settings.ARM_MIN_LENGTH_SECONDS,
-                    backup_full_selections=settings.ARM_BACKUP_FULL_SELECTIONS,
-                    on_scan_activity_change=on_scan_activity_change,
-                )
+            controller = _build_controller(
+                client, drive_id, ws, handle, source_mode=source_mode, on_scan_activity_change=on_scan_activity_change
+            )
             await ws.subscribe(f"ripper.commands.{drive_id}", controller.on_ws_command)
             if not source_mode and not handle.absent:
                 # Phase 9 — recover a crashed in-flight rip on this drive, if any.

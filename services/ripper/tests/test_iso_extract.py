@@ -6,6 +6,7 @@ being dumped whole.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import shutil
@@ -20,9 +21,10 @@ os.environ.setdefault("ARM_DRIVE_ID", "drv_test")
 os.environ.setdefault("ARM_BACKEND_URL", "https://backend.invalid")
 os.environ.setdefault("ARM_SERVICE_TOKEN", "test-token")
 
+import arm_ripper.extraction_routes as extraction_routes  # noqa: E402
 import arm_ripper.iso_extract as iso_extract  # noqa: E402
 import arm_ripper.scan.dispatcher as scan_dispatcher  # noqa: E402
-from arm_common import DiscType  # noqa: E402
+from arm_common import DiscType, IsoPreparePhase  # noqa: E402
 from arm_common.schemas import ScanResult  # noqa: E402
 from arm_ripper.scan.makemkv import ScanError  # noqa: E402
 from arm_ripper.source import makemkv_source_url  # noqa: E402
@@ -148,7 +150,7 @@ def _patch_scan(
 
     async def _extract(path: str) -> Path | None:
         if extracted is not None:
-            iso_extract._extracted[path] = extracted
+            extraction_routes.route(path, extracted)
         return extracted
 
     async def _no_cd(_p: str) -> None:
@@ -313,3 +315,372 @@ def test_a_rejected_extraction_logs_every_damaged_file(caplog: pytest.LogCapture
     assert "110 unreadable file(s)" in text
     assert "BDMV/STREAM/00011.m2ts" in text and "BDMV/STREAM/00119.m2ts" in text
     assert "Headers Error" in text and "Unexpected end of archive" in text
+
+
+# --- _run_7z: no binary, timeout, cancellation -----------------------------
+
+
+class _HangingStream:
+    """A pipe that yields nothing until the process is killed, then hits EOF."""
+
+    def __init__(self, killed: asyncio.Event) -> None:
+        self._killed = killed
+
+    async def read(self, _n: int = -1) -> bytes:
+        await self._killed.wait()
+        return b""
+
+
+class _HangingProc:
+    """A 7z that never finishes by itself: its stdout hangs until `kill`."""
+
+    def __init__(self, *, kill_raises: bool = False) -> None:
+        self._killed = asyncio.Event()
+        self._kill_raises = kill_raises
+        self.returncode = -9
+        self.stdout = _HangingStream(self._killed)
+        self.stderr = _Stream(b"")
+        self.kill_calls = 0
+        self.wait_calls = 0
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        self._killed.set()
+        if self._kill_raises:
+            raise ProcessLookupError
+
+    async def wait(self) -> int:
+        self.wait_calls += 1
+        return self.returncode
+
+
+def _spawn_returns(monkeypatch: pytest.MonkeyPatch, proc: _HangingProc) -> None:
+    monkeypatch.setattr(iso_extract.shutil, "which", lambda name: "/usr/bin/7z" if name == "7z" else None)
+
+    async def _exec(*_a: object, **_k: object) -> _HangingProc:
+        return proc
+
+    monkeypatch.setattr(iso_extract.asyncio, "create_subprocess_exec", _exec)
+
+
+async def test_run_7z_without_any_7zip_binary_logs_an_error_and_spawns_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(iso_extract.shutil, "which", lambda _name: None)
+
+    async def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("nothing may be spawned without a 7-Zip binary")
+
+    monkeypatch.setattr(iso_extract.asyncio, "create_subprocess_exec", _boom)
+
+    with caplog.at_level("ERROR", logger="arm_ripper.iso_extract"):
+        assert await iso_extract._run_7z(tmp_path / "m.iso", tmp_path / "out") is False
+
+    assert [(r.levelname, r.getMessage()) for r in caplog.records] == [
+        ("ERROR", "iso extract: 7-Zip (7z / 7zz) is not installed")
+    ]
+
+
+async def test_run_7z_timeout_kills_the_process_and_reraises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    proc = _HangingProc()
+    _spawn_returns(monkeypatch, proc)
+    monkeypatch.setattr(iso_extract, "_EXTRACT_TIMEOUT_SECONDS", 0.05)
+
+    with pytest.raises(TimeoutError):
+        await iso_extract._run_7z(tmp_path / "m.iso", tmp_path / "out")
+
+    assert proc.kill_calls == 1
+    assert proc.wait_calls == 1
+
+
+async def test_run_7z_suppresses_a_kill_on_an_already_exited_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proc = _HangingProc(kill_raises=True)
+    _spawn_returns(monkeypatch, proc)
+    monkeypatch.setattr(iso_extract, "_EXTRACT_TIMEOUT_SECONDS", 0.05)
+
+    # The ProcessLookupError from kill() is swallowed; the timeout still surfaces.
+    with pytest.raises(TimeoutError):
+        await iso_extract._run_7z(tmp_path / "m.iso", tmp_path / "out")
+
+    assert proc.kill_calls == 1
+    assert proc.wait_calls == 1
+
+
+async def test_run_7z_cancellation_kills_the_process_and_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proc = _HangingProc()
+    _spawn_returns(monkeypatch, proc)
+    task = asyncio.create_task(iso_extract._run_7z(tmp_path / "m.iso", tmp_path / "out"))
+    await asyncio.sleep(0.01)  # let it spawn and block on the hanging pipe
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert proc.kill_calls == 1
+    assert proc.wait_calls == 1
+
+
+# --- extract: _run_7z raising ----------------------------------------------
+
+
+@pytest.mark.parametrize("error", [asyncio.CancelledError(), RuntimeError("7z blew up")])
+async def test_extract_removes_the_scratch_dir_when_run_7z_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _scratch: Path, error: BaseException
+) -> None:
+    iso = tmp_path / "m.iso"
+    iso.write_bytes(b"\0" * 16)
+
+    async def _raises(_image: Path, dest: Path) -> bool:
+        (dest / "BDMV").mkdir()
+        raise error
+
+    monkeypatch.setattr(iso_extract, "_run_7z", _raises)
+
+    with pytest.raises(type(error)):
+        await iso_extract.extract(str(iso))
+
+    assert not (_scratch / "drv_test").exists()
+    assert extraction_routes.extracted_dir(str(iso)) is None
+
+
+def test_find_7z_prefers_7z_and_never_asks_for_7zz(monkeypatch):
+    asked: list[str] = []
+
+    def _which(name: str) -> str | None:
+        asked.append(name)
+        return "/usr/bin/7z"
+
+    monkeypatch.setattr(iso_extract.shutil, "which", _which)
+
+    assert iso_extract._find_7z() == "/usr/bin/7z"
+    assert asked == ["7z"]
+
+
+def test_find_7z_falls_back_to_7zz(monkeypatch):
+    monkeypatch.setattr(iso_extract.shutil, "which", lambda name: "/usr/bin/7zz" if name == "7zz" else None)
+
+    assert iso_extract._find_7z() == "/usr/bin/7zz"
+
+
+def test_find_7z_logs_an_error_and_returns_none_when_neither_is_installed(monkeypatch, caplog):
+    monkeypatch.setattr(iso_extract.shutil, "which", lambda _name: None)
+
+    with caplog.at_level("ERROR", logger="arm_ripper.iso_extract"):
+        assert iso_extract._find_7z() is None
+
+    assert [r.getMessage() for r in caplog.records] == ["iso extract: 7-Zip (7z / 7zz) is not installed"]
+
+
+async def test_spawn_7z_starts_7zip_with_progress_and_errors_piped(monkeypatch, tmp_path):
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    sentinel = object()
+
+    async def _exec(*args: object, **kwargs: object) -> object:
+        calls.append((args, kwargs))
+        return sentinel
+
+    monkeypatch.setattr(iso_extract.asyncio, "create_subprocess_exec", _exec)
+    image, dest = tmp_path / "m.iso", tmp_path / "out"
+
+    proc = await iso_extract._spawn_7z("/usr/bin/7z", image, dest)
+
+    assert proc is sentinel
+    assert calls == [
+        (
+            ("/usr/bin/7z", "x", "-tudf", "-y", "-bsp1", "-bso0", f"-o{dest}", "--", str(image)),
+            {"stdout": asyncio.subprocess.PIPE, "stderr": asyncio.subprocess.PIPE},
+        )
+    ]
+
+
+class _ChunkStream:
+    """Stands in for 7-Zip's stdout: each `read` hands back the next chunk, then b"" at the end."""
+
+    def __init__(self, *chunks: bytes) -> None:
+        self._chunks = list(chunks)
+
+    async def read(self, _n: int) -> bytes:
+        return self._chunks.pop(0) if self._chunks else b""
+
+
+async def _reports_for(monkeypatch: pytest.MonkeyPatch, *chunks: bytes) -> list[tuple[object, ...]]:
+    reports: list[tuple[object, ...]] = []
+
+    async def _report(*args: object) -> None:
+        reports.append(args)
+
+    monkeypatch.setattr(iso_extract.prepare, "report", _report)
+    await iso_extract._report_progress(_ChunkStream(*chunks))  # type: ignore[arg-type]
+    return reports
+
+
+async def test_report_progress_reports_the_start_then_each_parsed_update(monkeypatch):
+    reports = await _reports_for(monkeypatch, b" 12%\b\b\b", b" 75% 3 - BDMV/STREAM/00002.m2ts")
+
+    assert reports == [
+        (IsoPreparePhase.EXTRACTING, 0, None),
+        (IsoPreparePhase.EXTRACTING, 12, None),
+        (IsoPreparePhase.EXTRACTING, 75, "BDMV/STREAM/00002.m2ts"),
+    ]
+
+
+async def test_report_progress_reports_nothing_extra_for_a_chunk_without_progress(monkeypatch):
+    reports = await _reports_for(monkeypatch, b"  0M Scan /source/\b\b\b")
+
+    assert reports == [(IsoPreparePhase.EXTRACTING, 0, None)]
+
+
+async def test_report_progress_parses_a_line_split_across_chunks_once_complete(monkeypatch):
+    reports = await _reports_for(monkeypatch, b" 5", b"0% 1 - a.m2ts")
+
+    assert reports == [
+        (IsoPreparePhase.EXTRACTING, 0, None),
+        (IsoPreparePhase.EXTRACTING, 50, "a.m2ts"),
+    ]
+
+
+async def test_report_progress_on_an_empty_stream_reports_only_the_start(monkeypatch):
+    assert await _reports_for(monkeypatch) == [(IsoPreparePhase.EXTRACTING, 0, None)]
+
+
+async def test_collect_7z_returns_stderr_of_a_finished_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _report(*_a: object) -> None:
+        return None
+
+    monkeypatch.setattr(iso_extract.prepare, "report", _report)
+    proc = _HangingProc()
+    proc.stdout = _Stream(b"")
+    proc.stderr = _Stream(b"some warning")
+
+    assert await iso_extract._collect_7z(proc) == b"some warning"  # type: ignore[arg-type]
+    assert proc.wait_calls == 1
+    assert proc.kill_calls == 0
+
+
+async def test_collect_7z_timeout_kills_reaps_and_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _report(*_a: object) -> None:
+        return None
+
+    monkeypatch.setattr(iso_extract.prepare, "report", _report)
+    monkeypatch.setattr(iso_extract, "_EXTRACT_TIMEOUT_SECONDS", 0.05)
+    proc = _HangingProc()
+
+    with pytest.raises(TimeoutError):
+        await iso_extract._collect_7z(proc)  # type: ignore[arg-type]
+
+    assert proc.kill_calls == 1
+    assert proc.wait_calls == 1
+
+
+def test_archive_errors_keeps_only_archive_level_lines_stripped_and_in_order() -> None:
+    stderr = "\n".join(
+        [
+            "ERRORS:",
+            "ERROR: Data Error : CERTIFICATE/id.bdmv",
+            "",
+            "   ",
+            "  Can not open the file as archive",
+            "ERROR: Disk full",
+            "\tERROR: CRC Failed : BDMV/x.m2ts  ",
+            "Unexpected end of archive",
+        ]
+    )
+
+    assert iso_extract._archive_errors(stderr) == [
+        "Can not open the file as archive",
+        "ERROR: Disk full",
+        "Unexpected end of archive",
+    ]
+
+
+def test_archive_errors_of_empty_stderr_is_empty() -> None:
+    assert iso_extract._archive_errors("") == []
+
+
+@pytest.mark.parametrize(
+    ("damaged", "expected"),
+    [
+        ([], False),
+        (["CERTIFICATE/id.bdmv", "PS3_UPDATE/PS3UPDAT.PUP"], True),
+        (["BDMV/STREAM/00001.m2ts"], False),
+        (["bdmv/STREAM/00001.m2ts"], False),
+        (["VIDEO_TS/VTS_01_1.VOB"], False),
+        (["id.bdmv"], True),
+        (["CERTIFICATE/id.bdmv", "BDMV/STREAM/00001.m2ts"], False),
+    ],
+)
+def test_damage_outside_video_tree(damaged: list[str], expected: bool) -> None:
+    assert iso_extract._damage_outside_video_tree(damaged) is expected
+
+
+def test_is_video_folder_accepts_a_bdmv_folder(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    (tmp_path / "BDMV").mkdir()
+
+    with caplog.at_level("WARNING", logger="arm_ripper.iso_extract"):
+        assert iso_extract._is_video_folder(Path("m.iso"), tmp_path) is True
+
+    assert caplog.records == []
+
+
+def test_is_video_folder_accepts_a_video_ts_folder(tmp_path: Path) -> None:
+    (tmp_path / "VIDEO_TS").mkdir()
+
+    assert iso_extract._is_video_folder(Path("m.iso"), tmp_path) is True
+
+
+def test_is_video_folder_rejects_and_warns_when_neither_folder_exists(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING", logger="arm_ripper.iso_extract"):
+        assert iso_extract._is_video_folder(Path("m.iso"), tmp_path) is False
+
+    assert [(r.levelname, r.getMessage()) for r in caplog.records] == [
+        ("WARNING", "iso extract: m.iso has no BDMV or VIDEO_TS folder; not a video disc")
+    ]
+
+
+def test_is_video_folder_rejects_a_regular_file_named_bdmv(tmp_path: Path) -> None:
+    (tmp_path / "BDMV").write_text("not a folder")
+
+    assert iso_extract._is_video_folder(Path("m.iso"), tmp_path) is False
+
+
+async def test_extract_after_a_failed_7z_returns_none_without_checking_the_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, _scratch: Path
+) -> None:
+    iso = tmp_path / "m.iso"
+    iso.write_bytes(b"\0")
+
+    async def _failed(_image: Path, _dest: Path) -> bool:
+        return False
+
+    monkeypatch.setattr(iso_extract, "_run_7z", _failed)
+
+    with caplog.at_level("WARNING", logger="arm_ripper.iso_extract"):
+        assert await iso_extract.extract(str(iso)) is None
+
+    assert not [r for r in caplog.records if "not a video disc" in r.getMessage()]
+    assert not any(_scratch.rglob("*"))
+
+
+def test_existing_ancestor_of_an_existing_dir_is_itself(tmp_path: Path) -> None:
+    assert iso_extract._existing_ancestor(tmp_path) == tmp_path
+
+
+def test_existing_ancestor_of_a_missing_path_is_its_nearest_existing_parent(tmp_path: Path) -> None:
+    assert iso_extract._existing_ancestor(tmp_path / "a" / "b" / "c") == tmp_path
+
+
+def test_existing_ancestor_of_an_existing_file_is_itself(tmp_path: Path) -> None:
+    f = tmp_path / "m.iso"
+    f.write_bytes(b"\0")
+
+    assert iso_extract._existing_ancestor(f) == f
+
+
+def test_existing_ancestor_of_a_missing_relative_path_walks_up_to_the_current_dir() -> None:
+    assert iso_extract._existing_ancestor(Path("no-such-dir-xyz") / "sub") == Path(".")
