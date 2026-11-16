@@ -3,6 +3,7 @@ import { renderComponent, screen, fireEvent, cleanup, waitFor } from '$lib/test-
 import TranscodePresetForm from '../TranscodePresetForm.svelte';
 import { createTranscodePreset, updateTranscodePreset } from '$lib/api/transcodePresets';
 import type { EncoderAvailabilityView, TranscodePresetView } from '$lib/types/api.gen';
+import { DEFAULT_TRACKS } from '$lib/utils/track-selection';
 
 // Branch pins for TranscodePresetForm, beside TranscodePresetForm.test.ts.
 // Svelte compiles two branches into the `value={encoder}` of each placeholder
@@ -183,7 +184,9 @@ describe('TranscodePresetForm request', () => {
 				preset_ref: 'Fast 1080p30',
 				container: 'mp4',
 				encoder: 'preset',
-				extra_args: '--foo'
+				extra_args: '--foo',
+				// The fork's audio and subtitle track settings ride along.
+				...DEFAULT_TRACKS
 			})
 		);
 	});
@@ -208,7 +211,11 @@ describe('TranscodePresetForm request', () => {
 				preset_ref: 'Ref',
 				container: 'mp4',
 				encoder: 'preset',
-				extra_args: '--bar'
+				extra_args: '--bar',
+				// The fork sends the preset's track settings; a saved preset with no
+				// audio format keeps the HandBrake preset's own audio.
+				...DEFAULT_TRACKS,
+				audio_format: 'preset'
 			})
 		);
 		expect(createMock).not.toHaveBeenCalled();
