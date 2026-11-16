@@ -448,6 +448,14 @@ def _eligible_source_indexes(track_by_index: dict[int, TrackView], min_length_se
     )
 
 
+def _first_eligible_track(track_by_index: dict[int, TrackView], eligible: list[int]) -> TrackView | None:
+    """The track for the first eligible title, which carries the disc-level progress; None when nothing is eligible.
+
+    Fork: the first eligible title *with a track* (the eligible list comes from the scan, and a title the preset
+    didn't keep has none)."""
+    return next((track_by_index[idx] for idx in eligible if idx in track_by_index), None)
+
+
 async def _rip_optical(
     *,
     disc_type: DiscType,
@@ -681,7 +689,7 @@ async def _rip_every_title(
     """
     # Disc-level progress is credited to one track; the first eligible
     # title may have no track of its own.
-    progress_index = next((idx for idx in eligible_source_indexes if idx in track_by_index), None)
+    progress_track = _first_eligible_track(track_by_index, eligible_source_indexes)
 
     # Titles an earlier pass of this job already settled (a resume after the
     # drive dropped off the bus): makemkvcon rips them again, as `mkv all`
@@ -740,9 +748,9 @@ async def _rip_every_title(
         `total/max` channel. Per-title attribution still happens
         post-rip in the attribution loop below.
         """
-        if on_track_progress is None or progress_index is None:
+        if on_track_progress is None or progress_track is None:
             return
-        await on_track_progress(track_by_index[progress_index], fraction)
+        await on_track_progress(progress_track, fraction)
 
     hasher = TitleHasher()
 
@@ -762,11 +770,10 @@ async def _rip_every_title(
         return then
 
     async def _on_verify_progress(done: int, total: int, rate: float | None) -> None:
-        if on_track_progress is None or progress_index is None:
+        if on_track_progress is None or progress_track is None:
             return
-        first_track = track_by_index[progress_index]
         stats: TransferStats = {"bytes_done": done, "bytes_total": total, "rate_bps": rate, "phase": "verifying"}
-        await on_track_progress(first_track, min(done / total, 1.0) if total else 0.0, stats)
+        await on_track_progress(progress_track, min(done / total, 1.0) if total else 0.0, stats)
 
     async def _on_title_done(title_idx: int) -> None:
         """Mid-rip per-title finalisation. Stat the .mkv produced for
