@@ -42,7 +42,7 @@ from arm_backend.disc_menus.preview_tasks import menu_preview_inputs
 from arm_backend.subtitle_ocr_tasks import queue_after_encode, subtitle_ocr_inputs
 from arm_backend.task_kinds import rules_for
 from arm_backend.routers._deps import get_hub
-from arm_backend.transcode_apply import aggregate_session_application
+from arm_backend.transcode_apply import settle_session_application
 from arm_backend.transcode_dispatcher import release_gpu_for_task
 from arm_backend.ws import WSHub
 from arm_common import (
@@ -386,20 +386,7 @@ async def complete(
     # name accepted while it ran.
     await after_task_complete(db, task, job_id, hub)
 
-    outcome = await aggregate_session_application(db, application)
-    if outcome.event_type is not None:
-        await hub.emit(
-            topic="transcode.events",
-            event_type=outcome.event_type,
-            payload={
-                "session_application_id": application.id,
-                "session_id": application.session_id,
-                "job_id": application.job_id,
-                "status": application.status.value,
-            },
-            job_id=job_id,
-            session=db,
-        )
+    await settle_session_application(db, hub, application)
     await db.commit()
     await db.refresh(task)
     logger.info("transcode complete task_id=%s output=%s", task.id, task.output_path)
@@ -449,20 +436,7 @@ async def fail(
         session=db,
     )
 
-    outcome = await aggregate_session_application(db, application)
-    if outcome.event_type is not None:
-        await hub.emit(
-            topic="transcode.events",
-            event_type=outcome.event_type,
-            payload={
-                "session_application_id": application.id,
-                "session_id": application.session_id,
-                "job_id": application.job_id,
-                "status": application.status.value,
-            },
-            job_id=job_id,
-            session=db,
-        )
+    await settle_session_application(db, hub, application)
     await db.commit()
     await db.refresh(task)
     logger.warning("transcode fail task_id=%s last_error=%s", task.id, task.last_error)

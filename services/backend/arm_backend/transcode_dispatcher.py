@@ -459,23 +459,9 @@ class TranscodeDispatcher:
                                 )
                             )
                         ).scalar_one()
-                    application = stale_application
-                    from arm_backend.transcode_apply import aggregate_session_application
+                    from arm_backend.transcode_apply import settle_session_application
 
-                    outcome = await aggregate_session_application(db, application)
-                    if outcome.event_type is not None:
-                        await self._hub.emit(
-                            topic="transcode.events",
-                            event_type=outcome.event_type,
-                            payload={
-                                "session_application_id": application.id,
-                                "session_id": application.session_id,
-                                "job_id": application.job_id,
-                                "status": application.status.value,
-                            },
-                            job_id=application.job_id,
-                            session=db,
-                        )
+                    await settle_session_application(db, self._hub, stale_application)
                 else:
                     task.status = TranscodeTaskStatus.QUEUED
                     task.claimed_by = None
@@ -528,7 +514,7 @@ class TranscodeDispatcher:
         subtitle OCR task of it runs, and one holding only OCR tasks is no
         husk (its encode rows were deleted; the OCR rows keep their `.srt`).
         """
-        from arm_backend.transcode_apply import aggregate_session_application
+        from arm_backend.transcode_apply import aggregate_session_application, emit_session_outcome
 
         threshold = datetime.now(UTC) - timedelta(seconds=self._settings.ARM_TRANSCODE_STALE_THRESHOLD_SECONDS)
         candidates = (
@@ -598,18 +584,7 @@ class TranscodeDispatcher:
                     event_type = "session.failed"
 
                 try:
-                    await self._hub.emit(
-                        topic="transcode.events",
-                        event_type=event_type,
-                        payload={
-                            "session_application_id": application.id,
-                            "session_id": application.session_id,
-                            "job_id": application.job_id,
-                            "status": application.status.value,
-                        },
-                        job_id=application.job_id,
-                        session=db,
-                    )
+                    await emit_session_outcome(self._hub, db, application, event_type)
                 except Exception as exc:  # WS is best-effort; status already set
                     logger.warning("orphan sweep ws emit failed sap=%s: %s", application.id, exc)
                 acted += 1
@@ -1175,7 +1150,7 @@ class TranscodeDispatcher:
     async def _fail_queued_task(self, db: AsyncSession, task: TranscodeTask, reason: str) -> None:
         """Terminal-fail a queued task that can never run as configured, emit
         `task.failed`, settle its session application, and commit."""
-        from arm_backend.transcode_apply import aggregate_session_application
+        from arm_backend.transcode_apply import settle_session_application
 
         task.status = TranscodeTaskStatus.FAILED
         task.last_error = reason
@@ -1186,20 +1161,7 @@ class TranscodeDispatcher:
                 select(SessionApplication).where(col(SessionApplication.id) == task.session_application_id)
             )
         ).scalar_one()
-        outcome = await aggregate_session_application(db, application)
-        if outcome.event_type is not None:
-            await self._hub.emit(
-                topic="transcode.events",
-                event_type=outcome.event_type,
-                payload={
-                    "session_application_id": application.id,
-                    "session_id": application.session_id,
-                    "job_id": application.job_id,
-                    "status": application.status.value,
-                },
-                job_id=application.job_id,
-                session=db,
-            )
+        await settle_session_application(db, self._hub, application)
         await db.commit()
 
     def host_paths_set(self) -> bool:
