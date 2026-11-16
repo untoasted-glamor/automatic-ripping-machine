@@ -1544,9 +1544,8 @@ class _DiscRip:
         await self._controller._eject_with_retry(self._controller._device_path or self._rip_path)
 
     async def run(self) -> None:
-        """Rip the disc through its resumes, report rip-complete (or rip-parked), then eject."""
+        """Rip the disc through its resumes, then finish it."""
         self._output_dir.mkdir(parents=True, exist_ok=True)
-        menu = self._menu
         parked = False
         while True:
             parked = await self._run_pass()
@@ -1568,30 +1567,7 @@ class _DiscRip:
                 break
             self._prepare_resume(returned)
 
-        if menu is not None and not menu.settled:
-            await menu.finish(menu_failed(MENU_NOT_COPIED))
-        controller = self._controller
-        job_id = self._job_id
-        if parked:
-            # Stop 2: the disc went back after its backup; its titles are chosen, then remuxed in the remux lane.
-            if not self._run.drive_released:
-                # A backup an earlier pass finished was reused, so nothing gave the disc back yet.
-                self._run.drive_released = True
-                await controller._eject_with_retry(controller._device_path or self._start_path)
-            await controller._retry_backend_call(lambda: controller._client.rip_parked(job_id), f"rip-parked {job_id}")
-            logger.info("rip-parked job_id=%s: backed up; its titles wait to be chosen", job_id)
-            return
-        completed = await controller._rip_complete_with_retry(job_id)
-        logger.info("rip-complete job_id=%s status=%s", job_id, completed.status.value)
-
-        if self._run.drive_released:
-            # Ejected after the backup (or never read, for a remux); the tray
-            # may hold the next disc by now.
-            return
-        # Eject the node the drive is at NOW — it may have renumbered during
-        # the rip (USB replug); the path captured at rip start is a hint only.
-        await controller._eject_with_retry(controller._device_path or self._start_path)
-        await asyncio.sleep(EJECT_GRACE_SECONDS)
+        await self._finish(parked)
 
     async def _run_pass(self) -> bool:
         """One `mkv all` pass over the disc on its current node, with a watcher that stops makemkvcon if the drive
@@ -1649,6 +1625,37 @@ class _DiscRip:
             len(self._tracks) - len(self._skip),
             self._resumes,
         )
+
+    async def _finish(self, parked: bool) -> None:
+        """Report rip-complete, then eject the drive at the node it is on now and give it a moment to settle.
+
+        Fork: a menu the rip never settled is failed; a disc parked after its backup (stop 2) reports rip-parked
+        instead, its disc given back; and a rip that already gave its disc back (or never read it) ejects nothing."""
+        menu = self._menu
+        if menu is not None and not menu.settled:
+            await menu.finish(menu_failed(MENU_NOT_COPIED))
+        controller = self._controller
+        job_id = self._job_id
+        if parked:
+            # Stop 2: the disc went back after its backup; its titles are chosen, then remuxed in the remux lane.
+            if not self._run.drive_released:
+                # A backup an earlier pass finished was reused, so nothing gave the disc back yet.
+                self._run.drive_released = True
+                await controller._eject_with_retry(controller._device_path or self._start_path)
+            await controller._retry_backend_call(lambda: controller._client.rip_parked(job_id), f"rip-parked {job_id}")
+            logger.info("rip-parked job_id=%s: backed up; its titles wait to be chosen", job_id)
+            return
+        completed = await controller._rip_complete_with_retry(job_id)
+        logger.info("rip-complete job_id=%s status=%s", job_id, completed.status.value)
+
+        if self._run.drive_released:
+            # Ejected after the backup (or never read, for a remux); the tray
+            # may hold the next disc by now.
+            return
+        # Eject the node the drive is at NOW — it may have renumbered during
+        # the rip (USB replug); the path captured at rip start is a hint only.
+        await controller._eject_with_retry(controller._device_path or self._start_path)
+        await asyncio.sleep(EJECT_GRACE_SECONDS)
 
 
 def _remove_partial_outputs(output_dir: Path, kept: set[Path]) -> None:
