@@ -241,16 +241,32 @@ class _SpawnPass:
         self.encode_examined: int = 0
 
     async def run(self) -> int:
-        from arm_backend.passthrough_executor import execute_passthrough_task
-        from arm_backend.transcode_apply import is_passthrough_preset, transcode_enabled_now
+        from arm_backend.transcode_apply import transcode_enabled_now
 
         self.enabled = await transcode_enabled_now(self._db)
         # `probe()` (cached, blocking) is consulted once per tick, and only
         # when an encode task is actually ready to spawn.
         self.host_probe = None
+
         # Before the slot count: a start given up on here frees its slot.
         await self._dispatcher._settle_starting(self._db)
+        self.encode_slots, self.ocr_slots = await self._free_slots()
+        for task_id in await self._queued_task_ids():
+            await self._handle_queued(task_id)
+        if self.held_encode:
+            logger.debug(
+                "%d encode task(s) held (enabled=%s docker=%s)",
+                self.held_encode,
+                self.enabled,
+                self._dispatcher._docker is not None,
+            )
+        await self._db.commit()
+        return self.spawned + self.spawned_ocr
 
+    async def _free_slots(self) -> tuple[int, int]:
+        """Free encode and subtitle OCR slots: each kind's cap less its running
+        and starting tasks. Tasks that don't encode (subtitle OCR) run in slots
+        of their own."""
         in_progress = (
             (
                 await self._db.execute(
@@ -260,13 +276,15 @@ class _SpawnPass:
             .scalars()
             .all()
         )
-        # Tasks that don't encode (subtitle OCR) run in slots of their own.
         ocr_running = sum(1 for t in in_progress if not rules_for(t.kind).encodes)
-        self.encode_slots = await max_parallel_transcodes(
-            self._db, default=self._dispatcher._settings.MAX_PARALLEL_TRANSCODES
-        ) - (len(in_progress) - ocr_running)
-        self.ocr_slots = self._dispatcher._settings.ARM_SUBTITLE_OCR_MAX_PARALLEL - ocr_running
+        starting = self._dispatcher._starting
+        starting_ocr = sum(1 for _, is_ocr in starting.values() if is_ocr)
+        encode_cap = await max_parallel_transcodes(self._db, default=self._dispatcher._settings.MAX_PARALLEL_TRANSCODES)
+        encode_slots = encode_cap - (len(in_progress) - ocr_running) - (len(starting) - starting_ocr)
+        ocr_slots = self._dispatcher._settings.ARM_SUBTITLE_OCR_MAX_PARALLEL - ocr_running - starting_ocr
+        return encode_slots, ocr_slots
 
+    async def _queued_task_ids(self) -> list[str]:
         queued_rows = (
             (
                 await self._db.execute(
@@ -279,237 +297,262 @@ class _SpawnPass:
             .scalars()
             .all()
         )
-        queued_ids = [row.id for row in queued_rows]
-        starting = self._dispatcher._starting
-        starting_ocr = sum(1 for _, is_ocr in starting.values() if is_ocr)
-        self.encode_slots -= len(starting) - starting_ocr
-        self.ocr_slots -= starting_ocr
-        self.spawned = 0
-        self.spawned_ocr = 0
-        self.held_encode = 0
-        self.encode_examined = 0
-        for task_id in queued_ids:
-            # Fresh, locked, forcibly-repopulated load of this row's CURRENT
-            # state -- never the batch-select object above (see docstring).
-            # `populate_existing=True` is required even though the row is
-            # also `with_for_update()`-locked here: an identity-map hit that
-            # ISN'T expired would otherwise silently keep serving whatever
-            # attributes it already had cached, ignoring this query's result.
-            task = (
-                await self._db.execute(
-                    select(TranscodeTask)
-                    .where(col(TranscodeTask.id) == task_id)
-                    .with_for_update()
-                    .execution_options(populate_existing=True)
-                )
-            ).scalar_one_or_none()
-            if task is None or task.status != TranscodeTaskStatus.QUEUED:
-                logger.debug("task_id=%s no longer claimable (gone or status changed); skipping", task_id)
-                continue
-            # Load the owning application once so the spawn log lines carry
-            # job_id for the per-job log view (Phase 12).
-            application = (
-                await self._db.execute(
-                    select(SessionApplication).where(col(SessionApplication.id) == task.session_application_id)
-                )
-            ).scalar_one_or_none()
-            job_id = application.job_id if application is not None else None
-            with with_log_context(job_id=job_id, session_application_id=task.session_application_id):
-                ocr = not rules_for(task.kind).encodes
-                preset = None if ocr else await self._dispatcher._resolve_preset_for_task(self._db, task)
-                if not ocr and is_passthrough_preset(preset):
-                    # Never counted against encode_slots/encode_examined and
-                    # never held by the disabled/docker-less gates below: a
-                    # file move needs neither a container nor an encode slot.
-                    # Isolated per-task try/except: a raise here (hub.emit,
-                    # aggregate, or an unexpected DB error) must never abort
-                    # the tick and roll back other tasks' already-committed
-                    # work or in-flight GPU claims (see execute_passthrough_task
-                    # for the commit-per-task structure that makes this safe).
-                    # `db.rollback()` on the way out is required, not optional:
-                    # a raise from inside a flush/commit leaves the session in
-                    # "pending rollback" state, and the NEXT statement this
-                    # function issues (for the next queued task) would raise
-                    # PendingRollbackError outside any try/except and abort the
-                    # whole tick. The log line uses the loop variable
-                    # `task_id`, never `task.id`: after a failed flush/commit
-                    # every identity-mapped object is unreadable until the
-                    # rollback, so an ORM attribute read here would raise
-                    # PendingRollbackError out of this except block.
-                    try:
-                        await execute_passthrough_task(
-                            self._db, task, self._dispatcher._hub, self._dispatcher._settings
-                        )
-                    except Exception as exc:
-                        logger.exception("passthrough execution failed task_id=%s: %s", task_id, exc)
-                        await self._db.rollback()
-                    continue
-                if task_id in starting:
-                    # Its container is starting up and claims the task once it
-                    # registers.
-                    continue
-                if await self._fail_if_unrunnable(task, task_id):
-                    continue
-                if self.encode_examined >= _QUEUE_SCAN_LIMIT:
-                    # Container-task cap (encodes and subtitle OCR);
-                    # passthrough tasks further back in the queue are still
-                    # scanned and still run.
-                    continue
-                self.encode_examined += 1
-                if not self.enabled:
-                    self.held_encode += 1
-                    continue
-                if self._dispatcher._docker is None or not self._dispatcher.host_paths_set():
-                    self.held_encode += 1
-                    continue
-                if (self.ocr_slots - self.spawned_ocr if ocr else self.encode_slots - self.spawned) <= 0:
-                    # No free slot this tick; later passthrough tasks in the
-                    # queue must still run, so `continue` (not `break`).
-                    continue
-                if self.host_probe is None:
-                    self.host_probe = await asyncio.to_thread(self._dispatcher._probe_pulling_base_image)
-                    self._dispatcher._log_probe_hold(self.host_probe)
-                if not self.host_probe[0]:
-                    # A missing image or unreachable host fails every spawn
-                    # the same way; hold the task instead of looping a
-                    # traceback per tick or burning its attempts.
-                    self.held_encode += 1
-                    continue
-                if rules_for(task.kind).image == "menu_preview" and not await asyncio.to_thread(
-                    self._dispatcher.menu_preview_image_available
-                ):
-                    # Its own image, pulled on demand; held while it's absent.
-                    self.held_encode += 1
-                    continue
-                # No separate re-verify needed here: the fresh,
-                # `populate_existing`-forced, FOR UPDATE-locked load at the
-                # top of this iteration already confirmed `task` is
-                # current and still QUEUED, right before we act on it.
-                if ocr:
-                    assignment = GpuAssignment(gpu=None, encoder=None, action="spawn")
-                else:
-                    assignment = await self._dispatcher._claim_gpu_for_task(self._db, task, preset)
-                if assignment.action == "queue":
-                    logger.info(
-                        "transcode task waiting for GPU encoder=%s task_id=%s%s",
-                        assignment.encoder.id if assignment.encoder is not None else None,
-                        task.id,
-                        f" ({assignment.reason})" if assignment.reason else "",
-                    )
-                    continue
-                if assignment.action == "fail":
-                    # Same isolation as the passthrough branch: a raise while
-                    # failing this task (hub.emit, aggregate, commit) rolls
-                    # back and moves on, never aborting the tick; `task_id`
-                    # (loop variable) is logged, never an ORM attribute.
-                    try:
-                        await self._dispatcher._fail_queued_task(self._db, task, str(assignment.reason))
-                    except Exception as exc:
-                        logger.exception("failing unrunnable transcode task failed task_id=%s: %s", task_id, exc)
-                        await self._db.rollback()
-                    continue
-                # Read before the try: after a failed flush/commit no ORM
-                # attribute is readable until the rollback (see below).
-                claimed_gpu_id = assignment.gpu.id if assignment.gpu is not None else None
-                started = False
-                try:
-                    # `_spawn_container` is a blocking call: a plain docker
-                    # socket round-trip normally, but on the SSH-transport-
-                    # rebuild path (see arm_backend.docker_client) it also does a
-                    # blocking TCP+SSH handshake that can take tens of
-                    # seconds against a black-holed remote host. Run it off
-                    # the event loop so a stuck spawn doesn't freeze
-                    # HTTP/WS/ripper callbacks for the whole tick.
-                    # `_spawn_container` touches only the docker client,
-                    # `self._settings`, and its own
-                    # locals/args (never the AsyncSession), so moving it to a
-                    # thread doesn't put any DB access off the loop.
-                    await asyncio.to_thread(self._dispatcher._spawn_container, task, assignment=assignment)
-                    started = True
-                    starting[task_id] = (time.monotonic(), ocr)
-                    if ocr:
-                        self.spawned_ocr += 1
-                    else:
-                        self.spawned += 1
-                    self._dispatcher.last_spawn_error = None
-                    # Commit this task's GPU claim promptly, per-task, right
-                    # after its container is confirmed running: a later
-                    # task's exception (and rollback, see the passthrough
-                    # branch above) must never be able to revert a GPU claim
-                    # whose container already exists.
-                    await self._db.commit()
-                except Exception as exc:
-                    self._dispatcher.last_spawn_error = f"{type(exc).__name__}: {exc}"[:300]
-                    # `task_id` (loop variable), never `task.id`: see the
-                    # passthrough except block above for why no ORM
-                    # attribute may be read before the rollback below.
-                    logger.exception("transcode spawn failed task_id=%s: %s", task_id, exc)
-                    # A raise here can come from `_spawn_container` itself
-                    # (the container never started) OR from the commit right
-                    # above (the container IS running but the GPU-claim
-                    # commit failed) -- either way, mirroring the passthrough
-                    # except block, roll back first: a raise from inside a
-                    # flush/commit leaves the session in "pending rollback"
-                    # state, and the NEXT statement issued for the NEXT
-                    # queued task would raise PendingRollbackError outside
-                    # any try/except and abort the whole tick.
-                    await self._db.rollback()
-                    # Release the GPU claim so the task can retry claiming a
-                    # GPU on a later tick. A real SQLAlchemy session's
-                    # rollback (expire_on_rollback=True by default) already
-                    # discards whatever uncommitted BUSY assignment
-                    # `_claim_gpu_for_task` made and expires the gpu object
-                    # back to its last-committed value, but relying on that
-                    # implicit expire-on-rollback behavior for correctness is
-                    # fragile (and the in-memory test fake doesn't model it
-                    # at all), so the revert is re-applied explicitly here,
-                    # AFTER the rollback -- applying it before would just
-                    # have the rollback above discard it again. It's
-                    # committed immediately rather than deferred to the
-                    # trailing end-of-loop commit: an uncommitted revert
-                    # sitting in the shared session for the rest of the loop
-                    # would be discarded again by a LATER task's own rollback
-                    # (the same hazard the passthrough branch's per-task
-                    # commits guard against).
-                    if assignment.gpu is not None:
-                        assignment.gpu.status = GpuStatus.AVAILABLE
-                        assignment.gpu.claimed_by_task_id = None
-                        await self._db.commit()
-                    name_conflict = not started and _is_name_conflict(exc)
-                    if name_conflict:
-                        # An earlier container holds the task's name: one whose
-                        # create timed out after docker made it (never started,
-                        # so never auto-removed), or one that did not claim the
-                        # task in time. The task is still QUEUED, so no
-                        # transcoder owns it: remove the holder, spawn next tick.
-                        try:
-                            await asyncio.to_thread(self._dispatcher._remove_task_containers, task_id)
-                        except Exception as remove_exc:
-                            logger.warning("could not remove the container holding task_id=%s: %s", task_id, remove_exc)
-                    # Only a container that never started counts as an
-                    # attempt: when just the commit failed, the transcoder
-                    # is running and will claim the task. A name conflict is
-                    # the earlier container's doing, not the task's.
-                    if not started and not name_conflict:
-                        try:
-                            await self._dispatcher._count_failed_spawn(self._db, task_id)
-                        except Exception:
-                            logger.exception("could not count the failed spawn task_id=%s", task_id)
-                            await self._db.rollback()
-                finally:
-                    # Committed (other sessions now read BUSY) or rolled back
-                    # and released: either way the in-process marker is done.
-                    if claimed_gpu_id is not None:
-                        self._dispatcher.claimed_gpu_ids.discard(claimed_gpu_id)
-        if self.held_encode:
-            logger.debug(
-                "%d encode task(s) held (enabled=%s docker=%s)",
-                self.held_encode,
-                self.enabled,
-                self._dispatcher._docker is not None,
+        return [row.id for row in queued_rows]
+
+    async def _reload_locked(self, task_id: str) -> TranscodeTask | None:
+        # Fresh, locked, forcibly-repopulated load of this row's CURRENT
+        # state -- never the batch-select object in `_queued_task_ids` (see
+        # the `TranscodeDispatcher.spawn_pending` docstring).
+        # `populate_existing=True` is required even though the row is
+        # also `with_for_update()`-locked here: an identity-map hit that
+        # ISN'T expired would otherwise silently keep serving whatever
+        # attributes it already had cached, ignoring this query's result.
+        task = (
+            await self._db.execute(
+                select(TranscodeTask)
+                .where(col(TranscodeTask.id) == task_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
-        await self._db.commit()
-        return self.spawned + self.spawned_ocr
+        ).scalar_one_or_none()
+        if task is None or task.status != TranscodeTaskStatus.QUEUED:
+            logger.debug("task_id=%s no longer claimable (gone or status changed); skipping", task_id)
+            return None
+        return task
+
+    async def _job_id_for(self, task: TranscodeTask) -> str | None:
+        # Load the owning application once so the spawn log lines carry
+        # job_id for the per-job log view (Phase 12).
+        application = (
+            await self._db.execute(
+                select(SessionApplication).where(col(SessionApplication.id) == task.session_application_id)
+            )
+        ).scalar_one_or_none()
+        return application.job_id if application is not None else None
+
+    async def _run_passthrough_isolated(self, task: TranscodeTask, task_id: str) -> None:
+        from arm_backend.passthrough_executor import execute_passthrough_task
+
+        # Never counted against encode_slots/encode_examined and
+        # never held by the disabled/docker-less gates in `_admit_encode`: a
+        # file move needs neither a container nor an encode slot.
+        # Isolated per-task try/except: a raise here (hub.emit,
+        # aggregate, or an unexpected DB error) must never abort
+        # the tick and roll back other tasks' already-committed
+        # work or in-flight GPU claims (see execute_passthrough_task
+        # for the commit-per-task structure that makes this safe).
+        # `db.rollback()` on the way out is required, not optional:
+        # a raise from inside a flush/commit leaves the session in
+        # "pending rollback" state, and the NEXT statement this
+        # function issues (for the next queued task) would raise
+        # PendingRollbackError outside any try/except and abort the
+        # whole tick. The log line uses the loop variable
+        # `task_id`, never `task.id`: after a failed flush/commit
+        # every identity-mapped object is unreadable until the
+        # rollback, so an ORM attribute read here would raise
+        # PendingRollbackError out of this except block.
+        try:
+            await execute_passthrough_task(self._db, task, self._dispatcher._hub, self._dispatcher._settings)
+        except Exception as exc:
+            logger.exception("passthrough execution failed task_id=%s: %s", task_id, exc)
+            await self._db.rollback()
+
+    async def _admit_encode(self, task: TranscodeTask, ocr: bool) -> bool:
+        if self.encode_examined >= _QUEUE_SCAN_LIMIT:
+            # Container-task cap (encodes and subtitle OCR); passthrough
+            # tasks further back in the queue are still scanned and still run.
+            return False
+        self.encode_examined += 1
+        if not self.enabled:
+            self.held_encode += 1
+            return False
+        if self._dispatcher._docker is None or not self._dispatcher.host_paths_set():
+            self.held_encode += 1
+            return False
+        if (self.ocr_slots - self.spawned_ocr if ocr else self.encode_slots - self.spawned) <= 0:
+            # No free slot this tick; later passthrough tasks in the
+            # queue must still run, so skip (not `break`).
+            return False
+        if self.host_probe is None:
+            self.host_probe = await asyncio.to_thread(self._dispatcher._probe_pulling_base_image)
+            self._dispatcher._log_probe_hold(self.host_probe)
+        if not self.host_probe[0]:
+            # A missing image or unreachable host fails every spawn
+            # the same way; hold the task instead of looping a
+            # traceback per tick or burning its attempts.
+            self.held_encode += 1
+            return False
+        if rules_for(task.kind).image == "menu_preview" and not await asyncio.to_thread(
+            self._dispatcher.menu_preview_image_available
+        ):
+            # Its own image, pulled on demand; held while it's absent.
+            self.held_encode += 1
+            return False
+        return True
+
+    async def _handle_queued(self, task_id: str) -> None:
+        from arm_backend.transcode_apply import is_passthrough_preset
+
+        task = await self._reload_locked(task_id)
+        if task is None:
+            return
+        job_id = await self._job_id_for(task)
+        with with_log_context(job_id=job_id, session_application_id=task.session_application_id):
+            ocr = not rules_for(task.kind).encodes
+            preset = None if ocr else await self._dispatcher._resolve_preset_for_task(self._db, task)
+            if not ocr and is_passthrough_preset(preset):
+                await self._run_passthrough_isolated(task, task_id)
+                return
+            if task_id in self._dispatcher._starting:
+                # Its container is starting up and claims the task once it
+                # registers.
+                return
+            if await self._fail_if_unrunnable(task, task_id):
+                return
+            if not await self._admit_encode(task, ocr):
+                return
+            await self._claim_and_spawn(task, task_id, preset, ocr)
+
+    async def _claim_and_spawn(
+        self, task: TranscodeTask, task_id: str, preset: TranscodePreset | None, ocr: bool
+    ) -> None:
+        # No separate re-verify needed here: the fresh,
+        # `populate_existing`-forced, FOR UPDATE-locked load at the
+        # top of this iteration (`_reload_locked`) already confirmed `task` is
+        # current and still QUEUED, right before we act on it.
+        if ocr:
+            # Subtitle OCR runs on the CPU: no GPU to claim.
+            assignment = GpuAssignment(gpu=None, encoder=None, action="spawn")
+        else:
+            assignment = await self._dispatcher._claim_gpu_for_task(self._db, task, preset)
+        if assignment.action == "queue":
+            self._log_waiting(task, assignment)
+            return
+        if assignment.action == "fail":
+            await self._fail_isolated(task, task_id, str(assignment.reason))
+            return
+        await self._spawn_claimed_task(task, task_id, assignment, ocr)
+
+    def _log_waiting(self, task: TranscodeTask, assignment: GpuAssignment) -> None:
+        logger.info(
+            "transcode task waiting for GPU encoder=%s task_id=%s%s",
+            assignment.encoder.id if assignment.encoder is not None else None,
+            task.id,
+            f" ({assignment.reason})" if assignment.reason else "",
+        )
+
+    async def _fail_isolated(self, task: TranscodeTask, task_id: str, reason: str) -> None:
+        # Same isolation as `_run_passthrough_isolated`: a raise while
+        # failing this task (hub.emit, aggregate, commit) rolls
+        # back and moves on, never aborting the tick; `task_id`
+        # (loop variable) is logged, never an ORM attribute.
+        try:
+            await self._dispatcher._fail_queued_task(self._db, task, reason)
+        except Exception as exc:
+            logger.exception("failing unrunnable transcode task failed task_id=%s: %s", task_id, exc)
+            await self._db.rollback()
+
+    async def _spawn_claimed_task(
+        self, task: TranscodeTask, task_id: str, assignment: GpuAssignment, ocr: bool
+    ) -> None:
+        # Read before the try: after a failed flush/commit no ORM
+        # attribute is readable until the rollback (see `_revert_failed_claim`).
+        claimed_gpu_id = assignment.gpu.id if assignment.gpu is not None else None
+        started = False
+        try:
+            # `_spawn_container` is a blocking call: a plain docker
+            # socket round-trip normally, but on the SSH-transport-
+            # rebuild path (see arm_backend.docker_client) it also does a
+            # blocking TCP+SSH handshake that can take tens of
+            # seconds against a black-holed remote host. Run it off
+            # the event loop so a stuck spawn doesn't freeze
+            # HTTP/WS/ripper callbacks for the whole tick.
+            # `_spawn_container` touches only the docker client,
+            # `self._settings`, and its own
+            # locals/args (never the AsyncSession), so moving it to a
+            # thread doesn't put any DB access off the loop.
+            await asyncio.to_thread(self._dispatcher._spawn_container, task, assignment=assignment)
+            started = True
+            self._dispatcher._starting[task_id] = (time.monotonic(), ocr)
+            if ocr:
+                self.spawned_ocr += 1
+            else:
+                self.spawned += 1
+            self._dispatcher.last_spawn_error = None
+            # Commit this task's GPU claim promptly, per-task, right
+            # after its container is confirmed running: a later
+            # task's exception (and rollback, see
+            # `_run_passthrough_isolated`) must never be able to revert a GPU claim
+            # whose container already exists.
+            await self._db.commit()
+        except Exception as exc:
+            self._dispatcher.last_spawn_error = f"{type(exc).__name__}: {exc}"[:300]
+            # `task_id` (loop variable), never `task.id`: see
+            # `_run_passthrough_isolated` for why no ORM
+            # attribute may be read before the rollback in `_revert_failed_claim`.
+            logger.exception("transcode spawn failed task_id=%s: %s", task_id, exc)
+            await self._revert_failed_claim(task_id, assignment, started, exc)
+        finally:
+            # Committed (other sessions now read BUSY) or rolled back
+            # and released: either way the in-process marker is done.
+            if claimed_gpu_id is not None:
+                self._dispatcher.claimed_gpu_ids.discard(claimed_gpu_id)
+
+    async def _revert_failed_claim(
+        self, task_id: str, assignment: GpuAssignment, started: bool, exc: Exception
+    ) -> None:
+        # The raise that brought us here can come from `_spawn_container`
+        # itself (the container never started) OR from the commit at the
+        # end of `_spawn_claimed_task`'s try (the container IS running but
+        # the GPU-claim commit failed) -- either way, mirroring
+        # `_run_passthrough_isolated`, roll back first: a raise from inside a
+        # flush/commit leaves the session in "pending rollback"
+        # state, and the NEXT statement issued for the NEXT
+        # queued task would raise PendingRollbackError outside
+        # any try/except and abort the whole tick.
+        await self._db.rollback()
+        # Release the GPU claim so the task can retry claiming a
+        # GPU on a later tick. A real SQLAlchemy session's
+        # rollback (expire_on_rollback=True by default) already
+        # discards whatever uncommitted BUSY assignment
+        # `_claim_gpu_for_task` made and expires the gpu object
+        # back to its last-committed value, but relying on that
+        # implicit expire-on-rollback behavior for correctness is
+        # fragile (and the in-memory test fake doesn't model it
+        # at all), so the revert is re-applied explicitly here,
+        # AFTER the rollback -- applying it before would just
+        # have the rollback above discard it again. It's
+        # committed immediately rather than deferred to the
+        # trailing end-of-loop commit: an uncommitted revert
+        # sitting in the shared session for the rest of the loop
+        # would be discarded again by a LATER task's own rollback
+        # (the same hazard `_run_passthrough_isolated`'s per-task
+        # commits guard against).
+        if assignment.gpu is not None:
+            assignment.gpu.status = GpuStatus.AVAILABLE
+            assignment.gpu.claimed_by_task_id = None
+            await self._db.commit()
+        name_conflict = not started and _is_name_conflict(exc)
+        if name_conflict:
+            # An earlier container holds the task's name: one whose
+            # create timed out after docker made it (never started,
+            # so never auto-removed), or one that did not claim the
+            # task in time. The task is still QUEUED, so no
+            # transcoder owns it: remove the holder, spawn next tick.
+            try:
+                await asyncio.to_thread(self._dispatcher._remove_task_containers, task_id)
+            except Exception as remove_exc:
+                logger.warning("could not remove the container holding task_id=%s: %s", task_id, remove_exc)
+        # Only a container that never started counts as an
+        # attempt: when just the commit failed, the transcoder
+        # is running and will claim the task. A name conflict is
+        # the earlier container's doing, not the task's.
+        if not started and not name_conflict:
+            try:
+                await self._dispatcher._count_failed_spawn(self._db, task_id)
+            except Exception:
+                logger.exception("could not count the failed spawn task_id=%s", task_id)
+                await self._db.rollback()
 
     async def _fail_if_unrunnable(self, task: TranscodeTask, task_id: str) -> bool:
         """Fail a queued menu preview, menu pack or subtitle OCR task that can
