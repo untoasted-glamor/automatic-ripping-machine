@@ -7,38 +7,21 @@ from pathlib import Path
 
 import httpx
 
-from arm_common import DriveMediaStatus, JobStatus, configure_service_logging
-from arm_ripper.backend_client import BackendClient, JobView, RegisterRefused
+from arm_common import configure_service_logging
+from arm_ripper.backend_client import BackendClient
 from arm_ripper.config import settings
 from arm_ripper.drive_handle import DriveHandle
 from arm_ripper.drive_poll import DriveErrorKind, DriveState, InsertDetector, classify_drive_error, read_drive_status
-from arm_ripper.drive_resolve import node_port, resolve_drive_device
-from arm_ripper.drive_status import probe_drive_media
+from arm_ripper.drive_resolve import ResolvedDevice, node_port, resolve_drive_device
+from arm_ripper.heartbeat import HEARTBEAT_INTERVAL_SECONDS, heartbeat_loop, push_scan_activity
 from arm_ripper.job_controller import JobController
-from arm_ripper.makemkv_key import refresh_makemkv_key
+from arm_ripper.makemkv_keycheck import makemkv_keycheck_loop
 from arm_ripper.recovery import boot_probe
-from arm_ripper.scan.makemkv_key_probe import probe_makemkv_key
+from arm_ripper.registration import register_with_retry
 from arm_ripper import iso_extract, prepare
-from arm_ripper.source import is_file_source
 from arm_ripper.ws_client import WSClient
 
 CA_BUNDLE_PATH = "/etc/ssl/certs/ca-certificates.crt"
-
-RIPPER_VERSION = "0.0.0-skeleton"
-
-# Heartbeat carries the current CDROM_DRIVE_STATUS reading to the
-# backend so the manual-trigger endpoint can refuse clicks made
-# against an empty / open tray. 30s gives a click-time check that's
-# at most ~30s stale; a stale heartbeat (older than the backend's
-# freshness window) falls back to "unknown" and the request is
-# allowed through to identify (which will fail visibly).
-HEARTBEAT_INTERVAL_SECONDS = 30.0
-
-# A register refusal (unknown drive, not enrolled, identity mismatch) is not
-# retriable in the sense of "try again right now" — but it IS self-healing:
-# the operator can fix the enrollment (re-enroll to rebind identity, etc.)
-# without restarting the container. Poll slowly instead of parking forever.
-REGISTER_REFUSED_RETRY_SECONDS = 60.0
 
 # The backend spawns each ripper container for one Drive row and sets
 # HOSTNAME to arm-ripper-<serial>-<drive-id suffix> (a stable identity); srN
@@ -46,229 +29,6 @@ REGISTER_REFUSED_RETRY_SECONDS = 60.0
 # the identity the manager assigned rather than the current device node.
 configure_service_logging(settings.HOSTNAME, level=settings.ARM_LOG_LEVEL)
 logger = logging.getLogger("arm_ripper")
-
-
-def _log_refusal(exc: RegisterRefused, last_refusal: str | None) -> str:
-    """Log a register refusal at ERROR the first time its text appears (or when it changes) and at DEBUG on an
-    unchanged repeat; returns the refusal text to compare the next one against.
-    """
-    message = str(exc)
-    # Log at ERROR the first time this refusal is seen and again
-    # whenever its text changes (a new/different problem); an
-    # unchanged repeat is downgraded to DEBUG so a stuck enrollment
-    # doesn't spam the log once a minute forever.
-    level = logging.ERROR if message != last_refusal else logging.DEBUG
-    logger.log(
-        level,
-        "register refused for drive_id=%s: %s — container left running for diagnosis; "
-        "fix the enrollment in the UI; retrying in %.0fs",
-        settings.ARM_DRIVE_ID,
-        exc,
-        REGISTER_REFUSED_RETRY_SECONDS,
-    )
-    return message
-
-
-async def register_with_retry(client: BackendClient, device_path: str) -> str:
-    """Retry transport/5xx failures with backoff. A refusal (unknown drive,
-    not enrolled, identity mismatch) is self-healing rather than fatal: the
-    operator can fix the enrollment from the UI (e.g. unenroll/re-enroll to
-    rebind identity) without restarting this container, so we log it and
-    keep polling slowly instead of parking forever (spec §3)."""
-    delay = 1.0
-    last_refusal: str | None = None
-    while True:
-        try:
-            drive = await client.register(
-                drive_id=settings.ARM_DRIVE_ID,
-                hostname=settings.HOSTNAME,
-                device_path=device_path,
-                ripper_version=RIPPER_VERSION,
-                by_id_name=settings.ARM_DRIVE_BY_ID,
-            )
-            logger.info("registered drive_id=%s device=%s", drive.id, device_path)
-            return drive.id
-        except RegisterRefused as exc:
-            last_refusal = _log_refusal(exc, last_refusal)
-            await asyncio.sleep(REGISTER_REFUSED_RETRY_SECONDS)
-        except (httpx.HTTPError, OSError) as exc:
-            logger.warning("register failed (%s); retrying in %.1fs", exc, delay)
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, 30.0)
-
-
-# AWAITING_REVIEW is intentionally excluded: recovery for review-gated discs is
-# owned by the boot probe + the review-countdown auto-start path. Picking up an
-# AWAITING_REVIEW job here would call controller.pickup → _run_rip → rip_start,
-# which transitions straight to RIPPING and bypasses the countdown, manual_pause,
-# and global ripping_paused. Only re-acquire IDENTIFIED (the resolve-after-timeout
-# seated disc — Defect-1's target) and RIPPING (harmless restart race).
-_RIP_READY = frozenset({JobStatus.IDENTIFIED, JobStatus.RIPPING})
-
-
-async def maybe_reacquire_current_job(
-    controller: JobController,
-    *,
-    get_current_job: Callable[[str], Awaitable[JobView | None]],
-    drive_id: str,
-    device_path: str,
-    seated: bool,
-) -> None:
-    """Idle re-probe: if the ripper is idle with a disc seated, ask the backend
-    for the drive's current non-terminal job. If it's rip-ready (operator
-    resolved it after our in-memory wait timed out), pick it up. Pull-based, so
-    it survives a backend restart and the 30-min ceiling."""
-    if not seated or not controller.is_idle():
-        return
-    try:
-        job = await get_current_job(drive_id)
-    except (httpx.HTTPError, OSError) as exc:
-        logger.warning("current-job reprobe failed: %s", exc)
-        return
-    if job is None or job.status not in _RIP_READY:
-        return
-    logger.info("reacquiring current job %s status=%s via heartbeat reprobe", job.id, job.status.value)
-    await controller.pickup(job, device_path)
-
-
-async def maybe_pickup_remux(
-    controller: JobController,
-    *,
-    get_remux_job: Callable[[str], Awaitable[JobView | None]],
-    drive_id: str,
-) -> None:
-    """Idle re-probe for the remux lane: while no remux runs, ask the backend
-    for a job on this drive still `remuxing` from its kept disc backup, and
-    start it in the background. With or without a disc seated: a remux never
-    reads the drive. Covers a missed `rip.retry`, a ripper restart mid-remux,
-    and a retry started while another remux ran."""
-    if not controller.remux_idle:
-        return
-    try:
-        job = await get_remux_job(drive_id)
-    except (httpx.HTTPError, OSError) as exc:
-        logger.warning("remux-job reprobe failed: %s", exc)
-        return
-    if job is None or not controller.remux_idle:
-        return
-    logger.info("picking up job %s remuxing from its disc backup via heartbeat reprobe", job.id)
-    controller.start_remux(job.id)
-
-
-async def send_heartbeat(
-    client: BackendClient, drive_id: str, handle: DriveHandle, controller: JobController
-) -> tuple[DriveMediaStatus, str | None]:
-    """Probe the media status and post one heartbeat carrying it plus the
-    controller's scan activity (None when not scanning). Returns the status
-    and the node it was read from. Raises on transport errors."""
-    device_path = handle.current
-    status = _media_status(device_path)
-    await client.heartbeat(drive_id=drive_id, media_status=status, scan=controller.scan_activity)
-    return status, device_path
-
-
-async def push_scan_activity(
-    client: BackendClient, drive_id: str, handle: DriveHandle, controller: JobController, lock: asyncio.Lock
-) -> None:
-    """An immediate heartbeat when a scan starts, retries or ends, so the UI's
-    "scanning" doesn't lag a heartbeat interval. Serialized so a slow "started"
-    post can't land after the "ended" one; each reads the state at send time."""
-    async with lock:
-        await send_heartbeat(client, drive_id, handle, controller)
-
-
-def _media_status(device_path: str | None) -> DriveMediaStatus:
-    """The media status a heartbeat reports: DETACHED while the drive is absent, LOADED for a file source (an ISO
-    is always present), otherwise what the drive's ioctl probe says.
-    """
-    if device_path is None:
-        return DriveMediaStatus.DETACHED
-    if is_file_source(device_path):
-        return DriveMediaStatus.LOADED
-    status, _ = probe_drive_media(device_path)
-    return status
-
-
-async def heartbeat_loop(client: BackendClient, drive_id: str, handle: DriveHandle, controller: JobController) -> None:
-    """Post the current media status to the backend every
-    HEARTBEAT_INTERVAL_SECONDS. Errors are logged + swallowed —
-    the heartbeat is best-effort; a row that goes stale makes the
-    manual-trigger pre-check refuse clicks until the next beat lands.
-
-    Reads the shared DriveHandle every beat, so a drive that moved to a
-    new srN is probed at its new node with no restart. While the drive is
-    absent the beat carries DETACHED — and keeps going, so the backend can
-    derive OFFLINE while the row stays visible.
-
-    For ISO sources we skip the SCSI ioctl (it fails on regular files)
-    and report `loaded` unconditionally — the source is always present
-    by construction in manual-trigger mode.
-
-    After each successful heartbeat, maybe_reacquire_current_job checks
-    whether the idle ripper should re-acquire a rip-ready job from the
-    backend (handles the case where the in-memory wait timed out or the
-    backend restarted while a disc was seated), and maybe_pickup_remux
-    whether its remux lane should start a job remuxing from its backup.
-
-    Each beat also carries the controller's scan activity; the controller
-    pushes one at once on every change too (`push_scan_activity`).
-    """
-    while True:
-        try:
-            status, device_path = await send_heartbeat(client, drive_id, handle, controller)
-            await maybe_pickup_remux(controller, get_remux_job=client.get_remux_job, drive_id=drive_id)
-            if device_path is not None:
-                await maybe_reacquire_current_job(
-                    controller,
-                    get_current_job=client.get_current_job,
-                    drive_id=drive_id,
-                    device_path=device_path,
-                    seated=(status == DriveMediaStatus.LOADED),
-                )
-        except (httpx.HTTPError, OSError) as exc:
-            logger.warning("heartbeat failed: %s", exc)
-        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
-
-
-def makemkv_key_changed(*, prev: str | None, current: str | None) -> bool:
-    """True when the effective makemkv key changed (treats blank as None)."""
-
-    def _norm(v: str | None) -> str | None:
-        return (v or "").strip() or None
-
-    return _norm(prev) != _norm(current)
-
-
-async def _check_makemkv_key(client: BackendClient, *, last_key: str | None, first: bool) -> str | None:
-    """One key-validity pass: fetch the configured makemkv key, write it to settings.conf on the first pass or when it
-    changed, probe it and report the result. Returns the key it checked.
-    """
-    cfg = await client.get_ripper_config()
-    key = cfg.makemkv_key
-    if first or makemkv_key_changed(prev=last_key, current=key):
-        # Write settings.conf with the current key BEFORE probing, so the
-        # probe checks the key actually on disk. (Single call — do not
-        # double-invoke refresh_makemkv_key.)
-        await refresh_makemkv_key(key=key)
-    state, detail = await probe_makemkv_key(key)
-    await client.report_makemkv_key_status(state=state, detail=detail)
-    return key
-
-
-async def makemkv_keycheck_loop(client: BackendClient) -> None:
-    """Probe makemkv key-validity on key-change + daily, report to the backend.
-    Best-effort: errors are logged + swallowed (mirrors heartbeat_loop)."""
-    last_key: str | None = None
-    first = True
-    while True:
-        try:
-            last_key = await _check_makemkv_key(client, last_key=last_key, first=first)
-            first = False
-        except (httpx.HTTPError, OSError) as exc:
-            logger.warning("makemkv keycheck failed: %s", exc)
-        except Exception:  # noqa: BLE001 — keycheck is best-effort; never let it kill the loop
-            logger.exception("makemkv keycheck: unexpected error")
-        await asyncio.sleep(settings.MAKEMKV_KEYCHECK_INTERVAL_SECONDS)
 
 
 def _resolve_paths() -> dict[str, Path]:
@@ -366,113 +126,175 @@ async def _report_node(client: BackendClient, drive_id: str, path: str) -> None:
         logger.warning("device-path update failed: %s", exc)
 
 
-async def poll_loop(controller: JobController, handle: DriveHandle, *, client: BackendClient, drive_id: str) -> None:
-    detector = InsertDetector(not_ready_rearm_polls=settings.ARM_NOT_READY_REARM_POLLS)
-    last_state: DriveState | None = None
-    active_task: asyncio.Task[None] | None = None
-    # A disc went in while a rip that had already given its disc back was
-    # finishing; ripped once that rip ends (unless the tray opens again).
-    insert_waiting = False
-    last_error_kind: DriveErrorKind | None = None
-    # Ticks that have run with the drive already known absent: 0 on the first
-    # such tick, so it refreshes and later ones are throttled.
-    absent_ticks = 0
-    # The last node a hint resolved to (port-identity drives only).
-    last_resolved: str | None = None
-    last_port: str | None = None
-    while True:
-        # Re-resolve every poll: the node behind this drive can change while we
-        # run (replug under a new srN). One readlink; cheap.
-        was_absent = last_state is DriveState.ABSENT
-        hint = await _current_hint(
-            client,
-            drive_id,
-            absent=was_absent,
-            absent_ticks=absent_ticks,
-            last_resolved=last_resolved,
-            last_port=last_port,
-        )
-        absent_ticks = absent_ticks + 1 if was_absent else 0
-        resolved = resolve_drive_device(settings.ARM_DRIVE_BY_ID, hint, **_resolve_paths())
-        if resolved is not None and not settings.ARM_DRIVE_BY_ID:
-            if resolved.path != last_resolved or last_port is None:
-                # The port is this drive's identity when it has no by-id link.
-                last_port = node_port(resolved.path, sysfs_root=_resolve_paths()["sysfs_root"])
-            last_resolved = resolved.path
-        moved = handle.set(resolved.path if resolved else None)
+class DrivePoller:
+    """Polls one drive: follows its node, reads its state, reports transitions, starts the pipeline on insert."""
 
-        if handle.absent:
-            state = DriveState.ABSENT
-            last_error_kind = None
-        else:
-            try:
-                state = read_drive_status(handle.current or "")
-                last_error_kind = None
-            except OSError as exc:
-                kind = classify_drive_error(exc)
-                if kind is DriveErrorKind.ABSENT:
-                    # The node resolved but the hardware said no (ENXIO/ENODEV,
-                    # or it vanished between resolve and open). Keep the handle —
-                    # the node is still the right one — and report absence.
-                    state = DriveState.ABSENT
-                elif kind is DriveErrorKind.MISCONFIGURED:
-                    if last_error_kind is not kind:
-                        logger.warning(
-                            "drive %s is present but misconfigured: %s — check the device cgroup rule and CDROM_GID",
-                            handle.current,
-                            exc.strerror or exc,
-                        )
-                    state = DriveState.NO_INFO
-                else:
-                    logger.warning("ioctl failed: %s", exc)
-                    state = DriveState.NO_INFO
-                last_error_kind = kind
+    def __init__(self, controller: JobController, handle: DriveHandle, *, client: BackendClient, drive_id: str) -> None:
+        self._controller = controller
+        self._handle = handle
+        self._client = client
+        self._drive_id = drive_id
+        self._detector = InsertDetector(not_ready_rearm_polls=settings.ARM_NOT_READY_REARM_POLLS)
+        self._last_state: DriveState | None = None
+        self._active_task: asyncio.Task[None] | None = None
+        # A disc went in while a rip that had already given its disc back was
+        # finishing; ripped once that rip ends (unless the tray opens again).
+        self._insert_waiting = False
+        self._last_error_kind: DriveErrorKind | None = None
+        # Ticks that have run with the drive already known absent: 0 on the first
+        # such tick, so it refreshes and later ones are throttled.
+        self._absent_ticks = 0
+        # The last node a hint resolved to (port-identity drives only).
+        self._last_resolved: str | None = None
+        self._last_port: str | None = None
 
-        # Transitions are keyed on state so a node that resolves but answers
-        # ENXIO cannot flap between "present" and "absent" every poll. They run
-        # BEFORE detector.update so a reset re-arms for this very reading.
-        if state is DriveState.ABSENT and last_state is not DriveState.ABSENT:
-            logger.warning("drive absent (by_id=%s) — polling until it returns", settings.ARM_DRIVE_BY_ID)
-        elif last_state is DriveState.ABSENT and state is not DriveState.ABSENT:
-            if resolved is not None:
-                logger.info("drive present at %s via %s (reattached)", resolved.path, resolved.via)
-            detector.reset()
-            # Report the node BEFORE the probe: _on_reattached can run a whole
-            # resumed rip, and the UI must not sit on the stale node for its
-            # entire duration.
-            await _report_node(client, drive_id, handle.current or "")
-            await _on_reattached(client, drive_id, handle, controller)
-        elif moved and not handle.absent:
-            if resolved is not None:
-                logger.info("drive node moved to %s via %s", resolved.path, resolved.via)
-            await _report_node(client, drive_id, handle.current or "")
+    async def run(self) -> None:
+        """Poll until cancelled."""
+        while True:
+            resolved = await self._resolve()
+            moved = self._handle.set(resolved.path if resolved else None)
 
-        if state != last_state:
-            logger.info("drive state %s -> %s", last_state, state)
-            last_state = state
+            state = self._read_state()
 
-        if active_task is not None and active_task.done():
-            active_task = None
+            # Transitions are keyed on state so a node that resolves but answers
+            # ENXIO cannot flap between "present" and "absent" every poll. They run
+            # BEFORE detector.update so a reset re-arms for this very reading.
+            if self._went_absent(state):
+                logger.warning("drive absent (by_id=%s) — polling until it returns", settings.ARM_DRIVE_BY_ID)
+            elif self._came_back(state):
+                # A None resolution empties the handle, which reads as ABSENT, so a present drive has a resolution.
+                assert resolved is not None
+                await self._reattach(resolved)
+            elif moved and not self._handle.absent:
+                assert resolved is not None  # same invariant as the reattach arm above
+                await self._report_move(resolved)
+
+            if state != self._last_state:
+                logger.info("drive state %s -> %s", self._last_state, state)
+                self._last_state = state
+
+            self._start_rip_on_insert(state)
+
+            await asyncio.sleep(settings.POLL_INTERVAL_SECONDS)
+
+    def _went_absent(self, state: DriveState) -> bool:
+        """True on the first tick the drive reads ABSENT."""
+        return state is DriveState.ABSENT and self._last_state is not DriveState.ABSENT
+
+    def _came_back(self, state: DriveState) -> bool:
+        """True on the first tick the drive reads present after an ABSENT run."""
+        return self._last_state is DriveState.ABSENT and state is not DriveState.ABSENT
+
+    async def _reattach(self, resolved: ResolvedDevice) -> None:
+        """The drive is back: log where it was found, re-arm insert detection, report its node, then run the reattach
+        recovery."""
+        logger.info("drive present at %s via %s (reattached)", resolved.path, resolved.via)
+        self._detector.reset()
+        # Report the node BEFORE the probe: _on_reattached can run a whole
+        # resumed rip, and the UI must not sit on the stale node for its
+        # entire duration.
+        await _report_node(self._client, self._drive_id, self._handle.current or "")
+        await _on_reattached(self._client, self._drive_id, self._handle, self._controller)
+
+    async def _report_move(self, resolved: ResolvedDevice) -> None:
+        """The drive turned up on a new node: log it and report it to the backend."""
+        logger.info("drive node moved to %s via %s", resolved.path, resolved.via)
+        await _report_node(self._client, self._drive_id, self._handle.current or "")
+
+    def _start_rip_on_insert(self, state: DriveState) -> None:
+        """Feed this reading to the insert detector and start the pipeline on an insert while no earlier one is still
+        running.
+
+        Fork: an insert while the running rip has given its disc back (ejected after its backup, remuxes still
+        running) is remembered and ripped once that rip ends, unless the tray opens or the disc goes first."""
+        if self._active_task is not None and self._active_task.done():
+            self._active_task = None
 
         # detector.update() must run every poll to track the NOT_READY
         # streak; only act on the True edge when no rip is already running.
-        inserted = detector.update(state)
-        if inserted and active_task is not None and controller.drive_released:
+        inserted = self._detector.update(state)
+        if inserted and self._active_task is not None and self._controller.drive_released:
             # The running rip ejected its disc after the backup and a new one
             # went in while its remuxes run: that one is next.
             logger.info("disc inserted while the last rip finishes; ripping it next")
-            insert_waiting = True
+            self._insert_waiting = True
         if state in (DriveState.TRAY_OPEN, DriveState.NO_DISC, DriveState.ABSENT):
-            insert_waiting = False
+            self._insert_waiting = False
         if (
-            (inserted or (insert_waiting and state is DriveState.DISC_OK))
-            and active_task is None
-            and handle.current is not None
+            (inserted or (self._insert_waiting and state is DriveState.DISC_OK))
+            and self._active_task is None
+            and self._handle.current is not None
         ):
-            insert_waiting = False
-            active_task = asyncio.create_task(controller.handle_disc_inserted(handle.current))
+            self._insert_waiting = False
+            self._active_task = asyncio.create_task(self._controller.handle_disc_inserted(self._handle.current))
 
-        await asyncio.sleep(settings.POLL_INTERVAL_SECONDS)
+    async def _resolve(self) -> ResolvedDevice | None:
+        """Resolve this tick's node from the current hint, counting the ticks the drive has been absent."""
+        # Re-resolve every poll: the node behind this drive can change while we
+        # run (replug under a new srN). One readlink; cheap.
+        was_absent = self._last_state is DriveState.ABSENT
+        hint = await _current_hint(
+            self._client,
+            self._drive_id,
+            absent=was_absent,
+            absent_ticks=self._absent_ticks,
+            last_resolved=self._last_resolved,
+            last_port=self._last_port,
+        )
+        self._absent_ticks = self._absent_ticks + 1 if was_absent else 0
+        resolved = resolve_drive_device(settings.ARM_DRIVE_BY_ID, hint, **_resolve_paths())
+        if resolved is not None and not settings.ARM_DRIVE_BY_ID:
+            self._remember_node(resolved.path)
+        return resolved
+
+    def _remember_node(self, path: str) -> None:
+        """Remember the node a port-identity drive resolved to, and the port that node is on when it is new."""
+        if path != self._last_resolved or self._last_port is None:
+            # The port is this drive's identity when it has no by-id link.
+            self._last_port = node_port(path, sysfs_root=_resolve_paths()["sysfs_root"])
+        self._last_resolved = path
+
+    def _read_state(self) -> DriveState:
+        """Read the drive's state, treating an empty handle or a node the hardware refuses as ABSENT and
+        other errors as NO_INFO."""
+        if self._handle.absent:
+            state = DriveState.ABSENT
+            self._last_error_kind = None
+        else:
+            try:
+                state = read_drive_status(self._handle.current or "")
+                self._last_error_kind = None
+            except OSError as exc:
+                state = self._state_from_error(exc)
+        return state
+
+    def _state_from_error(self, exc: OSError) -> DriveState:
+        """The state an ioctl failure stands for, logging a misconfiguration once per run of them and any other error
+        on every poll."""
+        kind = classify_drive_error(exc)
+        if kind is DriveErrorKind.ABSENT:
+            # The node resolved but the hardware said no (ENXIO/ENODEV,
+            # or it vanished between resolve and open). Keep the handle —
+            # the node is still the right one — and report absence.
+            state = DriveState.ABSENT
+        elif kind is DriveErrorKind.MISCONFIGURED:
+            if self._last_error_kind is not kind:
+                logger.warning(
+                    "drive %s is present but misconfigured: %s — check the device cgroup rule and CDROM_GID",
+                    self._handle.current,
+                    exc.strerror or exc,
+                )
+            state = DriveState.NO_INFO
+        else:
+            logger.warning("ioctl failed: %s", exc)
+            state = DriveState.NO_INFO
+        self._last_error_kind = kind
+        return state
+
+
+async def poll_loop(controller: JobController, handle: DriveHandle, *, client: BackendClient, drive_id: str) -> None:
+    """Poll one drive until cancelled."""
+    await DrivePoller(controller, handle, client=client, drive_id=drive_id).run()
 
 
 def _ws_url_from_backend_url(base: str) -> str:

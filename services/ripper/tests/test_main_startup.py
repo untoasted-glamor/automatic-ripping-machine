@@ -15,6 +15,8 @@ from types import SimpleNamespace  # noqa: E402
 import httpx  # noqa: E402
 import pytest  # noqa: E402
 from arm_ripper import main  # noqa: E402
+from arm_ripper import heartbeat  # noqa: E402
+from arm_ripper import makemkv_keycheck  # noqa: E402
 from arm_ripper.drive_handle import DriveHandle  # noqa: E402
 
 
@@ -447,11 +449,11 @@ async def _run_keycheck(monkeypatch, items, *, probe_exc_on=None):
         if n["sleeps"] >= len(items):
             raise _Stop
 
-    monkeypatch.setattr(main, "refresh_makemkv_key", refresh)
-    monkeypatch.setattr(main, "probe_makemkv_key", probe)
-    monkeypatch.setattr(main.asyncio, "sleep", sleep)
+    monkeypatch.setattr(makemkv_keycheck, "refresh_makemkv_key", refresh)
+    monkeypatch.setattr(makemkv_keycheck, "probe_makemkv_key", probe)
+    monkeypatch.setattr(makemkv_keycheck.asyncio, "sleep", sleep)
     with pytest.raises(_Stop):
-        await main.makemkv_keycheck_loop(client)  # type: ignore[arg-type]
+        await makemkv_keycheck.makemkv_keycheck_loop(client)  # type: ignore[arg-type]
     return client, refreshed, probed
 
 
@@ -465,8 +467,8 @@ def _record_key_pass(monkeypatch):
         events.append(("probe", key))
         return ("valid", "detail")
 
-    monkeypatch.setattr(main, "refresh_makemkv_key", refresh)
-    monkeypatch.setattr(main, "probe_makemkv_key", probe)
+    monkeypatch.setattr(makemkv_keycheck, "refresh_makemkv_key", refresh)
+    monkeypatch.setattr(makemkv_keycheck, "probe_makemkv_key", probe)
     return events
 
 
@@ -482,7 +484,7 @@ class _RecordingKeyClient(_KeyClient):
 async def test_check_makemkv_key_first_pass_refreshes_then_probes_and_reports(monkeypatch) -> None:
     events = _record_key_pass(monkeypatch)
     client = _RecordingKeyClient(["K"], events)
-    returned = await main._check_makemkv_key(client, last_key=None, first=True)  # type: ignore[arg-type]
+    returned = await makemkv_keycheck._check_makemkv_key(client, last_key=None, first=True)  # type: ignore[arg-type]
     assert returned == "K"
     assert events == [("refresh", "K"), ("probe", "K"), ("report", "valid", "detail")]
 
@@ -490,7 +492,7 @@ async def test_check_makemkv_key_first_pass_refreshes_then_probes_and_reports(mo
 async def test_check_makemkv_key_unchanged_key_skips_refresh_but_probes_and_reports(monkeypatch) -> None:
     events = _record_key_pass(monkeypatch)
     client = _RecordingKeyClient(["K"], events)
-    returned = await main._check_makemkv_key(client, last_key="K", first=False)  # type: ignore[arg-type]
+    returned = await makemkv_keycheck._check_makemkv_key(client, last_key="K", first=False)  # type: ignore[arg-type]
     assert returned == "K"
     assert events == [("probe", "K"), ("report", "valid", "detail")]
 
@@ -498,7 +500,7 @@ async def test_check_makemkv_key_unchanged_key_skips_refresh_but_probes_and_repo
 async def test_check_makemkv_key_changed_key_refreshes(monkeypatch) -> None:
     events = _record_key_pass(monkeypatch)
     client = _RecordingKeyClient(["K2"], events)
-    returned = await main._check_makemkv_key(client, last_key="K1", first=False)  # type: ignore[arg-type]
+    returned = await makemkv_keycheck._check_makemkv_key(client, last_key="K1", first=False)  # type: ignore[arg-type]
     assert returned == "K2"
     assert events[0] == ("refresh", "K2")
 
@@ -507,7 +509,7 @@ async def test_check_makemkv_key_config_error_propagates_before_any_step(monkeyp
     events = _record_key_pass(monkeypatch)
     client = _RecordingKeyClient([httpx.ConnectError("down")], events)
     with pytest.raises(httpx.ConnectError):
-        await main._check_makemkv_key(client, last_key=None, first=True)  # type: ignore[arg-type]
+        await makemkv_keycheck._check_makemkv_key(client, last_key=None, first=True)  # type: ignore[arg-type]
     assert events == []
 
 
@@ -587,10 +589,10 @@ async def test_heartbeat_error_warns_and_keeps_beating(monkeypatch, caplog, exc)
         if calls["n"] >= 2:
             raise _Stop
 
-    monkeypatch.setattr(main.asyncio, "sleep", sleep)
-    monkeypatch.setattr(main, "probe_drive_media", lambda p: (main.DriveMediaStatus.NO_DISC, "f"))
+    monkeypatch.setattr(heartbeat.asyncio, "sleep", sleep)
+    monkeypatch.setattr(heartbeat, "probe_drive_media", lambda p: (heartbeat.DriveMediaStatus.NO_DISC, "f"))
     with caplog.at_level(logging.WARNING, logger="arm_ripper"), pytest.raises(_Stop):
-        await main.heartbeat_loop(Client(), "drv", DriveHandle("/dev/sr0"), Ctl())  # type: ignore[arg-type]
+        await heartbeat.heartbeat_loop(Client(), "drv", DriveHandle("/dev/sr0"), Ctl())  # type: ignore[arg-type]
     assert f"heartbeat failed: {exc}" in caplog.messages
     assert calls["n"] == 2
 
