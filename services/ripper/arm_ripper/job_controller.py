@@ -1,7 +1,6 @@
 import asyncio
 import contextlib
 import logging
-import shutil
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
@@ -309,7 +308,7 @@ class JobController:
             logger.info("job.abandoned: cancelling the remux for job_id=%s", job_id)
             remux.cancel()
         if delete_raw:
-            spawn_tracked(self._wipe_raw(job_id), self._wipe_tasks)
+            spawn_tracked(raw_dir.wipe_raw_dir(job_id), self._wipe_tasks)
         # A rip that already gave its disc back may have a new disc in the
         # tray by now; that one isn't this job's to eject.
         if off_drive:
@@ -330,17 +329,6 @@ class JobController:
         idle = active is None or active.done()
         # Fork: a rip that gave its disc back (ejected after its backup) has none of its own left to eject.
         return (owns and not self.drive_released) or (idle and self._disc_seated())
-
-    async def _wipe_raw(self, job_id: str) -> None:
-        """Delete `/raw/<job_id>/` off the event loop."""
-        target = raw_dir.RAW_ROOT / job_id
-        try:
-            await asyncio.to_thread(shutil.rmtree, target)
-            logger.info("wiped raw dir job_id=%s path=%s", job_id, target)
-        except FileNotFoundError:
-            logger.info("raw dir already absent job_id=%s path=%s", job_id, target)
-        except OSError as exc:
-            logger.warning("raw-dir cleanup failed job_id=%s path=%s: %s", job_id, target, exc)
 
     def _disc_seated(self) -> bool:
         """True when the drive currently reports a seated disc (DISC_OK) —
