@@ -24,7 +24,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from arm_backend.crash_recovery import reset_job_for_recovery  # noqa: E402
 from arm_backend.db import get_session  # noqa: E402
-from arm_backend.iso_rips import _fail_job  # noqa: E402
+from arm_backend.virtual_drive_lifecycle import _fail_job  # noqa: E402
 from arm_backend.jwt_utils import issue_access_token  # noqa: E402
 from arm_backend.routers import config as config_router  # noqa: E402
 from arm_backend.routers import identity as identity_router  # noqa: E402
