@@ -65,7 +65,12 @@ function shown(): string[] {
 	return screen.queryAllByTestId('job-log-line').map((l) => l.querySelector('.log-view-line')?.textContent ?? '');
 }
 
-const timeOf = (ts: string) => new Date(ts).toLocaleTimeString([], { hour12: false });
+// The fork leads a line from another day with its date; these fixtures are
+// never today.
+const timeOf = (ts: string) => {
+	const d = new Date(ts);
+	return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${d.toLocaleTimeString([], { hour12: false })}`;
+};
 
 const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
 
