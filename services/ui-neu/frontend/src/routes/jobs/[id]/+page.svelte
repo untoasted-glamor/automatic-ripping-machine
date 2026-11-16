@@ -53,7 +53,8 @@
 	import TrackKeepToggle from '$lib/components/TrackKeepToggle.svelte';
 	import PlayAllBadge from '$lib/components/PlayAllBadge.svelte';
 	import { fetchSessions } from '$lib/api/sessions';
-	import { buildMetadataFields, readJobMetadata } from '$lib/utils/job-fields';
+	import { buildMetadataFields } from '$lib/utils/job-fields';
+	import { readJobMetadata } from '$lib/utils/job-metadata';
 	import { formatFps } from '$lib/utils/fps';
 	import { extractMusicTracks } from '$lib/utils/music-tracks';
 	import { trackKindLabel, trackSizeLabel } from '$lib/utils/track-fields';
