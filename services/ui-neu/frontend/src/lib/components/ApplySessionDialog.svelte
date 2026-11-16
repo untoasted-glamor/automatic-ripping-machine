@@ -8,6 +8,7 @@
 	import JobTrackPicker from './JobTrackPicker.svelte';
 	import { NamingPreview } from '$lib/stores/namingPreview.svelte';
 	import ApplySessionCollisions from './apply-session/ApplySessionCollisions.svelte';
+	import ApplySessionRecipe from './apply-session/ApplySessionRecipe.svelte';
 	import { collisionsFromApplyError } from '$lib/utils/apply-collisions';
 	import { isPassthroughSession, presetToolMap, sessionsForDisc } from '$lib/utils/sessions';
 	import type {
@@ -63,18 +64,13 @@
 	});
 
 	const selectedSession = $derived(sessions.find((s) => s.id === selected) ?? null);
+	// The track picker (fork) is offered for a HandBrake encode session only.
+	const encodesWithHandbrake = $derived(
+		!!selectedSession?.transcode_preset_id && presetToolById.get(selectedSession.transcode_preset_id) === 'handbrake'
+	);
 	let trackPicker = $state<JobTrackPicker | null>(null);
 	let chosenTracks = $state<{ track_selection?: TrackSelectionSettings | null; subtitle_ocr?: boolean | null }>({});
 
-	const ripById = $derived(new Map(ripPresets.map((p) => [p.id, p])));
-	const tcById = $derived(new Map(transcodePresets.map((p) => [p.id, p])));
-
-	const selectedRipPreset = $derived(selectedSession ? (ripById.get(selectedSession.rip_preset_id) ?? null) : null);
-	const selectedTranscodePreset = $derived(
-		selectedSession && selectedSession.transcode_preset_id
-			? (tcById.get(selectedSession.transcode_preset_id) ?? null)
-			: null
-	);
 	// The real output paths for this job with the chosen session. A missing
 	// token (for example, the job has no year) comes back as a 422 naming it,
 	// and the dialog explains it and blocks Apply, since apply would fail the
@@ -194,59 +190,23 @@
 			{/if}
 
 			{#if selectedSession}
-				<div data-testid="recipe-preview" class="code-block apply-session-recipe">
-					<p class="apply-session-recipe-title">Recipe</p>
-					<dl class="apply-session-recipe-list">
-						<div class="apply-session-recipe-row">
-							<dt class="apply-session-recipe-dt">Rip:</dt>
-							<dd data-testid="recipe-rip-preset" class="apply-session-recipe-dd">
-								{selectedRipPreset?.name ?? selectedSession.rip_preset_id}
-							</dd>
-						</div>
-						<div class="apply-session-recipe-row">
-							<dt class="apply-session-recipe-dt">Transcode:</dt>
-							<dd data-testid="recipe-transcode-preset" class="apply-session-recipe-dd">
-								{selectedTranscodePreset?.name ?? 'No transcode'}
-							</dd>
-						</div>
-						<div class="apply-session-recipe-row apply-session-recipe-row-col">
-							<dt class="apply-session-recipe-dt">Output:</dt>
-							<dd data-testid="recipe-output-path" class="apply-session-recipe-dd apply-session-recipe-output">
-								{#if namingPreview.loading}
-									<span class="apply-session-recipe-faint">Resolving...</span>
-								{:else if namingPreview.preview}
-									<ul class="apply-session-recipe-output-list">
-										{#each namingPreview.preview.items as item (item.track_id)}
-											<li class="apply-session-recipe-output-item" title={item.output_path}>{item.output_path}</li>
-										{/each}
-									</ul>
-									{#if namingPreview.preview.items.length === 0}
-										<span class="apply-session-recipe-faint">No tracks to transcode with this session.</span>
-									{/if}
-								{/if}
-							</dd>
-						</div>
-					</dl>
-				</div>
-				{#if selectedTranscodePreset && selectedTranscodePreset.tool === 'handbrake'}
-					<details class="apply-session-tracks" data-testid="apply-session-tracks">
-						<summary class="field-label">Audio and subtitle tracks</summary>
-						<JobTrackPicker bind:this={trackPicker} jobId={job.id} variant="apply" sessionId={selected} />
-					</details>
-				{/if}
-				{#if namingPreview.problem}
-					<p data-testid="recipe-output-problem" class="apply-session-problem">
-						<svg class="apply-session-problem-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"
-							/>
-						</svg>
-						<span>{namingPreview.problem}</span>
-					</p>
-				{/if}
+				<ApplySessionRecipe
+					session={selectedSession}
+					{ripPresets}
+					{transcodePresets}
+					preview={namingPreview.preview}
+					loading={namingPreview.loading}
+					problem={namingPreview.problem}
+				>
+					{#snippet afterBox()}
+						{#if encodesWithHandbrake}
+							<details class="apply-session-tracks" data-testid="apply-session-tracks">
+								<summary class="field-label">Audio and subtitle tracks</summary>
+								<JobTrackPicker bind:this={trackPicker} jobId={job.id} variant="apply" sessionId={selected} />
+							</details>
+						{/if}
+					{/snippet}
+				</ApplySessionRecipe>
 			{/if}
 
 			<div class="modal-actions">
@@ -295,76 +255,5 @@
 	}
 	.apply-session-select-field {
 		margin-top: 1rem;
-	}
-	/* original recipe box: rounded-lg border border-gray-200 bg-gray-50
-	   px-3 py-2 text-sm - code-block's own font-mono/0.72rem sizing is for
-	   literal preformatted text; this dl reads as prose, so type is reset
-	   back to text-sm/text-secondary while keeping code-block's box (border,
-	   radius, tint background). */
-	.apply-session-recipe {
-		margin-top: 0.75rem;
-		font-family: var(--font-sans);
-		font-size: 0.875rem;
-		line-height: 1.25rem;
-		white-space: normal;
-	}
-	.apply-session-recipe-title {
-		font-weight: 500;
-		color: var(--color-text-secondary);
-	}
-	.apply-session-recipe-list {
-		margin-top: 0.25rem;
-		display: flex;
-		flex-direction: column;
-		gap: 0.125rem;
-		color: var(--color-text-muted);
-	}
-	.apply-session-recipe-row {
-		display: flex;
-		gap: 0.25rem;
-	}
-	.apply-session-recipe-row-col {
-		flex-direction: column;
-	}
-	.apply-session-recipe-dt {
-		flex-shrink: 0;
-	}
-	.apply-session-recipe-dd {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		color: var(--color-text);
-	}
-	.apply-session-recipe-output {
-		font-family: var(--font-mono);
-		font-size: 0.75rem;
-		white-space: normal;
-	}
-	.apply-session-recipe-faint {
-		color: var(--color-text-faint);
-	}
-	.apply-session-recipe-output-list {
-		display: flex;
-		flex-direction: column;
-		gap: 0.125rem;
-	}
-	.apply-session-recipe-output-item {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.apply-session-problem {
-		margin-top: 0.5rem;
-		display: flex;
-		align-items: flex-start;
-		gap: 0.375rem;
-		font-size: 0.875rem;
-		color: var(--color-on-warning-soft);
-	}
-	.apply-session-problem-icon {
-		flex-shrink: 0;
-		margin-top: 0.125rem;
-		width: 1rem;
-		height: 1rem;
 	}
 </style>
