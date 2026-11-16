@@ -28,13 +28,13 @@ from arm_backend.job_track_selection import default_for_job, disc_languages, edi
 
 from arm_backend.job_files import delete_job_files
 from arm_backend.job_views import job_detail_view, job_list_views
+from arm_backend.log_reader import per_job_log_path
 from arm_backend.metadata.base import external_ids_of
 from arm_backend.path_template import TemplateValidationError
 from arm_backend.raw_backup import delete_backup
 from arm_backend.rip_retry import RetryRefused, arm_retry, check_retryable, remaining_tracks
 from arm_backend.routers._deps import get_hub, get_stage_runner
 from arm_backend.routers._params import JobIdParam
-from arm_backend.routers.logs import per_job_log_path
 from arm_backend.constants import CONFIG_SINGLETON_ID
 from arm_backend.sidecars import sidecar_files
 from arm_backend.subtitle_ocr_tasks import (
