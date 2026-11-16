@@ -25,7 +25,8 @@ from arm_backend.routers import jobs as jobs_router  # noqa: E402
 from arm_backend.sidecars import image_subtitle_sidecars  # noqa: E402
 from arm_backend.subtitle_ocr_tasks import subtitle_ocr_inputs  # noqa: E402
 from arm_backend.transcode_apply import aggregate_session_application, find_collisions  # noqa: E402
-from arm_backend.transcode_dispatcher import TranscodeDispatcher, count_queued_encode_tasks  # noqa: E402
+from arm_backend.transcode_dispatcher import TranscodeDispatcher  # noqa: E402
+from arm_backend.transcode_queue import count_queued_encode_tasks  # noqa: E402
 from arm_backend.ws import WSHub  # noqa: E402
 from arm_common import (  # noqa: E402
     SessionApplication,
