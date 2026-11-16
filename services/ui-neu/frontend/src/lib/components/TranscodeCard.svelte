@@ -33,9 +33,6 @@
 		return live.follow(id);
 	});
 	let liveForJob = $derived(live.sampleFor(job?.id));
-	// Encodes only: a subtitle OCR task's progress counts files, not time.
-	let etaDisplay = $derived(isActive && job && !isSubtitleOcr(job) ? etaLabel(job, liveForJob) : null);
-	let fpsDisplay = $derived(isActive && job ? fpsLabel(job, liveForJob) : null);
 
 	function toggle(e: MouseEvent) {
 		if ((e.target as HTMLElement).closest('a, button:not(.row-toggle)')) return;
@@ -74,6 +71,9 @@
 
 				<!-- Frame rate + ETA (active) or Elapsed (otherwise) -->
 				{#if isActive}
+					{@const fpsDisplay = fpsLabel(job, liveForJob)}
+					<!-- Encodes only: a subtitle OCR task's progress counts files, not time. -->
+					{@const etaDisplay = isSubtitleOcr(job) ? null : etaLabel(job, liveForJob)}
 					{#if fpsDisplay}
 						<span class="shrink-0 transcode-card-meta" title="Encoder frame rate">{fpsDisplay}</span>
 					{/if}
