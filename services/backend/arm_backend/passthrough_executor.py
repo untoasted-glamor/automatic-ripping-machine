@@ -23,7 +23,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -118,6 +118,38 @@ class _PassthroughRun:
 
     async def run(self) -> bool | None:
         """Run the task; see `execute_passthrough_task`."""
+        current = await self._lock_if_claimable()
+        if current is None:
+            return None
+        self._task = current
+
+        await self._load_application()
+        self._source_track_id = self._task.source_track_id
+        self._session_application_id = self._task.session_application_id
+        with with_log_context(
+            job_id=self._job_id, track_id=self._source_track_id, session_application_id=self._session_application_id
+        ):
+            await self._load_track()
+            self._task_output_path = self._task.output_path
+
+            await self._write_claim()
+            # Same claim-time side effects as the container path's
+            # POST /tasks/{id}/claim: flip the application QUEUED -> RUNNING
+            # (session.started) and announce the task (task.started), so the
+            # transcodes UI and the session rollup see an identical lifecycle.
+            await self._start_application()
+            await self._announce_task_started()
+            # Commit the claim before the (possibly slow, cross-mount) file
+            # move so the tick's FOR UPDATE row locks aren't held across
+            # blocking I/O (see docstring).
+            await self._db.commit()
+
+            size, error = await self._move_or_reject()
+
+            return await self._finish(size, error)
+
+    async def _lock_if_claimable(self) -> TranscodeTask | None:
+        """Re-select the task row locked; None when it is gone or no longer QUEUED."""
         # `populate_existing=True` is required in addition to `with_for_update()`:
         # if `task` (or another reference to the same row) is already in this
         # session's identity map and ISN'T expired, a plain re-select would
@@ -138,193 +170,212 @@ class _PassthroughRun:
                 self._task_id,
             )
             return None
-        self._task = current
+        return current
 
+    async def _load_application(self) -> None:
+        """Load the task's session application and its job id."""
         self._application = (
             await self._db.execute(
                 select(SessionApplication).where(col(SessionApplication.id) == self._task.session_application_id)
             )
         ).scalar_one_or_none()
         self._job_id = self._application.job_id if self._application is not None else None
-        self._source_track_id = self._task.source_track_id
-        self._session_application_id = self._task.session_application_id
-        with with_log_context(
-            job_id=self._job_id, track_id=self._source_track_id, session_application_id=self._session_application_id
-        ):
-            self._track = (
-                await self._db.execute(select(Track).where(col(Track.id) == self._source_track_id))
-            ).scalar_one_or_none()
-            self._track_output_path = self._track.output_path if self._track is not None else None
-            self._task_output_path = self._task.output_path
 
-            self._task.status = TranscodeTaskStatus.IN_PROGRESS
-            self._task.claimed_by = IN_PROCESS_CLAIMANT
-            self._task.claim_heartbeat_at = self._task.started_at = datetime.now(UTC)
-            self._task.attempts = (self._task.attempts or 0) + 1
-            self._task.progress_pct = 0
+    async def _load_track(self) -> None:
+        """Load the source track and its output path."""
+        self._track = (
+            await self._db.execute(select(Track).where(col(Track.id) == self._source_track_id))
+        ).scalar_one_or_none()
+        self._track_output_path = self._track.output_path if self._track is not None else None
+
+    async def _write_claim(self) -> None:
+        """Stamp the claim fields on the task and flush."""
+        self._task.status = TranscodeTaskStatus.IN_PROGRESS
+        self._task.claimed_by = IN_PROCESS_CLAIMANT
+        self._task.claim_heartbeat_at = self._task.started_at = datetime.now(UTC)
+        self._task.attempts = (self._task.attempts or 0) + 1
+        self._task.progress_pct = 0
+        await self._db.flush()
+
+    async def _start_application(self) -> None:
+        """Flip a QUEUED application to RUNNING and emit session.started."""
+        if self._application is not None and self._application.status == SessionApplicationStatus.QUEUED:
+            self._application.status = SessionApplicationStatus.RUNNING
             await self._db.flush()
-            # Same claim-time side effects as the container path's
-            # POST /tasks/{id}/claim: flip the application QUEUED -> RUNNING
-            # (session.started) and announce the task (task.started), so the
-            # transcodes UI and the session rollup see an identical lifecycle.
-            if self._application is not None and self._application.status == SessionApplicationStatus.QUEUED:
-                self._application.status = SessionApplicationStatus.RUNNING
-                await self._db.flush()
-                await self._hub.emit(
-                    topic="transcode.events",
-                    event_type="session.started",
-                    payload={
-                        "session_application_id": self._application.id,
-                        "session_id": self._application.session_id,
-                        "job_id": self._application.job_id,
-                    },
-                    job_id=self._job_id,
-                    session=self._db,
-                )
             await self._hub.emit(
                 topic="transcode.events",
-                event_type="task.started",
+                event_type="session.started",
                 payload={
-                    "task_id": self._task_id,
-                    "session_application_id": self._session_application_id,
-                    "claimed_by": self._task.claimed_by,
-                    "attempts": self._task.attempts,
+                    "session_application_id": self._application.id,
+                    "session_id": self._application.session_id,
+                    "job_id": self._application.job_id,
                 },
                 job_id=self._job_id,
-                track_id=self._source_track_id,
                 session=self._db,
             )
-            # Commit the claim before the (possibly slow, cross-mount) file
-            # move so the tick's FOR UPDATE row locks aren't held across
-            # blocking I/O (see docstring).
-            await self._db.commit()
 
-            error: str | None = None
-            size: int | None = None
-            if self._track is None or not self._track_output_path:
-                error = "source track has no output_path on disk; rip not complete or raw deleted"
-            elif not self._task_output_path:
-                error = "task has no output_path"
-            else:
-                final = Path(self._settings.MEDIA_ROOT) / self._task_output_path
-                is_folder = self._track.kind == TrackKind.DISC_BACKUP
-                mover = move_tree if is_folder else transcode_none
-                cancel = _cancel_events[self._task_id] = threading.Event()
-                source = Path(self._track_output_path)
-                progress = _CopyProgress(sizer=(lambda: tree_size(source)) if is_folder else None)
-                stop_publisher = asyncio.Event()
-                publisher = asyncio.ensure_future(
-                    _publish_progress(
-                        self._db,
-                        self._hub,
-                        self._task_id,
-                        self._job_id,
-                        self._source_track_id,
-                        progress,
-                        stop_publisher,
-                    )
-                )
-                try:
-                    # Move and chown together in the worker thread: a backup
-                    # tree's chown walks every file, too much for the event loop.
-                    size = await asyncio.to_thread(
-                        _move_and_chown, mover, source, final, self._settings, is_folder, cancel, progress
-                    )
-                except CopyCancelled:
-                    error = "cancelled"
-                    logger.info("passthrough task_id=%s cancelled mid-copy; source kept", self._task_id)
-                except OSError as exc:
-                    error = f"{type(exc).__name__}: {exc}"[:300]
-                finally:
-                    _cancel_events.pop(self._task_id, None)
-                    # Stop the publisher before this coroutine uses `db` again. It
-                    # checks the event between writes, so a commit is never cut
-                    # off part way; and nothing it raises replaces the move's result.
-                    stop_publisher.set()
-                    try:
-                        await publisher
-                    except Exception:
-                        logger.exception("passthrough progress publisher failed task_id=%s", self._task_id)
+    async def _announce_task_started(self) -> None:
+        """Emit task.started for the claimed task."""
+        await self._hub.emit(
+            topic="transcode.events",
+            event_type="task.started",
+            payload={
+                "task_id": self._task_id,
+                "session_application_id": self._session_application_id,
+                "claimed_by": self._task.claimed_by,
+                "attempts": self._task.attempts,
+            },
+            job_id=self._job_id,
+            track_id=self._source_track_id,
+            session=self._db,
+        )
 
-            # Re-fetch: cancel_running (a different session) may have deleted
-            # this row while the move was in flight. `populate_existing=True`
-            # for the same reason as the claim re-select above -- force a
-            # refresh from the current row rather than silently reusing
-            # whatever this identity-mapped object already had cached.
-            fresh_task = (
+    async def _move_or_reject(self) -> tuple[int | None, str | None]:
+        """Move the file, or reject a task with no source or output path; returns (size, error)."""
+        track = self._track
+        if track is None or not self._track_output_path:
+            return None, "source track has no output_path on disk; rip not complete or raw deleted"
+        if not self._task_output_path:
+            return None, "task has no output_path"
+        return await self._move(
+            track, Path(self._track_output_path), Path(self._settings.MEDIA_ROOT) / self._task_output_path
+        )
+
+    async def _move(self, track: Track, source: Path, final: Path) -> tuple[int | None, str | None]:
+        """Move `source` to `final` in a worker thread with progress publishing; returns (size, error)."""
+        error: str | None = None
+        size: int | None = None
+        is_folder = track.kind == TrackKind.DISC_BACKUP
+        mover = move_tree if is_folder else transcode_none
+        cancel = _cancel_events[self._task_id] = threading.Event()
+        progress = _CopyProgress(sizer=(lambda: tree_size(source)) if is_folder else None)
+        stop_publisher = asyncio.Event()
+        publisher = asyncio.ensure_future(
+            _publish_progress(
+                self._db,
+                self._hub,
+                self._task_id,
+                self._job_id,
+                self._source_track_id,
+                progress,
+                stop_publisher,
+            )
+        )
+        try:
+            # Move and chown together in the worker thread: a backup
+            # tree's chown walks every file, too much for the event loop.
+            size = await asyncio.to_thread(
+                _move_and_chown, mover, source, final, self._settings, is_folder, cancel, progress
+            )
+        except CopyCancelled:
+            error = "cancelled"
+            logger.info("passthrough task_id=%s cancelled mid-copy; source kept", self._task_id)
+        except OSError as exc:
+            error = f"{type(exc).__name__}: {exc}"[:300]
+        finally:
+            _cancel_events.pop(self._task_id, None)
+            await self._stop_publisher(publisher, stop_publisher)
+        return size, error
+
+    async def _stop_publisher(self, publisher: asyncio.Future[None], stop: asyncio.Event) -> None:
+        """Stop the progress publisher and wait for it, logging rather than raising its failure."""
+        # Stop the publisher before this coroutine uses `db` again. It
+        # checks the event between writes, so a commit is never cut
+        # off part way; and nothing it raises replaces the move's result.
+        stop.set()
+        try:
+            await publisher
+        except Exception:
+            logger.exception("passthrough progress publisher failed task_id=%s", self._task_id)
+
+    async def _finish(self, size: int | None, error: str | None) -> bool:
+        """Write the terminal state and its events, commit, and return whether the task succeeded."""
+        fresh_task = await self._refetch_task()
+        await self._reload_application()
+        if fresh_task is None:
+            logger.info("passthrough task_id=%s deleted mid-move; skipping terminal update", self._task_id)
+            return error is None
+
+        event_type, payload_extra = await self._record_terminal(fresh_task, size, error)
+        await self._announce_terminal(event_type, payload_extra)
+        if self._application is not None:
+            from arm_backend.transcode_apply import (  # noqa: PLC0415 - matches dispatcher's lazy import
+                settle_session_application,
+            )
+
+            await settle_session_application(self._db, self._hub, self._application)
+        # Commit the terminal state (+ any aggregate transition) as its own
+        # transaction, separate from the claim commit above.
+        await self._db.commit()
+        return error is None
+
+    async def _refetch_task(self) -> TranscodeTask | None:
+        """Re-select the task row, None when a concurrent cancel deleted it."""
+        # Re-fetch: cancel_running (a different session) may have deleted
+        # this row while the move was in flight. `populate_existing=True`
+        # for the same reason as the claim re-select above -- force a
+        # refresh from the current row rather than silently reusing
+        # whatever this identity-mapped object already had cached.
+        return (
+            await self._db.execute(
+                select(TranscodeTask)
+                .where(col(TranscodeTask.id) == self._task_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+
+    async def _reload_application(self) -> None:
+        """Reload the session application after the move, when there is one."""
+        if self._application is not None:
+            # The progress publisher committed (or rolled back) on this
+            # session while the move ran; reload before the aggregate reads it.
+            self._application = (
                 await self._db.execute(
-                    select(TranscodeTask)
-                    .where(col(TranscodeTask.id) == self._task_id)
+                    select(SessionApplication)
+                    .where(col(SessionApplication.id) == self._session_application_id)
                     .execution_options(populate_existing=True)
                 )
             ).scalar_one_or_none()
-            if self._application is not None:
-                # The progress publisher committed (or rolled back) on this
-                # session while the move ran; reload before the aggregate reads it.
-                self._application = (
-                    await self._db.execute(
-                        select(SessionApplication)
-                        .where(col(SessionApplication.id) == self._session_application_id)
-                        .execution_options(populate_existing=True)
-                    )
-                ).scalar_one_or_none()
-            if fresh_task is None:
-                logger.info("passthrough task_id=%s deleted mid-move; skipping terminal update", self._task_id)
-                return error is None
 
-            if error is None:
-                fresh_task.status = TranscodeTaskStatus.DONE
-                fresh_task.progress_pct = 100
-                fresh_task.last_error = None
-                if fresh_task.replaced_sidecar_paths:
-                    # This move replaced an encode that wrote subtitle files.
-                    drop_replaced_sidecars(Path(self._settings.MEDIA_ROOT), fresh_task.replaced_sidecar_paths, None)
-                    fresh_task.replaced_sidecar_paths = None
-                event_type, payload_extra = (
-                    "task.completed",
-                    {"output_path": self._task_output_path, "size_bytes": size},
-                )
-                logger.info("passthrough complete task_id=%s output=%s", self._task_id, self._task_output_path)
-            else:
-                fresh_task.status = TranscodeTaskStatus.FAILED
-                fresh_task.last_error = error
-                event_type, payload_extra = "task.failed", {"last_error": error}
-                logger.error("passthrough failed task_id=%s: %s", self._task_id, error)
-            await self._db.flush()
-
-            await self._hub.emit(
-                topic="transcode.events",
-                event_type=event_type,
-                payload={
-                    "task_id": self._task_id,
-                    "session_application_id": self._session_application_id,
-                    **payload_extra,
-                },
-                job_id=self._job_id,
-                track_id=self._source_track_id,
-                session=self._db,
+    async def _record_terminal(
+        self, fresh_task: TranscodeTask, size: int | None, error: str | None
+    ) -> tuple[str, dict[str, Any]]:
+        """Mark the task DONE or FAILED and flush; returns the event type and its extra payload."""
+        if error is None:
+            fresh_task.status = TranscodeTaskStatus.DONE
+            fresh_task.progress_pct = 100
+            fresh_task.last_error = None
+            if fresh_task.replaced_sidecar_paths:
+                # This move replaced an encode that wrote subtitle files.
+                drop_replaced_sidecars(Path(self._settings.MEDIA_ROOT), fresh_task.replaced_sidecar_paths, None)
+                fresh_task.replaced_sidecar_paths = None
+            event_type, payload_extra = (
+                "task.completed",
+                {"output_path": self._task_output_path, "size_bytes": size},
             )
-            if self._application is not None:
-                from arm_backend.transcode_apply import aggregate_session_application  # noqa: PLC0415 - matches dispatcher's lazy import
+            logger.info("passthrough complete task_id=%s output=%s", self._task_id, self._task_output_path)
+        else:
+            fresh_task.status = TranscodeTaskStatus.FAILED
+            fresh_task.last_error = error
+            event_type, payload_extra = "task.failed", {"last_error": error}
+            logger.error("passthrough failed task_id=%s: %s", self._task_id, error)
+        await self._db.flush()
+        return event_type, payload_extra
 
-                outcome = await aggregate_session_application(self._db, self._application)
-                if outcome.event_type is not None:
-                    await self._hub.emit(
-                        topic="transcode.events",
-                        event_type=outcome.event_type,
-                        payload={
-                            "session_application_id": self._application.id,
-                            "session_id": self._application.session_id,
-                            "job_id": self._application.job_id,
-                            "status": self._application.status.value,
-                        },
-                        job_id=self._job_id,
-                        session=self._db,
-                    )
-            # Commit the terminal state (+ any aggregate transition) as its own
-            # transaction, separate from the claim commit above.
-            await self._db.commit()
-            return error is None
+    async def _announce_terminal(self, event_type: str, payload_extra: dict[str, Any]) -> None:
+        """Emit the task's terminal event."""
+        await self._hub.emit(
+            topic="transcode.events",
+            event_type=event_type,
+            payload={
+                "task_id": self._task_id,
+                "session_application_id": self._session_application_id,
+                **payload_extra,
+            },
+            job_id=self._job_id,
+            track_id=self._source_track_id,
+            session=self._db,
+        )
 
 
 async def execute_passthrough_task(
