@@ -42,7 +42,7 @@ from arm_backend.rip_retry import RetryRefused, arm_retry, check_retryable, rema
 from arm_backend.routers._deps import get_hub, get_stage_runner
 from arm_backend.routers._params import JobIdParam
 from arm_backend.routers.logs import per_job_log_path
-from arm_backend.routers.ripper import persist_review_tracks
+from arm_backend.identify_flow import persist_review_tracks
 from arm_backend.constants import CONFIG_SINGLETON_ID
 from arm_backend.sidecars import sidecar_files
 from arm_backend.subtitle_ocr_tasks import (
