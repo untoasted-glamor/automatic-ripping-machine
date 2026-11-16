@@ -19,7 +19,7 @@ from arm_common import DiscType
 from arm_common.enums import TrackKind, TrackStatus
 from arm_common.schemas import TrackView
 from arm_ripper.menus.extract import MenuOutcome
-from arm_ripper.rip.dispatcher import ENCRYPTED_SOURCE, SELECTION_BACKUP_DIRNAME
+from arm_ripper.rip.optical_rip import ENCRYPTED_SOURCE, SELECTION_BACKUP_DIRNAME
 
 from tests._makemkvcon_fake import HANAKO_BD
 from tests.test_rip_dispatcher import (  # noqa: F401 - _plenty_of_space is an autouse fixture

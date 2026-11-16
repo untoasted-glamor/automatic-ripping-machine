@@ -13,7 +13,8 @@ import arm_ripper.job_controller as jc_module
 from arm_common import DiscType, JobStatus
 from arm_common.enums import TrackStatus
 from arm_common.schemas import JobView, RipStartResponse, TrackView
-from arm_ripper.rip.dispatcher import BACKUP_COMPLETE_MARKER, SELECTION_BACKUP_DIRNAME, rip_all
+from arm_ripper.rip.dispatcher import rip_all
+from arm_ripper.rip.optical_rip import BACKUP_COMPLETE_MARKER, SELECTION_BACKUP_DIRNAME
 
 from tests.test_disc_menu_rip import _DONE, _fake_extract, _mkv_all, _Sink
 from tests.test_rip_device_lost import _JOB, _Client, _script, _track, env  # noqa: F401 - env is a fixture
