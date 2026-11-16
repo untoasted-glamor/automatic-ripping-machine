@@ -8,6 +8,7 @@
 	import { episodeStatus } from '$lib/utils/episode-status';
 	import { identitySuggestionOf, previouslyRippedJobId, reviewPhaseBadge } from '$lib/utils/job-review';
 	import { appliedSessionName, reviewSourceRow, reviewStatusLabel } from '$lib/utils/review-card';
+	import DiscReviewActions from './disc-review/DiscReviewActions.svelte';
 	import DiscReviewFacts from './disc-review/DiscReviewFacts.svelte';
 	import { listedScanTitles } from '$lib/utils/scan-titles';
 	import { titleTracks } from '$lib/utils/track-keep';
@@ -311,102 +312,32 @@
 		{/if}
 
 		<!-- Action buttons -->
-		<div class="flex flex-wrap items-center gap-1.5 disc-review-widget-actions">
-			<button
-				onclick={() => sections.toggle('info')}
-				class="btn disc-review-widget-action-btn"
-				aria-pressed={sections.isOpen('info')}
-			>
-				Info
-			</button>
-			{#if isVideo}
-				<button
-					onclick={() => sections.toggle('title')}
-					class="btn disc-review-widget-action-btn"
-					aria-pressed={sections.isOpen('title')}>Search</button
-				>
-			{/if}
-			{#if episodeRow && (episodeRow.state !== 'matched' || sections.isOpen('episodes'))}
-				<button
-					onclick={() => sections.toggle('episodes')}
-					class="btn disc-review-widget-action-btn"
-					aria-pressed={sections.isOpen('episodes')}>Episodes</button
-				>
-			{/if}
-			{#if isMusic}
-				<button
-					onclick={() => sections.toggle('music')}
-					class="btn disc-review-widget-action-btn"
-					aria-pressed={sections.isOpen('music')}>Search</button
-				>
-			{/if}
-			{#if $isAdmin && displayJob.actions.can_apply}
-				<button
-					onclick={() => (showApplySession = true)}
-					class="btn {isPostRip ? 'disc-review-widget-success-btn' : 'disc-review-widget-action-btn'}"
-					>{isPostRip ? 'Apply session & transcode' : 'Apply session'}</button
-				>
-			{/if}
-			<a href="/jobs/{job.id}" class="btn disc-review-widget-action-btn"> View details </a>
-			{#if $isAdmin && displayJob.actions.can_abandon}
-				<button
-					onclick={() => actions.cancel(job, isoName)}
-					disabled={actions.cancelling}
-					class="btn btn-danger ml-auto"
-					title={isoName ? 'Cancel the rip and remove the virtual drive' : undefined}
-				>
-					{actions.cancelling ? 'Cancelling...' : previousId ? 'Discard' : 'Cancel'}
-				</button>
-			{/if}
-			{#if $isAdmin && displayJob.actions.can_delete}
-				<button
-					onclick={() => (actions.confirmDelete = true)}
-					disabled={actions.deleting}
-					class="btn btn-danger ml-auto"
-				>
-					{actions.deleting ? 'Deleting...' : 'Delete'}
-				</button>
-			{/if}
-			{#if canStart && $isAdmin}
-				<button
-					onclick={() =>
-						actions.startRip(
-							job,
-							reviewData.detail?.job,
-							() => isReviewGate,
-							() => trackPicker?.save()
-						)}
-					disabled={actions.starting || (nothingKept && !previousId)}
-					class="btn disc-review-widget-success-btn"
-					title={previousId
-						? 'Rip this disc again'
-						: nothingKept
-							? 'Keep at least one title to start the rip'
-							: 'Save the metadata and start ripping this disc'}
-				>
-					{actions.starting
-						? 'Starting...'
-						: previousId
-							? 'Rip again'
-							: parks
-								? 'Begin ripping disc to backup/menu'
-								: awaitingConfirm
-									? 'Confirm & start rip'
-									: 'Start rip'}
-				</button>
-			{/if}
-			{#if titlesOpen && $isAdmin}
-				<button
-					onclick={() => actions.ripTitles(job)}
-					disabled={actions.starting || nothingKept}
-					class="btn disc-review-widget-success-btn"
-					data-testid="disc-review-rip-titles"
-					title={nothingKept ? 'Keep at least one title to rip' : 'Rip the ticked titles from the disc backup'}
-				>
-					{actions.starting ? 'Starting...' : 'Rip titles'}
-				</button>
-			{/if}
-		</div>
+		<DiscReviewActions
+			job={displayJob}
+			{sections}
+			{actions}
+			{isVideo}
+			{isMusic}
+			{isPostRip}
+			{canStart}
+			{episodeRow}
+			previouslyRipped={!!previousId}
+			fromIso={!!isoName}
+			onapplysession={() => (showApplySession = true)}
+			oncancel={() => actions.cancel(job, isoName)}
+			{nothingKept}
+			{parks}
+			{awaitingConfirm}
+			{titlesOpen}
+			onstartrip={() =>
+				actions.startRip(
+					job,
+					reviewData.detail?.job,
+					() => isReviewGate,
+					() => trackPicker?.save()
+				)}
+			onriptitles={() => actions.ripTitles(job)}
+		/>
 
 		<!-- Expanded sections -->
 		{#if sections.isOpen('title') && isVideo}
@@ -615,51 +546,6 @@
 	}
 	.disc-review-widget-error-dismiss:hover {
 		color: var(--color-on-danger-soft);
-	}
-	.disc-review-widget-actions {
-		border-top: 1px solid var(--color-border);
-		background: color-mix(in srgb, var(--color-primary-tint-3) 50%, transparent);
-		padding: 0.5rem 1rem;
-	}
-	/* the original action buttons were px-3 py-1.5 text-sm (0.75rem/0.375rem,
-	   0.875rem) - between .btn's default and .btn-sm, so neither preset
-	   alone matches; override both on the row's own .btn children. The
-	   original border was a ring (box-shadow, no layout space), not .btn's
-	   real 1px border, so border:0 here keeps the height exact. */
-	.disc-review-widget-actions .btn {
-		min-height: auto;
-		padding: 0.375rem 0.75rem;
-		font-size: 0.875rem;
-		line-height: 1.25rem;
-		border: 0;
-	}
-	/* the original inactive action button was a tinted fill (bg-primary/5,
-	   ring-primary/25, text-gray-700), not .btn's bare-outline default
-	   (transparent background, primary-text colour) */
-	.disc-review-widget-action-btn {
-		background: var(--color-primary-tint-1);
-		box-shadow: 0 0 0 1px var(--color-border);
-		color: var(--color-text-secondary);
-	}
-	.disc-review-widget-action-btn:hover {
-		background: var(--color-primary-tint-2);
-	}
-	.disc-review-widget-action-btn[aria-pressed='true'] {
-		background: var(--color-primary);
-		color: var(--color-on-primary);
-		box-shadow: none;
-	}
-	.disc-review-widget-success-btn {
-		background: var(--color-success);
-		color: var(--color-on-primary);
-	}
-	.disc-review-widget-success-btn:hover {
-		background: var(--color-success);
-		filter: brightness(0.9);
-	}
-	/* Cancel keeps .btn-danger's tone but the original border was a ring too */
-	.disc-review-widget-actions .btn-danger {
-		box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-danger) 30%, transparent);
 	}
 	.disc-review-widget-panel {
 		border-top: 1px solid var(--color-border);
