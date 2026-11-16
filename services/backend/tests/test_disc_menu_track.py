@@ -28,7 +28,7 @@ from arm_backend.iso_rips import _fail_job  # noqa: E402
 from arm_backend.jwt_utils import issue_access_token  # noqa: E402
 from arm_backend.routers import config as config_router  # noqa: E402
 from arm_backend.routers import identity as identity_router  # noqa: E402
-from arm_backend.routers.jobs import _summarize_rip_progress  # noqa: E402
+from arm_backend.job_views import _summarize_rip_progress  # noqa: E402
 from arm_backend.task_kinds import TASK_KIND_RULES, rules_for  # noqa: E402
 from arm_backend.track_selection import (  # noqa: E402
     MENU_SKIP_REASONS,
