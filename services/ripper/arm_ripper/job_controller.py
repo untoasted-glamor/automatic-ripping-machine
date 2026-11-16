@@ -711,7 +711,6 @@ class JobController:
             self._disc_run = run
         try:
             await _DiscRip(
-                self,
                 backend=self._backend,
                 ws=self._ws,
                 ejector=self._ejector,
@@ -788,7 +787,6 @@ class _DiscRip:
 
     def __init__(
         self,
-        controller: "JobController",
         *,
         backend: BackendRetry,
         ws: WSClient | None,
@@ -803,7 +801,6 @@ class _DiscRip:
         backup_full_selections: bool = False,
         run: _RipRun | None = None,
     ) -> None:
-        self._controller = controller
         self._backup_full_selections = backup_full_selections
         self._backend = backend
         self._ws = ws
