@@ -142,6 +142,8 @@ def test_0046_downgrade_drops_the_drive_scan_activity_columns() -> None:
     sql = _render_sql("0046_drive_scan_activity", "0045_review_requires_confirm", downgrade=True)
     for name in ("scan_started_at", "scan_attempt", "scan_max_attempts"):
         assert f"ALTER TABLE drives DROP COLUMN {name}" in sql
+
+
 _IDENT_PARENT = "0044_previously_ripped"
 _IDENT_REV = "0045_identification_sources"
 

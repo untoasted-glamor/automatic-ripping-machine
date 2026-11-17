@@ -591,9 +591,7 @@ class IdentifyFlow:
             self.session.add(job)
             await self.session.commit()
             await self.session.refresh(job)
-            logger.info(
-                "identify drive_id=%s: disc of job_id=%s is back; retrying its failed titles", drive.id, job.id
-            )
+            logger.info("identify drive_id=%s: disc of job_id=%s is back; retrying its failed titles", drive.id, job.id)
             return job
         self.reuse_job = decision.job if decision is not None and decision.action == "reuse" else None
 

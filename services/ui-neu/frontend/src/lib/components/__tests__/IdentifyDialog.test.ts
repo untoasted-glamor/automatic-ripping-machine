@@ -223,7 +223,9 @@ describe('IdentifyDialog', () => {
 				}
 			});
 			renderComponent(IdentifyDialog, { props: { job, onclose: vi.fn(), onidentified: vi.fn() } });
-			expect(screen.getByTestId('identify-miss-reason')).toHaveTextContent('No source found a close match for "DISC_1"');
+			expect(screen.getByTestId('identify-miss-reason')).toHaveTextContent(
+				'No source found a close match for "DISC_1"'
+			);
 		});
 
 		it('shows nothing when there are no attempts', () => {
