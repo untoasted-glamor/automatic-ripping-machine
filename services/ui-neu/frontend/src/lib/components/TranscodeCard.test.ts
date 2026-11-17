@@ -63,14 +63,15 @@ describe('TranscodeCard', () => {
 	});
 
 	describe('task kind', () => {
+		// Claimed an hour ago at 45%: enough to estimate from (never from created_at).
 		it('labels a subtitle OCR task and gives it no time estimate', () => {
-			renderComponent(TranscodeCard, { props: { job: createTranscodeTask({ kind: 'subtitle_ocr' }) } });
+			renderComponent(TranscodeCard, { props: { job: createTranscodeTask({ kind: 'subtitle_ocr', started_at: '2025-06-15T11:00:00Z' }) } });
 			expect(screen.getByTestId('task-kind-chip')).toHaveTextContent('Text subtitles');
 			expect(screen.getByTitle('Estimated time remaining').textContent).not.toContain('~');
 		});
 
 		it('shows no kind chip and an estimate for an encode', () => {
-			renderComponent(TranscodeCard, { props: { job: createTranscodeTask({ kind: 'encode' }) } });
+			renderComponent(TranscodeCard, { props: { job: createTranscodeTask({ kind: 'encode', started_at: '2025-06-15T11:00:00Z' }) } });
 			expect(screen.queryByTestId('task-kind-chip')).toBeNull();
 			expect(screen.getByTitle('Estimated time remaining').textContent).toContain('~');
 		});

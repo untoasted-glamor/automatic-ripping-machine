@@ -151,6 +151,18 @@ describe('IdentityPanel', () => {
 		expect(screen.getByTestId('identity-step-episodes')).toBeInTheDocument();
 	});
 
+	it('shows the media type switch on a DVD or Blu-ray job and reports a change', async () => {
+		const { props } = render(createJob({ disc_type: 'dvd', status: 'ripped' }));
+		await fireEvent.click(screen.getByRole('radio', { name: 'TV' }));
+		await waitFor(() => expect(props.ontypechanged).toHaveBeenCalledWith('tv'));
+	});
+
+	it('passes the hand-set track count to the media type switch confirmation', async () => {
+		render(createJob({ disc_type: 'dvd', status: 'ripped', media_type: 'tv' }), { handSetCount: 1 });
+		await fireEvent.click(screen.getByRole('radio', { name: 'Movie' }));
+		expect(screen.getByText(/1 track has episodes you set by hand/)).toBeInTheDocument();
+	});
+
 	it("a CD's panel is the music match", () => {
 		render(createJob({ status: 'awaiting_user_id', disc_type: 'cd' }));
 		expect(screen.getByTestId('identity-step-music')).toBeInTheDocument();

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderComponent, screen, fireEvent, waitFor, cleanup } from '$lib/test-utils';
 import JobHeaderActions from '../JobHeaderActions.svelte';
-import { createJob, createJobDetail, createTrack } from '$lib/components/__fixtures__/job';
+import { createJob, createJobDetail } from '$lib/components/__fixtures__/job';
 import { JobDetail } from '$lib/stores/jobDetail.svelte';
 import * as authStore from '$lib/stores/auth';
 import { abandonJob, deleteJob, setJobMediaType } from '$lib/api/jobs';
@@ -27,17 +27,23 @@ vi.mock('$lib/api/jobs', () => ({
 
 const setRole = (authStore as unknown as { __setRole: (r: string | null) => void }).__setRole;
 
-function render(job: JobView, tracks: TrackView[] = []) {
+function render(job: JobView, tracks: TrackView[] = [], extra: { hasIdentityPanel?: boolean } = {}) {
 	const jobDetail = new JobDetail(() => 'job_1');
 	jobDetail.detail = createJobDetail({ ...job, tracks });
 	const load = vi.spyOn(jobDetail, 'load').mockResolvedValue(undefined);
 	const handlers = {
-		onmediatypechanged: vi.fn(),
 		onidentify: vi.fn(),
 		onapply: vi.fn(),
 		ondelete: vi.fn()
 	};
-	renderComponent(JobHeaderActions, { job: jobDetail.detail.job, jobDetail, ...handlers });
+	renderComponent(JobHeaderActions, {
+		job: jobDetail.detail.job,
+		jobDetail,
+		hasIdentityPanel: extra.hasIdentityPanel ?? false,
+		subtitleOcr: null,
+		ontextsubtitles: vi.fn(),
+		...handlers
+	});
 	return { ...handlers, load };
 }
 
@@ -48,17 +54,6 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('JobHeaderActions', () => {
-	it('shows the media type switch on a DVD or Blu-ray job and reports a change', async () => {
-		const { onmediatypechanged } = render(createJob({ disc_type: 'dvd', status: 'ripped' }));
-		await fireEvent.click(screen.getByRole('radio', { name: 'TV' }));
-		await waitFor(() => expect(onmediatypechanged).toHaveBeenCalledWith('tv'));
-	});
-
-	it('hides the media type switch on a CD', () => {
-		render(createJob({ disc_type: 'cd', status: 'ripped' }));
-		expect(screen.queryByRole('radiogroup', { name: 'Media type' })).toBeNull();
-	});
-
 	it('labels the identify button Edit identity on a CD with an identity and reports a click', async () => {
 		const { onidentify } = render(createJob({ disc_type: 'cd', status: 'ripped' }));
 		await fireEvent.click(screen.getByTestId('identify-open'));
@@ -71,9 +66,17 @@ describe('JobHeaderActions', () => {
 		expect(screen.getByTestId('identify-open')).toHaveTextContent('Identify disc');
 	});
 
-	it('hides the identify button on an identified video job', () => {
+	// The fork's video and CD jobs have the Identity panel, which holds the media
+	// type switch (its tests are in IdentityPanel.test.ts); the button opens the
+	// panel at any status.
+	it('labels the button Identity and shows it at any status when the job has the Identity panel', () => {
+		render(createJob({ disc_type: 'dvd', status: 'identified' }), [], { hasIdentityPanel: true });
+		expect(screen.getByTestId('identify-open')).toHaveTextContent('Identity');
+	});
+
+	it('labels the button Edit identity on an identified job without the Identity panel', () => {
 		render(createJob({ disc_type: 'dvd', status: 'identified' }));
-		expect(screen.queryByTestId('identify-open')).toBeNull();
+		expect(screen.getByTestId('identify-open')).toHaveTextContent('Edit identity');
 	});
 
 	it('hides the identify button when the job cannot be resolved', () => {
@@ -113,13 +116,6 @@ describe('JobHeaderActions', () => {
 		await fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
 		await waitFor(() => expect(ondelete).toHaveBeenCalledTimes(1));
 		vi.unstubAllGlobals();
-	});
-
-	it('passes the hand-set track count to the media type switch confirmation', async () => {
-		const track = createTrack({ identity_provenance: { episode_number: 'manual' } });
-		render(createJob({ disc_type: 'dvd', status: 'ripped', media_type: 'tv' }), [track]);
-		await fireEvent.click(screen.getByRole('radio', { name: 'Movie' }));
-		expect(screen.getByText(/1 track has episodes you set by hand/)).toBeInTheDocument();
 	});
 
 	it('shows a guest none of the actions', () => {

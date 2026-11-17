@@ -303,7 +303,8 @@ describe('LogView', () => {
 		await fireEvent.click(copy);
 
 		expect(writeText).toHaveBeenCalledTimes(1);
-		expect(writeText.mock.calls[0][0]).toMatch(/^\d{2}:\d{2}:\d{2} \[Ripper\] ripper line$/);
+		// ENTRIES are from an earlier day, so the copied line carries the date as shown.
+		expect(writeText.mock.calls[0][0]).toMatch(/^[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \[Ripper\] ripper line$/);
 		await vi.waitFor(() => expect(copy).toHaveTextContent('Copied'));
 	});
 
