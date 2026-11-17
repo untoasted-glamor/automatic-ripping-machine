@@ -26,7 +26,8 @@ vi.mock('$lib/api/jobs', () => ({
 
 const setRole = (authStore as unknown as { __setRole: (r: string | null) => void }).__setRole;
 
-const onexcludedchange = vi.fn();
+const onkeepchanged = vi.fn();
+const onkeeperror = vi.fn();
 const ontitleapplied = vi.fn();
 const ontoggleedit = vi.fn();
 const oncloseedit = vi.fn();
@@ -47,8 +48,20 @@ function renderRow(track: TrackView, overrides: Overrides = {}) {
 		editing: overrides.editing ?? false,
 		ontoggleedit,
 		oncloseedit,
-		onexcludedchange,
-		ontitleapplied
+		ontitleapplied,
+		// The fork's Keep column and disc-menu row (off here).
+		ripStarted: true,
+		lockedReason: null,
+		lastKept: false,
+		onkeepchanged,
+		onkeeperror,
+		hasMenu: false,
+		named: undefined,
+		menuRowOpen: false,
+		ontogglemenurow: vi.fn(),
+		onmenuchange: vi.fn(),
+		onmenunamed: vi.fn(),
+		flash: false
 	});
 }
 
@@ -200,9 +213,12 @@ describe('JobTrackRow', () => {
 			expect(row().querySelector('td[data-label="Episode"]')).toBeNull();
 		});
 
-		it('names the episode from the preview', () => {
+		// The fork's Episode cell keeps the episode once a session names the track;
+		// the generated name is in Filename.
+		it('keeps the episode number and name when the preview names the track', () => {
 			renderRow(pilot(), { tracksAreSeries: true, preview: previewItem('trk_1', 'Show - S01E01.mkv') });
-			expect(text(cell('Episode'))).toBe('Show - S01E01.mkv');
+			expect(text(cell('Episode'))).toBe('1 First');
+			expect(text(cell('Filename'))).toBe('Show - S01E01.mkv custom');
 		});
 
 		it('names the episode by number and name, or by number alone', () => {
@@ -290,29 +306,42 @@ describe('JobTrackRow', () => {
 		expect(screen.queryByText('stale error')).not.toBeInTheDocument();
 	});
 
-	describe('the Include column', () => {
-		it('calls onexcludedchange with the track id and the new value', async () => {
+	// The fork's Keep column (upstream's Include column is not added).
+	describe('the Keep column', () => {
+		it('saves the new value for the track and reports the change', async () => {
+			vi.mocked(updateTrack).mockResolvedValue(undefined as never);
 			renderRow(pilot());
-			const box = screen.getByRole('checkbox') as HTMLInputElement;
+			const box = screen.getByRole('checkbox', { name: 'Keep track 1' }) as HTMLInputElement;
 			expect(box.checked).toBe(true);
 			await fireEvent.click(box);
-			expect(onexcludedchange).toHaveBeenLastCalledWith('trk_1', true);
+			await waitFor(() => expect(onkeepchanged).toHaveBeenCalledTimes(1));
+			expect(updateTrack).toHaveBeenLastCalledWith('job_1', 'trk_1', { excluded: true });
 			cleanup();
 			renderRow(failed());
-			const other = screen.getByRole('checkbox') as HTMLInputElement;
+			const other = screen.getByRole('checkbox', { name: 'Keep track 2' }) as HTMLInputElement;
 			expect(other.checked).toBe(false);
 			await fireEvent.click(other);
-			expect(onexcludedchange).toHaveBeenLastCalledWith('trk_2', false);
+			await waitFor(() => expect(updateTrack).toHaveBeenLastCalledWith('job_1', 'trk_2', { excluded: false }));
 		});
 
-		it('shows a non-admin Included or Excluded as text', () => {
+		it('reports a refused change and puts the box back', async () => {
+			vi.mocked(updateTrack).mockRejectedValue(new Error('no ripped file'));
+			renderRow(failed());
+			const box = screen.getByRole('checkbox', { name: 'Keep track 2' }) as HTMLInputElement;
+			await fireEvent.click(box);
+			await waitFor(() => expect(onkeeperror).toHaveBeenLastCalledWith('Could not update the track: no ripped file'));
+			expect(box.checked).toBe(false);
+			expect(onkeepchanged).toHaveBeenCalled();
+		});
+
+		it('shows a non-admin Kept or Left out as text', () => {
 			setRole('guest');
 			renderRow(pilot());
 			expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
-			expect(text(cell('Include'))).toBe('Included');
+			expect(text(cell('Keep'))).toBe('Kept');
 			cleanup();
 			renderRow(failed());
-			expect(text(cell('Include'))).toBe('Excluded');
+			expect(text(cell('Keep'))).toBe('Left out');
 		});
 	});
 

@@ -180,10 +180,11 @@ describe('Job Detail Page', () => {
 			await waitFor(() => expect(screen.getByTestId('apply-open')).toBeInTheDocument());
 		});
 
-		it('shows Apply session for a resolvable status, and Identify only while the identity is missing', async () => {
+		// The fork's video job has the Identity panel, which the header button opens at any status.
+		it('shows Apply session for a resolvable status, and the Identity button for a video job', async () => {
 			renderComponent(JobDetailPage);
 			await waitFor(() => expect(screen.getByTestId('apply-open')).toBeInTheDocument());
-			expect(screen.queryByTestId('identify-open')).not.toBeInTheDocument();
+			expect(screen.getByTestId('identify-open')).toHaveTextContent('Identity');
 		});
 	});
 

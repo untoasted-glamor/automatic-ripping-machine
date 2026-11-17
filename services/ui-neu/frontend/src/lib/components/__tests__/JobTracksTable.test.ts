@@ -26,7 +26,8 @@ vi.mock('$lib/api/jobs', () => ({
 
 const setRole = (authStore as unknown as { __setRole: (r: string | null) => void }).__setRole;
 
-const onexcludedchange = vi.fn();
+const onkeepchanged = vi.fn();
+const onkeeperror = vi.fn();
 const ontitleapplied = vi.fn();
 
 interface Overrides {
@@ -40,8 +41,20 @@ function renderTable(tracks: TrackView[], overrides: Overrides = {}) {
 		tracks,
 		tracksAreSeries: overrides.tracksAreSeries ?? false,
 		previewByTrack: new Map((overrides.previews ?? []).map((p) => [p.track_id, p])),
-		onexcludedchange,
-		ontitleapplied
+		ontitleapplied,
+		// The fork's Keep column and disc-menu rows (no menu here).
+		parks: false,
+		choosing: false,
+		keptCount: 2,
+		onkeepchanged,
+		onkeeperror,
+		hasMenu: false,
+		menuByTrack: new Map(),
+		menuRowOpen: () => false,
+		ontogglemenurow: vi.fn(),
+		onmenuchange: vi.fn(),
+		onmenunamed: vi.fn(),
+		flashTrackId: null
 	});
 }
 
@@ -97,10 +110,13 @@ describe('JobTracksTable', () => {
 		expect(text(cellOf(rows[2], 'Filename'))).toBe('-');
 	});
 
-	it('passes the exclusion change on from a row', async () => {
+	// The fork's Keep column (upstream's Include column is not added).
+	it('saves a Keep change from a row and reports it', async () => {
+		vi.mocked(updateTrack).mockResolvedValue(undefined as never);
 		renderTable(series());
-		await fireEvent.click(screen.getAllByRole('checkbox')[1]);
-		expect(onexcludedchange).toHaveBeenLastCalledWith('trk_2', false);
+		await fireEvent.click(screen.getByRole('checkbox', { name: 'Keep track 2' }));
+		await waitFor(() => expect(onkeepchanged).toHaveBeenCalledTimes(1));
+		expect(updateTrack).toHaveBeenLastCalledWith('job_1', 'trk_2', { excluded: false });
 	});
 
 	describe('per-track title search', () => {

@@ -683,14 +683,21 @@ describe('Job detail page (v3)', () => {
 		job: createJob({ id: 'job_42', status: 'awaiting_user_id', title: null })
 	});
 
-	it('shows the Identify button only while the disc is waiting for an identity', async () => {
-		renderComponent(Page);
-		await screen.findByRole('heading', { name: 'Test Movie' });
-		expect(screen.queryByTestId('identify-open')).not.toBeInTheDocument();
-		cleanup();
+	// The fork's video and CD jobs open the Identity panel instead (the next
+	// test); a disc without it (data) has the dialog: Identify disc while it
+	// waits for an identity, Edit identity after.
+	it('labels the dialog button by whether a disc without the Identity panel waits for an identity', async () => {
 		const jobImpl = mockFetchJob.getMockImplementation();
 		try {
-			mockFetchJob.mockResolvedValue(awaitingIdentity());
+			mockFetchJob.mockResolvedValue({
+				...createJobDetail({ tracks: [] }),
+				job: createJob({ id: 'job_42', status: 'ripped', title: 'Test Movie', disc_type: 'data' })
+			});
+			renderComponent(Page);
+			await waitFor(() => expect(screen.getByTestId('identify-open')).toHaveTextContent('Edit identity'));
+			cleanup();
+			const waiting = awaitingIdentity();
+			mockFetchJob.mockResolvedValue({ ...waiting, job: { ...waiting.job, disc_type: 'data' } });
 			renderComponent(Page);
 			await waitFor(() => {
 				expect(screen.getByTestId('identify-open')).toHaveTextContent('Identify disc');
@@ -994,7 +1001,8 @@ describe('Job detail page (v3)', () => {
 		expect(screen.getByText('The One With The Test')).toBeInTheDocument();
 	});
 
-	it('the Episode column reads the generated name once a session names the track', async () => {
+	// The fork's Episode cell keeps the episode; the generated name is in Filename.
+	it('the Episode column keeps the episode once a session names the track, which Filename shows', async () => {
 		mockFetchJob.mockResolvedValue({
 			job: createJob({ id: 'job_42', title: 'Show', status: 'ripped' }),
 			tracks: [createTrack({ id: 'trk_1', status: 'done', role: 'episode', episode_number: 3, episode_name: 'Ep 3' })],
@@ -1014,7 +1022,7 @@ describe('Job detail page (v3)', () => {
 		renderComponent(Page);
 		await waitFor(() => expect(screen.getByText('Tracks (1)')).toBeInTheDocument());
 		await waitFor(() => expect(screen.getAllByText('Show - S01E03 - Ep 3.mkv').length).toBeGreaterThan(0));
-		expect(screen.queryByText('Ep 3')).toBeNull();
+		expect(screen.getByText('Ep 3')).toBeInTheDocument();
 	});
 
 	it('omits the Episode column for non-series tracks', async () => {

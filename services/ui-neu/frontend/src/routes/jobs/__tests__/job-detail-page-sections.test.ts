@@ -137,6 +137,11 @@ function detailOf(job: Partial<JobView> = {}, tracks?: TrackView[], extra: Parti
 	};
 }
 
+// A disc without the Identity panel: its facts are edited in the metadata grid.
+function dataDetail(job: Partial<JobView> = {}, tracks?: TrackView[]): JobDetailView {
+	return detailOf({ disc_type: 'data', ...job }, tracks);
+}
+
 function tvDetail(job: Partial<JobView> = {}, tracks?: TrackView[]): JobDetailView {
 	return detailOf({ media_type: 'tv', has_series: true, ...job }, tracks);
 }
@@ -388,18 +393,28 @@ describe('header', () => {
 		expect(screen.queryByTestId('media-type-text')).not.toBeInTheDocument();
 	});
 
-	it('labels the dialog button Edit identity on a CD that already has an identity', async () => {
-		loadJobPage(detailOf({ disc_type: 'cd' }));
+	// The fork's video and CD jobs have the Identity panel, and the header button
+	// opens it at any status; only a disc without the panel (data) has the dialog.
+	it('labels the button Identity on a CD or video job, which has the Identity panel', async () => {
+		loadJobPage(detailOf({ disc_type: 'cd', status: 'ripping' }));
+		expect(await screen.findByTestId('identify-open')).toHaveTextContent('Identity');
+		cleanup();
+		loadJobPage(detailOf({ status: 'awaiting_user_id' }));
+		expect(await screen.findByTestId('identify-open')).toHaveTextContent('Identity');
+	});
+
+	it('labels the dialog button Edit identity on a data disc that already has an identity', async () => {
+		loadJobPage(detailOf({ disc_type: 'data' }));
 		expect(await screen.findByTestId('identify-open')).toHaveTextContent('Edit identity');
 	});
 
 	it('labels the dialog button Identify disc while the disc awaits an identity', async () => {
-		loadJobPage(detailOf({ status: 'awaiting_user_id' }));
+		loadJobPage(detailOf({ disc_type: 'data', status: 'awaiting_user_id' }));
 		expect(await screen.findByTestId('identify-open')).toHaveTextContent('Identify disc');
 	});
 
 	it('hides Apply session and Identify when the job cannot be applied or resolved', async () => {
-		loadJobPage(detailOf({ status: 'ripping' }));
+		loadJobPage(detailOf({ disc_type: 'data', status: 'ripping' }));
 		await heading('Test Movie');
 		expect(screen.queryByTestId('apply-open')).not.toBeInTheDocument();
 		expect(screen.queryByTestId('identify-open')).not.toBeInTheDocument();
@@ -488,8 +503,10 @@ describe('metadata grid', () => {
 		expect(cells.some((c) => c.querySelector('.job-detail-metadata-label') === null)).toBe(true);
 	});
 
+	// The fork edits facts in place only on a disc without the Identity panel
+	// (data); a video or CD job edits them there (IdentityPanel.test.ts).
 	it('edits Year, Season, Disc # and Disc total in place for an admin, as number inputs', async () => {
-		loadJobPage(tvDetail());
+		loadJobPage(tvDetail({ disc_type: 'data' }));
 		await heading('Test Movie');
 		for (const label of ['Year', 'Season', 'Disc #', 'Disc total']) {
 			await fireEvent.click(screen.getByRole('button', { name: `Edit ${label}` }));
@@ -509,7 +526,7 @@ describe('metadata grid', () => {
 	});
 
 	it('does not let a job that cannot be resolved edit its facts', async () => {
-		loadJobPage(detailOf({ status: 'ripping' }));
+		loadJobPage(dataDetail({ status: 'ripping' }));
 		await heading('Test Movie');
 		expect(screen.queryByRole('button', { name: 'Edit Year' })).not.toBeInTheDocument();
 		expect(screen.queryByRole('button', { name: 'Edit Title' })).not.toBeInTheDocument();
@@ -524,7 +541,7 @@ describe('metadata grid', () => {
 		}
 
 		it('requires a title and does not call resolve without one', async () => {
-			loadJobPage();
+			loadJobPage(dataDetail());
 			await heading('Test Movie');
 			await typeAndEnter('Title', '   ');
 			expect(await screen.findByText('A title is required')).toBeInTheDocument();
@@ -532,7 +549,7 @@ describe('metadata grid', () => {
 		});
 
 		it('restates the identity when the title changes, trimming it and keeping the year', async () => {
-			loadJobPage();
+			loadJobPage(dataDetail());
 			await heading('Test Movie');
 			await typeAndEnter('Title', '  Renamed  ');
 			await waitFor(() => expect(mockResolve).toHaveBeenCalledWith(JOB, { title: 'Renamed', year: 2024 }));
@@ -540,28 +557,28 @@ describe('metadata grid', () => {
 		});
 
 		it('restates the identity when the year changes, keeping the title', async () => {
-			loadJobPage();
+			loadJobPage(dataDetail());
 			await heading('Test Movie');
 			await typeAndEnter('Year', '2020');
 			await waitFor(() => expect(mockResolve).toHaveBeenCalledWith(JOB, { title: 'Test Movie', year: 2020 }));
 		});
 
 		it('clears the year when it is blanked', async () => {
-			loadJobPage();
+			loadJobPage(dataDetail());
 			await heading('Test Movie');
 			await typeAndEnter('Year', '');
 			await waitFor(() => expect(mockResolve).toHaveBeenCalledWith(JOB, { title: 'Test Movie', year: null }));
 		});
 
 		it('sends an empty title and a null year for a job that has neither', async () => {
-			loadJobPage(tvDetail({ title: null, year: null }));
+			loadJobPage(tvDetail({ disc_type: 'data', title: null, year: null }));
 			await heading('Untitled');
 			await typeAndEnter('Disc total', '2');
 			await waitFor(() => expect(mockResolve).toHaveBeenCalledWith(JOB, { title: '', year: null, disc_total: 2 }));
 		});
 
 		it('clears a classification when a number is blanked', async () => {
-			loadJobPage(tvDetail({ season: 2 }));
+			loadJobPage(tvDetail({ disc_type: 'data', season: 2 }));
 			await heading('Test Movie');
 			await typeAndEnter('Season', '');
 			await waitFor(() =>
@@ -569,102 +586,40 @@ describe('metadata grid', () => {
 			);
 		});
 
-		it('starts the episode match when a TV season changes', async () => {
-			mockResolve.mockResolvedValue({ job: createJob({ id: JOB, media_type: 'tv', season: 3 }) } as never);
-			loadJobPage(tvDetail());
-			await fireEvent.click(await screen.findByRole('button', { name: 'Match Episodes' }));
-			await typeAndEnter('Season', '3');
-			await waitFor(() =>
-				expect(mockResolve).toHaveBeenCalledWith(JOB, { title: 'Test Movie', year: 2024, season: 3 })
-			);
-			expect(await screen.findByText('Matching episodes...')).toBeInTheDocument();
-		});
-
-		it('starts the episode match when a TV disc number changes', async () => {
-			mockResolve.mockResolvedValue({ job: createJob({ id: JOB, media_type: 'tv', disc_number: 2 }) } as never);
-			loadJobPage(tvDetail());
-			await fireEvent.click(await screen.findByRole('button', { name: 'Match Episodes' }));
-			await typeAndEnter('Disc #', '2');
-			expect(await screen.findByText('Matching episodes...')).toBeInTheDocument();
-		});
-
-		it('does not start the episode match when a TV season stays the same', async () => {
-			mockResolve.mockResolvedValue({ job: createJob({ id: JOB, media_type: 'tv', season: 2 }) } as never);
-			loadJobPage(tvDetail({ season: 2 }));
-			await fireEvent.click(await screen.findByRole('button', { name: 'Match Episodes' }));
-			await typeAndEnter('Year', '2020');
-			await waitFor(() => expect(mockFetchJob).toHaveBeenCalledTimes(2));
-			expect(screen.queryByText('Matching episodes...')).not.toBeInTheDocument();
-		});
-
-		it('does not start the episode match when the response carries no job', async () => {
-			mockResolve.mockResolvedValue(undefined as never);
-			loadJobPage(tvDetail());
-			await fireEvent.click(await screen.findByRole('button', { name: 'Match Episodes' }));
-			await typeAndEnter('Season', '3');
-			await waitFor(() => expect(mockFetchJob).toHaveBeenCalledTimes(2));
-			expect(screen.queryByText('Matching episodes...')).not.toBeInTheDocument();
-		});
-
-		it('does not start the episode match for a movie, even if the season moved', async () => {
-			mockResolve.mockResolvedValue({ job: createJob({ id: JOB, media_type: 'movie', season: 5 }) } as never);
-			mockFetchJob.mockResolvedValueOnce(detailOf());
-			mockFetchJob.mockResolvedValue(tvDetail());
-			renderComponent(Page);
-			await heading('Test Movie');
-			await typeAndEnter('Year', '2020');
-			await fireEvent.click(await screen.findByRole('button', { name: 'Match Episodes' }));
-			expect(screen.queryByText('Matching episodes...')).not.toBeInTheDocument();
-		});
+		// Upstream's five "starts / does not start the episode match" pins are not
+		// kept: the fork shows "Matching episodes..." on the Identity panel, which
+		// a disc that edits its facts here (data) does not have, and has no Match
+		// Episodes tab. The rule itself is pinned in jobDetail.test.ts (saveFact).
 	});
 });
 
-describe('panels', () => {
-	it('toggles the title search from its tab', async () => {
-		loadJobPage();
-		const tab = await screen.findByRole('button', { name: /Poster & metadata search/ });
-		expect(tab).toHaveAttribute('aria-pressed', 'false');
-		await fireEvent.click(tab);
-		expect(tab).toHaveAttribute('aria-pressed', 'true');
-		expect(screen.getByRole('button', { name: 'Search' })).toBeInTheDocument();
-		await fireEvent.click(tab);
-		expect(tab).toHaveAttribute('aria-pressed', 'false');
-		expect(screen.queryByRole('button', { name: 'Search' })).not.toBeInTheDocument();
-	});
+// The fork's Identity panel, where upstream has panel tabs (Poster & metadata
+// search, Match Episodes, Match CD; JobPanels is in the tree, unused). Upstream's
+// tab-toggling pins are not kept; its flows are, through the panel.
+describe('Identity panel', () => {
+	const openPanel = async () => {
+		const toggle = await screen.findByTestId('identity-toggle');
+		if (toggle.getAttribute('aria-expanded') !== 'true') await fireEvent.click(toggle);
+	};
 
 	it('opens the title search on the movie sources for a movie job', async () => {
 		loadJobPage();
-		await fireEvent.click(await screen.findByRole('button', { name: /Poster & metadata search/ }));
+		await openPanel();
 		const select = screen.getByRole('combobox', { name: 'Search with' }) as HTMLSelectElement;
 		expect(Array.from(select.options).map((o) => o.value)).toEqual(['tmdb', 'omdb']);
 	});
 
-	it('toggles the episode panel and the title search independently of each other', async () => {
-		loadJobPage(tvDetail());
-		const episodes = await screen.findByRole('button', { name: 'Match Episodes' });
-		await fireEvent.click(episodes);
-		expect(episodes).toHaveAttribute('aria-pressed', 'true');
-		expect(screen.getByRole('region', { name: 'Match episodes' })).toBeInTheDocument();
-		await fireEvent.click(screen.getByRole('button', { name: /Poster & metadata search/ }));
-		expect(episodes).toHaveAttribute('aria-pressed', 'false');
-		expect(screen.queryByRole('region', { name: 'Match episodes' })).not.toBeInTheDocument();
-		await fireEvent.click(screen.getByRole('button', { name: /Poster & metadata search/ }));
-		await fireEvent.click(episodes);
-		await fireEvent.click(episodes);
-		expect(screen.queryByRole('region', { name: 'Match episodes' })).not.toBeInTheDocument();
-	});
-
-	it('opens the title search on the TV sources when the episode panel asks to search for the series', async () => {
+	it('opens the title search on the TV sources when the episode step asks to search for the series', async () => {
 		loadJobPage(detailOf({ media_type: 'tv', has_series: false }));
-		await fireEvent.click(await screen.findByRole('button', { name: 'Match Episodes' }));
+		await openPanel();
 		await fireEvent.click(await screen.findByRole('button', { name: 'Search for the series' }));
-		const select = screen.getByRole('combobox', { name: 'Search with' }) as HTMLSelectElement;
-		expect(Array.from(select.options).map((o) => o.value)).toEqual(['tmdb', 'omdb', 'tvmaze', 'tvdb']);
-		expect(screen.getByRole('button', { name: /Poster & metadata search/ })).toHaveAttribute('aria-pressed', 'true');
-		expect(screen.getByRole('button', { name: 'Match Episodes' })).toHaveAttribute('aria-pressed', 'false');
+		await waitFor(() => {
+			const select = screen.getByRole('combobox', { name: 'Search with' }) as HTMLSelectElement;
+			expect(Array.from(select.options).map((o) => o.value)).toEqual(['tmdb', 'omdb', 'tvmaze', 'tvdb']);
+		});
 	});
 
-	it('reloads the job when the episode panel reports a change', async () => {
+	it('reloads the job when the episode step reports a change', async () => {
 		vi.mocked(fetchIdentity).mockResolvedValue({
 			sources: { episodes_tmdb: { status: 'ok' } },
 			pin: {},
@@ -683,69 +638,51 @@ describe('panels', () => {
 		} as never);
 		vi.mocked(clearEpisodeMatch).mockResolvedValue({ sources: {}, pin: {}, tracks: [] });
 		loadJobPage(tvDetail());
-		await fireEvent.click(await screen.findByRole('button', { name: 'Match Episodes' }));
+		await openPanel();
 		await fireEvent.click(await screen.findByRole('button', { name: 'Clear episodes' }));
 		await waitFor(() => expect(clearEpisodeMatch).toHaveBeenCalledWith(JOB));
 		await waitFor(() => expect(mockFetchJob).toHaveBeenCalledTimes(2));
 	});
 
-	it('shows the Match CD tab and toggles the music search for a CD', async () => {
-		loadJobPage(detailOf({ disc_type: 'cd' }));
-		const tab = await screen.findByRole('button', { name: 'Match CD' });
-		await fireEvent.click(tab);
-		expect(tab).toHaveAttribute('aria-pressed', 'true');
-		expect(screen.getByPlaceholderText('Album or title...')).toBeInTheDocument();
-		await fireEvent.click(tab);
-		expect(screen.queryByPlaceholderText('Album or title...')).not.toBeInTheDocument();
-	});
-
-	it('shows no panel tabs for a data disc', async () => {
+	it('shows no Identity panel for a data disc', async () => {
 		loadJobPage(detailOf({ disc_type: 'data' }));
 		await heading('Test Movie');
-		expect(screen.queryByRole('button', { name: /Poster & metadata search/ })).not.toBeInTheDocument();
-		expect(screen.queryByRole('button', { name: 'Match CD' })).not.toBeInTheDocument();
+		expect(screen.queryByTestId('identity-toggle')).not.toBeInTheDocument();
 	});
 
 	describe('applying', () => {
 		const matrix = { title: 'The Matrix', year: 1999, kind: 'movie', poster_url: null, provider_id: 'tt0133093' };
 
 		async function searchAndUse() {
-			await fireEvent.click(await screen.findByRole('button', { name: /Poster & metadata search/ }));
+			await openPanel();
 			await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 			await screen.findByRole('heading', { name: 'The Matrix' });
 			await fireEvent.click(screen.getByRole('button', { name: 'Use this match' }));
 		}
 
-		it('a movie match from the title search closes the panel and reloads the job', async () => {
+		it('a movie match from the title search collapses the panel and reloads the job', async () => {
 			vi.mocked(searchMetadata).mockResolvedValue({ candidates: [matrix] });
 			vi.mocked(updateJobTitle).mockResolvedValue(undefined as never);
 			loadJobPage();
 			await searchAndUse();
 			await waitFor(() => expect(mockResolve).toHaveBeenCalled());
-			await waitFor(() =>
-				expect(screen.getByRole('button', { name: /Poster & metadata search/ })).toHaveAttribute(
-					'aria-pressed',
-					'false'
-				)
-			);
+			await waitFor(() => expect(screen.getByTestId('identity-toggle')).toHaveAttribute('aria-expanded', 'false'));
 			await waitFor(() => expect(mockFetchJob).toHaveBeenCalledTimes(2));
 		});
 
-		it('a series match opens the episode panel, starts matching and reloads the job', async () => {
+		it('a series match starts matching and reloads the job', async () => {
 			vi.mocked(searchMetadata).mockResolvedValue({ candidates: [{ ...matrix, title: 'The Matrix', kind: 'tv' }] });
 			vi.mocked(updateJobTitle).mockResolvedValue(undefined as never);
 			mockFetchJob.mockResolvedValueOnce(detailOf());
 			mockFetchJob.mockResolvedValue(tvDetail());
 			renderComponent(Page);
 			await searchAndUse();
-			await waitFor(() =>
-				expect(screen.getByRole('button', { name: 'Match Episodes' })).toHaveAttribute('aria-pressed', 'true')
-			);
+			await waitFor(() => expect(mockFetchJob).toHaveBeenCalledTimes(2));
+			await openPanel();
 			expect(await screen.findByText('Matching episodes...')).toBeInTheDocument();
-			expect(mockFetchJob).toHaveBeenCalledTimes(2);
 		});
 
-		it('a CD match from the music search closes the panel and reloads the job', async () => {
+		it('a CD match from the music search collapses the panel and reloads the job', async () => {
 			vi.mocked(searchMusicMetadata).mockResolvedValue({
 				candidates: [{ title: 'Wall Remaster', year: 1979, kind: 'music', poster_url: null, provider_id: 'rel-1' }]
 			});
@@ -760,40 +697,39 @@ describe('panels', () => {
 				tracks: [{ position: 1, title: 'In the Flesh?', length_ms: 213000, disc_number: 1 }]
 			} as never);
 			loadJobPage(detailOf({ disc_type: 'cd', title: 'The Wall' }));
-			await fireEvent.click(await screen.findByRole('button', { name: 'Match CD' }));
+			await openPanel();
 			await fireEvent.click(screen.getByRole('button', { name: 'Search' }));
 			await fireEvent.click(await screen.findByText('Wall Remaster'));
 			await screen.findByText('In the Flesh?');
 			await fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
 			await waitFor(() => expect(mockResolve).toHaveBeenCalled());
 			await waitFor(() => expect(screen.queryByPlaceholderText('Album or title...')).not.toBeInTheDocument());
-			expect(screen.getByRole('button', { name: 'Match CD' })).toHaveAttribute('aria-pressed', 'false');
+			expect(screen.getByTestId('identity-toggle')).toHaveAttribute('aria-expanded', 'false');
 			await waitFor(() => expect(mockFetchJob).toHaveBeenCalledTimes(2));
 		});
 	});
 
 	describe('media type switch', () => {
-		it('switching to TV starts matching and opens the episode panel', async () => {
+		it('switching to TV starts matching and opens the episode step', async () => {
 			vi.mocked(setJobMediaType).mockResolvedValue(createJob({ id: JOB, media_type: 'tv' }));
 			mockFetchJob.mockResolvedValueOnce(detailOf());
 			mockFetchJob.mockResolvedValue(tvDetail());
 			renderComponent(Page);
 			await fireEvent.click(await screen.findByRole('radio', { name: 'TV' }));
-			await waitFor(() =>
-				expect(screen.getByRole('button', { name: 'Match Episodes' })).toHaveAttribute('aria-pressed', 'true')
-			);
+			await waitFor(() => expect(screen.getByTestId('identity-toggle')).toHaveAttribute('aria-expanded', 'true'));
 			expect(await screen.findByText('Matching episodes...')).toBeInTheDocument();
 		});
 
-		it('switching to Movie stops matching, closes the panels and reloads the job', async () => {
+		it('switching to Movie stops matching, drops the episode step and reloads the job', async () => {
 			vi.mocked(setJobMediaType).mockResolvedValue(createJob({ id: JOB, media_type: 'movie' }));
 			mockFetchJob.mockResolvedValueOnce(tvDetail());
 			mockFetchJob.mockResolvedValue(detailOf());
 			renderComponent(Page);
-			await fireEvent.click(await screen.findByRole('button', { name: 'Match Episodes' }));
+			await openPanel();
+			await screen.findByTestId('identity-step-episodes');
 			await fireEvent.click(await screen.findByRole('radio', { name: 'Movie' }));
-			await waitFor(() => expect(screen.queryByRole('button', { name: 'Match Episodes' })).not.toBeInTheDocument());
-			expect(screen.queryByRole('region', { name: 'Match episodes' })).not.toBeInTheDocument();
+			await waitFor(() => expect(screen.queryByTestId('identity-step-episodes')).not.toBeInTheDocument());
+			expect(screen.queryByText('Matching episodes...')).not.toBeInTheDocument();
 			expect(mockFetchJob).toHaveBeenCalledTimes(2);
 		});
 	});
@@ -1142,13 +1078,15 @@ describe('tracks table', () => {
 		expect(screen.queryByRole('button', { name: 'Search' })).not.toBeInTheDocument();
 	});
 
-	it('names the episode from the preview, else by number and name, else a dash', async () => {
+	// The fork's Episode cell keeps the episode once a session names the track
+	// (the generated name is in Filename).
+	it('names the episode by number and name, else a dash, also once the preview names the track', async () => {
 		mockPreview.mockResolvedValue(previewOf(previewItem('trk_1', 'Show - S01E01.mkv')));
 		const tracks = [...series(), createTrack({ id: 'trk_4', index: 4, episode_number: 4, episode_name: 'Fourth' })];
 		loadJobPage(tvDetail({}, tracks));
 		await screen.findByText('Tracks (4)');
 		const rows = trackRows();
-		expect(text(cellOf(rows[0], 'Episode'))).toBe('Show - S01E01.mkv');
+		expect(text(cellOf(rows[0], 'Episode'))).toBe('1 First');
 		expect(text(cellOf(rows[1], 'Episode'))).toBe('2');
 		expect(text(cellOf(rows[3], 'Episode'))).toBe('4 Fourth');
 		expect(text(cellOf(rows[2], 'Episode'))).toBe('-');
@@ -1232,7 +1170,8 @@ describe('tracks table', () => {
 		expect(screen.queryByText('stale error')).not.toBeInTheDocument();
 	});
 
-	describe('the Include column', () => {
+	// The fork's Keep column, where upstream has Include.
+	describe('the Keep column', () => {
 		it('lets an admin exclude a track and reloads the job', async () => {
 			loadJobPage(tvDetail({}, series()));
 			await screen.findByText('Tracks (3)');
@@ -1250,36 +1189,25 @@ describe('tracks table', () => {
 			await waitFor(() => expect(mockUpdateTrack).toHaveBeenCalledWith(JOB, 'trk_2', { excluded: false }));
 		});
 
-		// Pins today's behaviour: the failure escapes as an unhandled rejection
-		// (#543). The test swaps in its own listener so vitest does not fail the
-		// run on it, and puts vitest's back afterwards.
-		it('reloads the job even when the update fails, and leaves the failure unhandled', async () => {
-			const rejections: unknown[] = [];
-			const previous = process.listeners('unhandledRejection');
-			process.removeAllListeners('unhandledRejection');
-			process.on('unhandledRejection', (r) => rejections.push(r));
-			try {
-				mockUpdateTrack.mockRejectedValue(new Error('update failed'));
-				loadJobPage();
-				await screen.findByText('Tracks (1)');
-				await fireEvent.click(screen.getByRole('checkbox'));
-				await waitFor(() => expect(mockFetchJob).toHaveBeenCalledTimes(2));
-				await waitFor(() => expect(rejections).toHaveLength(1));
-				expect((rejections[0] as Error).message).toBe('update failed');
-			} finally {
-				process.removeAllListeners('unhandledRejection');
-				previous.forEach((l) => process.on('unhandledRejection', l));
-			}
+		// Upstream pins an unhandled rejection here (#543); the fork's Keep box
+		// catches the failure and shows why above the table.
+		it('reloads the job even when the update fails, and shows why above the table', async () => {
+			mockUpdateTrack.mockRejectedValue(new Error('update failed'));
+			loadJobPage();
+			await screen.findByText('Tracks (1)');
+			await fireEvent.click(screen.getByRole('checkbox'));
+			await waitFor(() => expect(mockFetchJob).toHaveBeenCalledTimes(2));
+			expect(await screen.findByTestId('track-error')).toHaveTextContent('Could not update the track: update failed');
 		});
 
-		it('shows a non-admin Included or Excluded as text', async () => {
+		it('shows a non-admin Kept or Left out as text', async () => {
 			setRole('guest');
 			loadJobPage(tvDetail({}, series()));
 			await screen.findByText('Tracks (3)');
 			expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
 			const rows = trackRows();
-			expect(text(cellOf(rows[0], 'Include'))).toBe('Included');
-			expect(text(cellOf(rows[1], 'Include'))).toBe('Excluded');
+			expect(text(cellOf(rows[0], 'Keep'))).toBe('Kept');
+			expect(text(cellOf(rows[1], 'Keep'))).toBe('Left out');
 		});
 	});
 
@@ -1436,11 +1364,12 @@ describe('navigation between jobs', () => {
 		expect(mockFetchJob).toHaveBeenCalledWith('');
 	});
 
-	it('updates a track against an empty id when the route has none', async () => {
+	// The fork's Keep box saves against the loaded job, not the route.
+	it('updates a track against the loaded job when the route has no id', async () => {
 		setPageId(undefined);
 		loadJobPage();
 		await screen.findByText('Tracks (1)');
 		await fireEvent.click(screen.getByRole('checkbox'));
-		await waitFor(() => expect(mockUpdateTrack).toHaveBeenCalledWith('', 'trk_1', { excluded: true }));
+		await waitFor(() => expect(mockUpdateTrack).toHaveBeenCalledWith(JOB, 'trk_1', { excluded: true }));
 	});
 });

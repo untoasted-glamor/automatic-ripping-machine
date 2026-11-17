@@ -118,9 +118,11 @@ describe('ReviewTracksTable title cell', () => {
 		expect(screen.getByText(/Untitled/)).toHaveTextContent(/^Untitled\s*\(2001\)$/);
 	});
 
-	it('shows "-" for a scanned title, in the title, episode and include cells', () => {
+	// The fork's Keep column needs track rows, so a scan list has none.
+	it('shows "-" for a scanned title, in the title and episode cells, and no Keep cell', () => {
 		renderTable({ scanTitles: [scan({ index: 3 })] });
-		expect(screen.getAllByText('-')).toHaveLength(3);
+		expect(screen.getAllByText('-')).toHaveLength(2);
+		expect(screen.queryByRole('columnheader', { name: 'Keep' })).toBeNull();
 		expect(screen.queryByTitle('Search title')).toBeNull();
 		expect(screen.queryByRole('checkbox')).toBeNull();
 	});
@@ -208,23 +210,28 @@ describe('ReviewTracksTable length', () => {
 	});
 });
 
-describe('ReviewTracksTable include cell', () => {
+// The fork's Keep column, where upstream has Include. A ripped job: the fixture
+// job is ripping, and Keep is locked then.
+const ripped = (o: Partial<Parameters<typeof createJob>[0]> = {}) =>
+	createJob({ media_type: 'tv', status: 'ripped', ...o });
+
+describe('ReviewTracksTable keep cell', () => {
 	it('shows the checkbox to an admin', () => {
-		renderTable({ tracks: [track({ id: 'a', index: 4 })] });
-		expect(screen.getByRole('checkbox', { name: 'Include track 4' })).toBeChecked();
+		renderTable({ job: ripped(), tracks: [track({ id: 'a', index: 4 })] });
+		expect(screen.getByRole('checkbox', { name: 'Keep track 4' })).toBeChecked();
 	});
 
-	it('shows "Included" as text to a guest', () => {
+	it('shows "Kept" as text to a guest', () => {
 		adminStore.set(false);
 		renderTable({ tracks: [track({})] });
-		expect(screen.getByText('Included')).toBeInTheDocument();
+		expect(screen.getByText('Kept')).toBeInTheDocument();
 		expect(screen.queryByRole('checkbox')).toBeNull();
 	});
 
-	it('shows "Excluded" as text to a guest for an excluded track', () => {
+	it('shows "Left out" as text to a guest for an excluded track', () => {
 		adminStore.set(false);
 		renderTable({ tracks: [track({ excluded: true })] });
-		expect(screen.getByText('Excluded')).toBeInTheDocument();
+		expect(screen.getByText('Left out')).toBeInTheDocument();
 		expect(screen.queryByRole('checkbox')).toBeNull();
 	});
 });
@@ -247,23 +254,37 @@ describe('ReviewTracksTable updates', () => {
 		await waitFor(() => expect(onrefresh).toHaveBeenCalledTimes(1));
 	});
 
-	it('sends excluded true when the Include box is unchecked', async () => {
-		renderTable({ job: createJob({ id: 'job_9' }), tracks: [track({ id: 'a' })] });
-		await fireEvent.click(screen.getByRole('checkbox', { name: 'Include track 0' }));
+	it('sends excluded true when the Keep box is unchecked', async () => {
+		renderTable({ job: ripped({ id: 'job_9' }), tracks: [track({ id: 'a' })] });
+		await fireEvent.click(screen.getByRole('checkbox', { name: 'Keep track 0' }));
 		expect(mockUpdate).toHaveBeenCalledWith('job_9', 'a', { excluded: true });
 	});
 
-	it('sends excluded false when the Include box is checked', async () => {
-		renderTable({ job: createJob({ id: 'job_9' }), tracks: [track({ id: 'a', excluded: true })] });
-		const box = screen.getByRole('checkbox', { name: 'Include track 0' });
+	it('sends excluded false when the Keep box is checked', async () => {
+		renderTable({ job: ripped({ id: 'job_9' }), tracks: [track({ id: 'a', excluded: true })] });
+		const box = screen.getByRole('checkbox', { name: 'Keep track 0' });
 		expect(box).not.toBeChecked();
 		await fireEvent.click(box);
 		expect(mockUpdate).toHaveBeenCalledWith('job_9', 'a', { excluded: false });
 	});
 
+	it('shows why a Keep change was refused and still refreshes, to the server value', async () => {
+		const onrefresh = vi.fn();
+		mockUpdate.mockRejectedValueOnce(new Error('boom'));
+		renderTable({ job: ripped(), tracks: [track({ id: 'a' })], onrefresh });
+		const box = screen.getByRole('checkbox', { name: 'Keep track 0' });
+		await fireEvent.click(box);
+		expect(await screen.findByText('Could not update the track: boom')).toBeInTheDocument();
+		expect(box).toBeChecked();
+		expect(onrefresh).toHaveBeenCalledTimes(1);
+	});
+
+	// The episode fields' updates (the Keep box has its own, above).
+	const episodeInput = () => screen.getByPlaceholderText('--');
+
 	it('succeeds quietly when onrefresh is not passed', async () => {
-		renderTable({ tracks: [track({ id: 'a' })] });
-		await fireEvent.click(screen.getByRole('checkbox', { name: 'Include track 0' }));
+		renderTable({ tracks: [track({ id: 'a', role: 'episode' })] });
+		await fireEvent.change(episodeInput(), { target: { value: '3' } });
 		await waitFor(() => expect(mockUpdate).toHaveBeenCalledTimes(1));
 		expect(screen.queryByText(/Failed to update track/)).toBeNull();
 	});
@@ -271,8 +292,8 @@ describe('ReviewTracksTable updates', () => {
 	it('shows the message of a failed update and does not refresh', async () => {
 		const onrefresh = vi.fn();
 		mockUpdate.mockRejectedValueOnce(new Error('boom'));
-		renderTable({ tracks: [track({ id: 'a' })], onrefresh });
-		await fireEvent.click(screen.getByRole('checkbox', { name: 'Include track 0' }));
+		renderTable({ tracks: [track({ id: 'a', role: 'episode' })], onrefresh });
+		await fireEvent.change(episodeInput(), { target: { value: '3' } });
 		expect(await screen.findByText('Failed to update track: boom')).toBeInTheDocument();
 		expect(onrefresh).not.toHaveBeenCalled();
 	});
@@ -280,8 +301,8 @@ describe('ReviewTracksTable updates', () => {
 	it('shows "Unknown error" when a failed update throws a non-Error', async () => {
 		const onrefresh = vi.fn();
 		mockUpdate.mockRejectedValueOnce('nope');
-		renderTable({ tracks: [track({ id: 'a' })], onrefresh });
-		await fireEvent.click(screen.getByRole('checkbox', { name: 'Include track 0' }));
+		renderTable({ tracks: [track({ id: 'a', role: 'episode' })], onrefresh });
+		await fireEvent.change(episodeInput(), { target: { value: '3' } });
 		expect(await screen.findByText('Failed to update track: Unknown error')).toBeInTheDocument();
 		expect(onrefresh).not.toHaveBeenCalled();
 	});
@@ -291,12 +312,11 @@ describe('ReviewTracksTable updates', () => {
 		let settle!: () => void;
 		mockUpdate.mockReturnValueOnce(new Promise((resolve) => (settle = () => resolve({}) as unknown as void)) as never);
 		const onrefresh = vi.fn();
-		renderTable({ tracks: [track({ id: 'a' })], onrefresh });
-		const box = screen.getByRole('checkbox', { name: 'Include track 0' });
-		await fireEvent.click(box);
+		renderTable({ tracks: [track({ id: 'a', role: 'episode' })], onrefresh });
+		await fireEvent.change(episodeInput(), { target: { value: '3' } });
 		await screen.findByText('Failed to update track: boom');
 
-		await fireEvent.click(box);
+		await fireEvent.change(episodeInput(), { target: { value: '4' } });
 		await waitFor(() => expect(screen.queryByText(/Failed to update track/)).toBeNull());
 		expect(onrefresh).not.toHaveBeenCalled();
 
