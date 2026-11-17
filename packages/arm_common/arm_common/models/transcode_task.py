@@ -15,17 +15,25 @@ def _transcode_task_id() -> str:
 
 class TranscodeTask(SQLModel, table=True):
     __tablename__ = "transcode_tasks"
-    # Mirrors 0001_initial so metadata-built schemas (the e2e harness) carry the
-    # same indexes. The partial unique index is the race backstop for the
-    # output_path collision check: only one live task may own a path.
+    # Mirrors the migrations (0001_initial, 0050, 0055) so metadata-built schemas
+    # (the e2e harness) carry the same indexes. The output_path index is the
+    # race backstop for the collision check: only one live encode may own a
+    # path. The menu_pack index allows one live pack build per menu track.
     __table_args__ = (
         Index("ix_transcode_tasks_status_heartbeat", "status", "claim_heartbeat_at"),
         Index(
             "uq_transcode_tasks_output_path_live",
             "output_path",
             unique=True,
-            postgresql_where=text("status IN ('queued', 'in_progress', 'done')"),
-            sqlite_where=text("status IN ('queued', 'in_progress', 'done')"),
+            postgresql_where=text("status IN ('queued', 'in_progress', 'done') AND kind = 'encode'"),
+            sqlite_where=text("status IN ('queued', 'in_progress', 'done') AND kind = 'encode'"),
+        ),
+        Index(
+            "uq_transcode_tasks_live_menu_pack",
+            "source_track_id",
+            unique=True,
+            postgresql_where=text("kind = 'menu_pack' AND status IN ('queued', 'in_progress')"),
+            sqlite_where=text("kind = 'menu_pack' AND status IN ('queued', 'in_progress')"),
         ),
     )
 
