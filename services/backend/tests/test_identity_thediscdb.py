@@ -429,6 +429,8 @@ def test_build_claims_joins_a_real_dvd_scan_by_duration() -> None:
     result = build_claims(match, scan, now=NOW)
     assert list(result.tracks) == ["0"]
     assert result.tracks["0"].role is TrackRole.MAIN
+
+
 def _release_match(**overrides: Any) -> DiscMatch:
     base: dict[str, Any] = dict(
         kind="movie", title_slug="round-midnight-1986", release_slug="r", disc={}, metadata={}, release={}
@@ -515,7 +517,9 @@ _EPISODES_S3 = _episodes("3")
 def _scan(titles: list[dict[str, Any]]) -> ScanResult:
     return ScanResult(
         disc_type=DiscType.BLURAY,
-        titles=[ScanTitle(index=i, duration_seconds=2700, source_playlist=t["SourceFile"]) for i, t in enumerate(titles)],
+        titles=[
+            ScanTitle(index=i, duration_seconds=2700, source_playlist=t["SourceFile"]) for i, t in enumerate(titles)
+        ],
     )
 
 
