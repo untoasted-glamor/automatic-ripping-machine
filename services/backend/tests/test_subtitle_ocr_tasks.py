@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 os.environ.setdefault("DATABASE_URL", "postgresql://x:x@localhost/x")
 os.environ.setdefault("ARM_SERVICE_TOKEN", "tok-service")
 
+from fastapi import Response  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from arm_backend.auto_session import _retry_failed_tasks  # noqa: E402
@@ -434,7 +435,7 @@ async def test_job_detail_rollup_and_track_status_are_the_encodes() -> None:
     assert progress is not None and (progress.state, progress.tasks_total) == ("done", 1)
     assert detail.tracks[0].transcode_status == TranscodeTaskStatus.DONE
 
-    jobs = await jobs_router.list_jobs(None, db, None, None, 50, 0)  # type: ignore[arg-type]
+    jobs = await jobs_router.list_jobs(Response(), None, db, None, None, 50, 0)  # type: ignore[arg-type]
     assert jobs[0].transcode_progress is not None and jobs[0].transcode_progress.tasks_total == 1
 
 

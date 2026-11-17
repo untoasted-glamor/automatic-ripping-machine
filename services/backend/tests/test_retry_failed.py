@@ -133,6 +133,9 @@ def _jobs(db: FakeSession, hub: _Hub) -> tuple[TestClient, dict[str, str]]:
 
 
 class _Dispatcher:
+    # The identify flow reads the attempts of each call (upstream #376).
+    last_attempts: list[dict[str, Any]] = []
+
     async def identify(self, _scan: Any, _cfg: Any, **_kw: Any) -> None:
         return None
 

@@ -515,7 +515,7 @@ _EPISODES_S3 = _episodes("3")
 def _scan(titles: list[dict[str, Any]]) -> ScanResult:
     return ScanResult(
         disc_type=DiscType.BLURAY,
-        titles=[ScanTitle(index=i, duration_seconds=2700, source_file=t["SourceFile"]) for i, t in enumerate(titles)],
+        titles=[ScanTitle(index=i, duration_seconds=2700, source_playlist=t["SourceFile"]) for i, t in enumerate(titles)],
     )
 
 
