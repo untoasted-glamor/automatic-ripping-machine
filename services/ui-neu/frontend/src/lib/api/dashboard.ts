@@ -120,7 +120,11 @@ export async function fetchDashboard(): Promise<DashboardData> {
 		iso_source_kinds: s.iso_source_kinds ?? {},
 		drive_source_kinds: s.drive_source_kinds ?? {},
 		notification_count: s.notification_count ?? 0,
-		ripping_enabled: s.ripping_enabled ?? true
+		ripping_enabled: s.ripping_enabled ?? true,
+		// Still absent (undefined) until a config read has succeeded.
+		hold_for_review: s.hold_for_review ?? undefined,
+		review_requires_confirm: s.review_requires_confirm ?? undefined,
+		manual_wait_seconds: s.manual_wait_seconds ?? undefined
 	};
 }
 

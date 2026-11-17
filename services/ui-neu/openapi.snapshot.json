@@ -203,7 +203,7 @@
           "ripper"
         ],
         "summary": "Heartbeat",
-        "description": "Each ripper posts here every HEARTBEAT_INTERVAL_SECONDS with the\ncurrent CDROM_DRIVE_STATUS reading. The manual-trigger endpoint\nreads `media_status` + `media_status_at` to refuse clicks made\nagainst an empty / open tray, instead of letting identify land an\nempty scan_result.\n\n`last_seen_at` is bumped on every call so the drive's online state\nis implicitly refreshed too \u2014 no separate liveness ping needed.",
+        "description": "Each ripper posts here every HEARTBEAT_INTERVAL_SECONDS with the\ncurrent CDROM_DRIVE_STATUS reading. The manual-trigger endpoint\nreads `media_status` + `media_status_at` to refuse clicks made\nagainst an empty / open tray, instead of letting identify land an\nempty scan_result.\n\n`last_seen_at` is bumped on every call so the drive's online state\nis implicitly refreshed too \u2014 no separate liveness ping needed.\n\n`scan` (a disc scan in progress, if any) is overwritten on every call,\nso a heartbeat without it (not scanning, or an older ripper) clears the\nprevious report. The drives API shows it to the UI.",
         "operationId": "heartbeat_api_ripper_heartbeat_post",
         "requestBody": {
           "content": {
@@ -859,6 +859,54 @@
         }
       }
     },
+    "/api/ripper/drives/{drive_id}/remux-job": {
+      "get": {
+        "tags": [
+          "ripper"
+        ],
+        "summary": "Get Remux Job",
+        "description": "The oldest job on this drive remuxing from its kept disc backup, if any.\n\nThe idle ripper's pickup for its remux lane: covers a missed `rip.retry`, a ripper restart mid-remux, and a\nretry started while the lane was busy. Off the drive, so it is answered with or without a disc seated. 404\nwhen the drive is unknown or nothing is remuxing.",
+        "operationId": "get_remux_job_api_ripper_drives__drive_id__remux_job_get",
+        "security": [
+          {
+            "ServiceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "drive_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Drive Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/ripper/drives/{drive_id}/held-job": {
       "get": {
         "tags": [
@@ -1011,6 +1059,70 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TrackView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ripper/jobs/{job_id}/rip-parked": {
+      "post": {
+        "tags": [
+          "ripper"
+        ],
+        "summary": "Rip Parked",
+        "description": "The ripper backed the disc up whole, copied its menu and stopped before the remux (`park_after_backup`,\nfork only). The job waits at stop 2 (`awaiting_titles`) off the drive, and `sweep_choose_titles` opens it once\nthe menu has named the titles. Idempotent: a repeat (the ripper retrying the call) returns the parked job.",
+        "operationId": "rip_parked_api_ripper_jobs__job_id__rip_parked_post",
+        "security": [
+          {
+            "ServiceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "x-arm-hostname",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Arm-Hostname"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobView"
                 }
               }
             }
@@ -1571,6 +1683,55 @@
         }
       }
     },
+    "/api/jobs/{job_id}/retry-failed": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Retry Failed",
+        "description": "Rip the job's kept titles that have no file (track-select plan S15):\nthe ones that failed, and the ones left out before the rip and kept since.\n\nFailed titles go back to `queued` (their error cleared; `attempts` counts\non when the retry starts them), and the job is armed (`retry_armed`). Its\nDONE titles and their files are left as they are.\n\nWith a finished disc backup kept in `/raw/<job_id>/.backup/`, the job goes\nto `remuxing` and its drive's ripper is told (`rip.retry`) to remux them\nfrom it, with no disc, beside a rip of whatever disc is in the drive.\nOtherwise the retry starts when the disc goes back in that drive: identify\nfinds the armed job by fingerprint and rips it.\n\n409 unless the job is ripped, ripped_partial or failed with a stored scan,\nripped on a physical drive still enrolled (and, for a retry that needs the\ndisc, not busy with another one); 422 when every kept title already has\nits file.",
+        "operationId": "retry_failed_api_jobs__job_id__retry_failed_post",
+        "security": [
+          {
+            "UserJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetryFailedResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/jobs/{job_id}/rip-again": {
       "post": {
         "tags": [
@@ -1626,7 +1787,7 @@
           "jobs"
         ],
         "summary": "Review Pause",
-        "description": "Pause/resume ONE held disc's review countdown (per-job pause, spec \u00a711).\n\n`?paused=true` freezes this disc's auto-start countdown (waits indefinitely\nfor Start) while other discs keep counting; `?paused=false` resumes with a\nFRESH countdown (new wait_start_time) so it doesn't auto-rip instantly on a\nlong-paused disc. Only valid for AWAITING_REVIEW. Emits a WS command so the\nparked ripper re-evaluates the countdown on its next poll.",
+        "description": "Pause/resume ONE held disc's review countdown (per-job pause, spec \u00a711).\n\n`?paused=true` freezes this disc's auto-start countdown (waits indefinitely\nfor Start) while other discs keep counting; `?paused=false` resumes with a\nFRESH countdown (new wait_start_time) so it doesn't auto-rip instantly on a\nlong-paused disc. Valid for AWAITING_REVIEW, and for AWAITING_TITLES (stop 2,\nfork only; a resume before stop 2 opens leaves it to open as usual). Emits a\nWS command so the parked ripper re-evaluates the countdown on its next poll.",
         "operationId": "review_pause_api_jobs__job_id__review_pause_post",
         "security": [
           {
@@ -1665,6 +1826,48 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/backup": {
+      "delete": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Delete Job Backup",
+        "description": "Delete the job's raw disc backup (`/raw/{job_id}/.backup/`).\n\nThe ripper keeps it only when a kept title failed to remux, so a retry\nneeds no disc; deleting it frees the space (~25\u201350 GB for a Blu-ray) at\nthe cost of re-reading the disc for that retry. The rip files and the\njob stay. Refused while the job is ripping or remuxing (the ripper is\nwriting or reading the backup); a job with no backup is a no-op.",
+        "operationId": "delete_job_backup_api_jobs__job_id__backup_delete",
+        "security": [
+          {
+            "UserJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
           },
           "422": {
             "description": "Validation Error",
@@ -1816,6 +2019,187 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ResolveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/track-selection": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Get Track Selection",
+        "description": "The job's track selection for the picker: its override, the default\nit would get without one (from `session_id` when given, as Apply session\ndoes), the languages on the disc's kept titles, and whether the job page\ncan still change it.",
+        "operationId": "get_track_selection_api_jobs__job_id__track_selection_get",
+        "security": [
+          {
+            "UserJWT": []
+          },
+          {}
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobTrackSelectionView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Put Track Selection",
+        "description": "Set (or, with null, clear) the job's own track selection and its text\nsubtitles choice. A body naming only `subtitle_ocr` leaves the track\nselection as it is. Refused once one of the job's transcode tasks has\nbeen claimed; Apply session sets them for a re-transcode instead, and\nMake text subtitles reads finished encodes.",
+        "operationId": "put_track_selection_api_jobs__job_id__track_selection_put",
+        "security": [
+          {
+            "UserJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobTrackSelectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobTrackSelectionView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/subtitle-ocr": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Request Subtitle Ocr",
+        "description": "Make text subtitles (`.srt`) for the job's finished encodes that wrote\nimage subtitles, after the fact. An encode whose `.srt` files exist is\nskipped unless `overwrite`; one with a text subtitles task already\nqueued or running is skipped either way. 409 while text subtitles are\noff in Settings.",
+        "operationId": "request_subtitle_ocr_api_jobs__job_id__subtitle_ocr_post",
+        "security": [
+          {
+            "UserJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubtitleOcrRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubtitleOcrResponse"
                 }
               }
             }
@@ -7714,6 +8098,438 @@
           }
         }
       }
+    },
+    "/api/jobs/{job_id}/disc-menu": {
+      "get": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Get Disc Menu",
+        "description": "The job's disc menu: its track, the newest preview (pages and buttons) and the proposed names.",
+        "operationId": "get_disc_menu_api_jobs__job_id__disc_menu_get",
+        "security": [
+          {
+            "UserJWT": []
+          },
+          {}
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDiscMenuView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/disc-menu/files/{folder}/{name}": {
+      "get": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Get Disc Menu File",
+        "description": "A page image (`pages/<n>.jpg`) or button crop (`crops/<n>.b<id>.png`) of the newest preview.",
+        "operationId": "get_disc_menu_file_api_jobs__job_id__disc_menu_files__folder___name__get",
+        "security": [
+          {
+            "UserJWT": []
+          },
+          {}
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "folder",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Folder"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/disc-menu/preview": {
+      "post": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Request Disc Menu Preview",
+        "description": "Preview the menu again (after a failed preview, or to read it with newer rules). 409 when it can't run.",
+        "operationId": "request_disc_menu_preview_api_jobs__job_id__disc_menu_preview_post",
+        "security": [
+          {
+            "UserJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDiscMenuView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/disc-menu/pack": {
+      "post": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Request Disc Menu Pack",
+        "description": "Build the menu pack again from the copied menu and the job's encodes. 409 when it can't (with why).",
+        "operationId": "request_disc_menu_pack_api_jobs__job_id__disc_menu_pack_post",
+        "security": [
+          {
+            "UserJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDiscMenuView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Delete Disc Menu Pack",
+        "description": "Remove the job's menu pack folders from the show folder (only those whose `menu.json` still names the\njob). The copied menu stays, so Build makes it again. 404 when there is none.",
+        "operationId": "delete_disc_menu_pack_api_jobs__job_id__disc_menu_pack_delete",
+        "security": [
+          {
+            "UserJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDiscMenuView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/disc-menu/proposals/{proposal_id}": {
+      "patch": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Update Proposal",
+        "description": "Edit a proposal's role, name or season 0 number, and accept, reject or reopen it. Accepting an applied\nproposal again with a new name renames the encode again. 409 when it can't be applied (with why).",
+        "operationId": "update_proposal_api_jobs__job_id__disc_menu_proposals__proposal_id__patch",
+        "security": [
+          {
+            "UserJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Proposal Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MenuProposalUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MenuProposalView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/disc-menu/proposals": {
+      "post": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Create Proposal",
+        "description": "Name one of the job's titles by hand, and apply it.",
+        "operationId": "create_proposal_api_jobs__job_id__disc_menu_proposals_post",
+        "security": [
+          {
+            "UserJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MenuProposalCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MenuProposalView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/disc-menu/proposals/accept-all": {
+      "post": {
+        "tags": [
+          "disc-menus"
+        ],
+        "summary": "Accept All Proposals",
+        "description": "Accept every proposed name. One that can't be applied stays proposed, with why.",
+        "operationId": "accept_all_proposals_api_jobs__job_id__disc_menu_proposals_accept_all_post",
+        "security": [
+          {
+            "UserJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^job_[0-9A-HJKMNP-TV-Z]{26}$",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MenuProposalAcceptAllResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -7740,6 +8556,27 @@
             "type": "boolean",
             "title": "Overwrite",
             "default": false
+          },
+          "track_selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackSelectionSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subtitle_ocr": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle Ocr"
           }
         },
         "type": "object",
@@ -7835,6 +8672,29 @@
         },
         "type": "object",
         "title": "AppriseChannelConfig"
+      },
+      "AudioFormat": {
+        "type": "string",
+        "enum": [
+          "preset",
+          "aac_best",
+          "ac3_else_aac51",
+          "aac_stereo",
+          "aac_51",
+          "copy"
+        ],
+        "title": "AudioFormat",
+        "description": "What each kept audio track becomes (when ARM picks the audio tracks).\n\n`preset` leaves it to the engine (HandBrake: the preset's audio encoders;\nffmpeg VAAPI: every track copied). `aac_best` keeps one track per\nlanguage: its best track (lossless TrueHD first) converted to AAC with up\nto 5.1 channels. `ac3_else_aac51` keeps one track per language: an\nuntouched copy of its AC-3 (Dolby Digital) track, else its best track\nconverted to AAC with up to 5.1 channels. `aac_stereo`\nconverts every kept track to AAC stereo, `aac_51` to AAC with up to 5.1\nchannels, and `copy` keeps every kept track untouched."
+      },
+      "AudioSelection": {
+        "type": "string",
+        "enum": [
+          "preset",
+          "all",
+          "languages"
+        ],
+        "title": "AudioSelection",
+        "description": "Which source audio tracks a transcode preset keeps.\n\n`preset` leaves the choice to the engine (HandBrake: the preset's own\nrule, which keeps the first track; ffmpeg VAAPI: every track). `all`\nkeeps every track in source order; `languages` keeps the tracks whose\nlanguage is in the preset's ordered `audio_languages` list."
       },
       "BashChannelConfig": {
         "properties": {
@@ -8442,6 +9302,14 @@
             "type": "string",
             "title": "Output Path"
           },
+          "sidecar_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 256,
+            "title": "Sidecar Paths"
+          },
           "size_bytes": {
             "anyOf": [
               {
@@ -8926,6 +9794,17 @@
             ],
             "title": "Manual Wait Seconds"
           },
+          "review_requires_confirm": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Requires Confirm"
+          },
           "on_previously_ripped": {
             "anyOf": [
               {
@@ -8935,6 +9814,39 @@
                 "type": "null"
               }
             ]
+          },
+          "rip_disc_menus": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rip Disc Menus"
+          },
+          "subtitle_ocr_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle Ocr Enabled"
+          },
+          "subtitle_ocr_default_on": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle Ocr Default On"
           },
           "notifications_enabled": {
             "anyOf": [
@@ -9188,8 +10100,27 @@
             "type": "integer",
             "title": "Manual Wait Seconds"
           },
+          "review_requires_confirm": {
+            "type": "boolean",
+            "title": "Review Requires Confirm"
+          },
           "on_previously_ripped": {
             "$ref": "#/components/schemas/PreviouslyRippedAction"
+          },
+          "rip_disc_menus": {
+            "type": "boolean",
+            "title": "Rip Disc Menus"
+          },
+          "subtitle_ocr_enabled": {
+            "type": "boolean",
+            "title": "Subtitle Ocr Enabled"
+          },
+          "subtitle_ocr_default_on": {
+            "type": "boolean",
+            "title": "Subtitle Ocr Default On"
+          },
+          "subtitle_ocr_model": {
+            "$ref": "#/components/schemas/SubtitleOcrModelView"
           },
           "default_retention_policy": {
             "$ref": "#/components/schemas/RetentionPolicy"
@@ -9339,7 +10270,12 @@
           "ripping_paused",
           "hold_for_review",
           "manual_wait_seconds",
+          "review_requires_confirm",
           "on_previously_ripped",
+          "rip_disc_menus",
+          "subtitle_ocr_enabled",
+          "subtitle_ocr_default_on",
+          "subtitle_ocr_model",
           "default_retention_policy",
           "notification_apprise_urls",
           "notifications_enabled",
@@ -9531,6 +10467,48 @@
         ],
         "title": "DiscFingerprintView"
       },
+      "DiscLanguageTracks": {
+        "properties": {
+          "language": {
+            "type": "string",
+            "title": "Language"
+          },
+          "language_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language Name"
+          },
+          "tracks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tracks"
+          },
+          "title_count": {
+            "type": "integer",
+            "title": "Title Count",
+            "default": 0
+          },
+          "forced_only": {
+            "type": "boolean",
+            "title": "Forced Only",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "language"
+        ],
+        "title": "DiscLanguageTracks",
+        "description": "One language the disc's kept titles carry, for the track picker."
+      },
       "DiscRouteSummary": {
         "properties": {
           "kind": {
@@ -9598,6 +10576,31 @@
         ],
         "title": "DiscRouteSummary",
         "description": "What one kind of disc gets with no drive default and no per-rip choice."
+      },
+      "DiscTrackLanguages": {
+        "properties": {
+          "audio": {
+            "items": {
+              "$ref": "#/components/schemas/DiscLanguageTracks"
+            },
+            "type": "array",
+            "title": "Audio"
+          },
+          "subtitles": {
+            "items": {
+              "$ref": "#/components/schemas/DiscLanguageTracks"
+            },
+            "type": "array",
+            "title": "Subtitles"
+          },
+          "known": {
+            "type": "boolean",
+            "title": "Known",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "DiscTrackLanguages"
       },
       "DiscType": {
         "type": "string",
@@ -9792,6 +10795,40 @@
               }
             ],
             "title": "Media Status At"
+          },
+          "scan_started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Started At"
+          },
+          "scan_attempt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Attempt"
+          },
+          "scan_max_attempts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Max Attempts"
           },
           "rip_params_json": {
             "additionalProperties": true,
@@ -10375,6 +11412,40 @@
             ],
             "title": "Media Status At"
           },
+          "scan_started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Started At"
+          },
+          "scan_attempt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Attempt"
+          },
+          "scan_max_attempts": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Max Attempts"
+          },
           "default_session_id": {
             "anyOf": [
               {
@@ -10936,6 +12007,14 @@
             "type": "string",
             "minLength": 1,
             "title": "Last Error"
+          },
+          "sidecar_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 256,
+            "title": "Sidecar Paths"
           }
         },
         "type": "object",
@@ -12116,6 +13195,29 @@
             "title": "Manual Pause",
             "default": false
           },
+          "track_selection": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Selection"
+          },
+          "subtitle_ocr": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle Ocr"
+          },
           "started_at": {
             "anyOf": [
               {
@@ -12299,6 +13401,36 @@
                 "type": "null"
               }
             ]
+          },
+          "raw_backup": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RawBackupView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subtitle_ocr": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobSubtitleOcrView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parks_after_backup": {
+            "type": "boolean",
+            "title": "Parks After Backup",
+            "default": false
+          },
+          "retry_backs_up": {
+            "type": "boolean",
+            "title": "Retry Backs Up",
+            "default": false
           }
         },
         "type": "object",
@@ -12307,6 +13439,88 @@
           "tracks"
         ],
         "title": "JobDetailView"
+      },
+      "JobDiscMenuView": {
+        "properties": {
+          "track_id": {
+            "type": "string",
+            "title": "Track Id"
+          },
+          "track_status": {
+            "$ref": "#/components/schemas/TrackStatus"
+          },
+          "track_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Error"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MenuPreviewView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/MenuProposalView"
+            },
+            "type": "array",
+            "title": "Proposals"
+          },
+          "can_preview": {
+            "type": "boolean",
+            "title": "Can Preview",
+            "default": false
+          },
+          "pack": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MenuPackView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pack_refusal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pack Refusal"
+          }
+        },
+        "type": "object",
+        "required": [
+          "track_id",
+          "track_status"
+        ],
+        "title": "JobDiscMenuView"
       },
       "JobFlags": {
         "properties": {
@@ -12323,6 +13537,11 @@
           "rerip_allowed": {
             "type": "boolean",
             "title": "Rerip Allowed",
+            "default": false
+          },
+          "parked": {
+            "type": "boolean",
+            "title": "Parked",
             "default": false
           }
         },
@@ -12583,10 +13802,183 @@
           "ripped_partial",
           "awaiting_review",
           "ripped_awaiting_identify",
+          "remuxing",
+          "awaiting_titles",
           "abandoned",
           "failed"
         ],
         "title": "JobStatus"
+      },
+      "JobSubtitleOcrChoice": {
+        "properties": {
+          "override": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override"
+          },
+          "default": {
+            "type": "boolean",
+            "title": "Default"
+          },
+          "effective": {
+            "type": "boolean",
+            "title": "Effective"
+          }
+        },
+        "type": "object",
+        "required": [
+          "default",
+          "effective"
+        ],
+        "title": "JobSubtitleOcrChoice",
+        "description": "A job's text subtitles choice. `effective` is what its encodes get on\ncompletion: `override` when set, else `default` (the Settings default)."
+      },
+      "JobSubtitleOcrView": {
+        "properties": {
+          "override": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override"
+          },
+          "default": {
+            "type": "boolean",
+            "title": "Default"
+          },
+          "effective": {
+            "type": "boolean",
+            "title": "Effective"
+          },
+          "eligible_encodes": {
+            "type": "integer",
+            "title": "Eligible Encodes",
+            "default": 0
+          },
+          "with_text_subtitles": {
+            "type": "integer",
+            "title": "With Text Subtitles",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "default",
+          "effective"
+        ],
+        "title": "JobSubtitleOcrView",
+        "description": "The job page's text subtitles: the choice, and what Make text\nsubtitles would read."
+      },
+      "JobTrackSelectionRequest": {
+        "properties": {
+          "track_selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackSelectionSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subtitle_ocr": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle Ocr"
+          }
+        },
+        "type": "object",
+        "title": "JobTrackSelectionRequest",
+        "description": "PUT /api/jobs/{id}/track-selection. Null clears the override."
+      },
+      "JobTrackSelectionView": {
+        "properties": {
+          "override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackSelectionSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "default": {
+            "$ref": "#/components/schemas/TrackSelectionSettings"
+          },
+          "default_source": {
+            "type": "string",
+            "title": "Default Source"
+          },
+          "default_preset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Preset Id"
+          },
+          "effective": {
+            "$ref": "#/components/schemas/TrackSelectionSettings"
+          },
+          "disc": {
+            "$ref": "#/components/schemas/DiscTrackLanguages"
+          },
+          "editable": {
+            "type": "boolean",
+            "title": "Editable"
+          },
+          "locked_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked Reason"
+          },
+          "subtitle_ocr": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobSubtitleOcrChoice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "default",
+          "default_source",
+          "effective",
+          "disc",
+          "editable"
+        ],
+        "title": "JobTrackSelectionView",
+        "description": "GET /api/jobs/{id}/track-selection: what the picker needs.\n\n`effective` is what the job's transcodes use: `override` when set, else\n`default`, the track fields of the transcode preset this job would use\n(`default_source` names it), or the built-in default when no preset is\nknown yet."
       },
       "JobUpdateRequest": {
         "properties": {
@@ -12830,6 +14222,16 @@
             "type": "boolean",
             "title": "Manual Pause",
             "default": false
+          },
+          "track_selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackSelectionSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "rip_progress": {
             "anyOf": [
@@ -13430,6 +14832,817 @@
           "percent"
         ],
         "title": "MemoryInfo"
+      },
+      "MenuExtract": {
+        "properties": {
+          "track_id": {
+            "type": "string",
+            "title": "Track Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "track_id"
+        ],
+        "title": "MenuExtract",
+        "description": "The disc menu the ripper copies out of the disc (fork only): its track."
+      },
+      "MenuKind": {
+        "type": "string",
+        "enum": [
+          "hdmv",
+          "bdj",
+          "dvd",
+          "none",
+          "unknown"
+        ],
+        "title": "MenuKind",
+        "description": "What a disc's menu is, found at scan time (`arm_ripper.menus.probe`,\nfork only): `ScanResult.menu_kind`."
+      },
+      "MenuPackItem": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "title": "File"
+          },
+          "episode": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode"
+          },
+          "season": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Season"
+          },
+          "extra": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extra"
+          },
+          "bd_clip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bd Clip"
+          },
+          "bd_playlist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bd Playlist"
+          },
+          "dvd_title": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dvd Title"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "MenuPackItem",
+        "description": "One library file a disc menu pack's cells play, and which disc title it is (fork only, disc menus A3).\n\n`file` is relative to the media root. It is an episode (`episode`, with `season` when it isn't the disc's: 0\nfor a special), an extra (`extra`, its path under the show folder: `trailers/...`, `other/...`, `extras/...`)\nor, on a movie disc, neither. The disc title is a Blu-ray clip (`bd_clip`, a title of one clip: every play of\nit, the episode buttons' marks into a play-all included), a Blu-ray playlist (`bd_playlist`, a title of\nseveral clips) or a DVD title number (`dvd_title`, the whole title)."
+      },
+      "MenuPackPlan": {
+        "properties": {
+          "pack_dir": {
+            "type": "string",
+            "title": "Pack Dir"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "season": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Season"
+          },
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MenuPackItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pack_dir",
+          "name",
+          "job_id"
+        ],
+        "title": "MenuPackPlan",
+        "description": "What a `menu_pack` task builds (fork only, disc menus A3): `pack_dir` (relative to the media root,\n`<show folder>/.discmenus/<disc>`) unless another job's pack holds it, the disc's name and season, the job\nthat owns the pack, and the library items. `notes` says what the backend left out of the map, and why."
+      },
+      "MenuPackView": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TranscodeTaskStatus"
+          },
+          "progress_pct": {
+            "type": "integer",
+            "title": "Progress Pct"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "status",
+          "progress_pct"
+        ],
+        "title": "MenuPackView",
+        "description": "The newest `menu_pack` task: the pack Jellyfin plays, in the show folder's `.discmenus/`."
+      },
+      "MenuPreviewButtonView": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "box": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Box"
+          },
+          "visible": {
+            "type": "boolean",
+            "title": "Visible"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label",
+            "default": ""
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "crop": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crop"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "plays",
+              "page",
+              "stays",
+              "stopped"
+            ],
+            "title": "Outcome"
+          },
+          "plays": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plays"
+          },
+          "goes_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goes To"
+          },
+          "track_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Id"
+          },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Id"
+          },
+          "title_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title Index"
+          },
+          "clip_titles": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Clip Titles",
+            "default": []
+          },
+          "whole_title_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Whole Title Index"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "box",
+          "visible",
+          "outcome"
+        ],
+        "title": "MenuPreviewButtonView"
+      },
+      "MenuPreviewPageView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "at": {
+            "type": "string",
+            "title": "At"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language"
+          },
+          "image": {
+            "type": "string",
+            "title": "Image"
+          },
+          "size": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Size"
+          },
+          "buttons": {
+            "items": {
+              "$ref": "#/components/schemas/MenuPreviewButtonView"
+            },
+            "type": "array",
+            "title": "Buttons"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "at",
+          "language",
+          "image",
+          "size",
+          "buttons"
+        ],
+        "title": "MenuPreviewPageView"
+      },
+      "MenuPreviewView": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TranscodeTaskStatus"
+          },
+          "progress_pct": {
+            "type": "integer",
+            "title": "Progress Pct"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "disc": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "bd",
+                  "dvd"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disc"
+          },
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/MenuPreviewPageView"
+            },
+            "type": "array",
+            "title": "Pages"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notes"
+          },
+          "unsupported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unsupported"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "status",
+          "progress_pct"
+        ],
+        "title": "MenuPreviewView"
+      },
+      "MenuProposalAcceptAllResponse": {
+        "properties": {
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/MenuProposalView"
+            },
+            "type": "array",
+            "title": "Proposals"
+          },
+          "refused": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Refused"
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposals"
+        ],
+        "title": "MenuProposalAcceptAllResponse"
+      },
+      "MenuProposalCreate": {
+        "properties": {
+          "track_id": {
+            "type": "string",
+            "title": "Track Id"
+          },
+          "role": {
+            "$ref": "#/components/schemas/TrackRole"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "episode_number": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 9999.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Number"
+          },
+          "page": {
+            "type": "string",
+            "title": "Page",
+            "default": ""
+          },
+          "button": {
+            "type": "integer",
+            "title": "Button",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "track_id",
+          "role",
+          "name"
+        ],
+        "title": "MenuProposalCreate",
+        "description": "Name a title by hand from the menu panel, and apply it."
+      },
+      "MenuProposalStatus": {
+        "type": "string",
+        "enum": [
+          "proposed",
+          "accepted",
+          "applied",
+          "rejected",
+          "info"
+        ],
+        "title": "MenuProposalStatus",
+        "description": "Where a name proposed from a disc menu button stands (fork only, disc\nmenus plan v5, M2-M4).\n\n`proposed`: made by a menu preview, not yet looked at. `accepted`: the\nowner took it (maybe edited) and its encode isn't finished, so the rename\nwaits for it. `applied`: the track carries the name and its finished\nencode has been renamed. `rejected`: the owner turned it down. `info`:\nnothing to apply (an episode button that confirms or contradicts identity,\na play-all, a title that wasn't ripped)."
+      },
+      "MenuProposalUpdate": {
+        "properties": {
+          "role": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackRole"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "episode_number": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 9999.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Number"
+          },
+          "action": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "accept",
+                  "reject",
+                  "reopen"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          }
+        },
+        "type": "object",
+        "title": "MenuProposalUpdate",
+        "description": "Edit a proposal and/or decide it. `accept` applies it: the track takes\nthe role and name, and its finished encode is renamed (or will be, when\nits encode finishes). `reject` sets it aside; `reopen` puts a rejected one\nback."
+      },
+      "MenuProposalView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "track_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Id"
+          },
+          "scan_title": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Title"
+          },
+          "page": {
+            "type": "string",
+            "title": "Page"
+          },
+          "button": {
+            "type": "integer",
+            "title": "Button"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "plays": {
+            "type": "string",
+            "title": "Plays"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrackRole"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "episode_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Number"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MenuProposalStatus"
+          },
+          "applied_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied Path"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "job_id",
+          "track_id",
+          "page",
+          "button",
+          "label",
+          "score",
+          "plays",
+          "role",
+          "name",
+          "episode_number",
+          "note",
+          "status",
+          "applied_path",
+          "last_error"
+        ],
+        "title": "MenuProposalView"
       },
       "MetadataCandidate": {
         "properties": {
@@ -14875,6 +17088,25 @@
         "title": "PreviouslyRippedAction",
         "description": "What identify does with a disc whose fingerprint matches an earlier rip\n(a job in POST_RIP_JOB_STATUSES, on any drive)."
       },
+      "RawBackupView": {
+        "properties": {
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          },
+          "complete": {
+            "type": "boolean",
+            "title": "Complete"
+          }
+        },
+        "type": "object",
+        "required": [
+          "size_bytes",
+          "complete"
+        ],
+        "title": "RawBackupView",
+        "description": "The job's raw disc backup under `/raw/<job_id>/.backup/`: a decrypted\ncopy of the disc (an ISO image for a DVD, a folder for a Blu-ray) the\nripper remuxes kept titles from. Kept only while a title still needs it."
+      },
       "RegisterRequest": {
         "properties": {
           "drive_id": {
@@ -14964,12 +17196,36 @@
             "$ref": "#/components/schemas/TrackView"
           },
           "raw_input_path": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Raw Input Path"
           },
           "media_root": {
             "type": "string",
             "title": "Media Root"
+          },
+          "input_sidecar_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Input Sidecar Paths"
+          },
+          "menu_pack": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MenuPackPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -14982,7 +17238,7 @@
           "media_root"
         ],
         "title": "RegisterTranscoderResponse",
-        "description": "Bootstrap bundle the transcoder needs before it can claim + run.\n\n`raw_input_path` is the absolute path the transcoder should read from\n(`/raw/<job>/title_tNN.mkv` for video, `/raw/<job>/track_NN.wav` for\naudio, `/raw/<job>/dump.iso` for data). `media_root` plus the task's\n`output_path` is where the final file lands."
+        "description": "Bootstrap bundle the transcoder needs before it can claim + run.\n\nFor an `encode` task, `raw_input_path` is the absolute path the\ntranscoder should read from (`/raw/<job>/title_tNN.mkv` for video,\n`/raw/<job>/track_NN.wav` for audio, `/raw/<job>/dump.iso` for data).\n`media_root` plus the task's `output_path` is where the final file lands.\n\nA `subtitle_ocr` task has no raw input and no preset: it reads\n`input_sidecar_paths` (the image subtitle sidecars of its parent encode\ntask, relative to `media_root`) and writes a `.srt` beside each.\n\nA `menu_pack` task's `raw_input_path` is the job's copied disc menu, and\n`menu_pack` says what to build from it."
       },
       "RenameRequest": {
         "properties": {
@@ -15253,6 +17509,29 @@
           "custom"
         ],
         "title": "RetentionPolicy"
+      },
+      "RetryFailedResponse": {
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/JobView"
+          },
+          "retried": {
+            "type": "integer",
+            "title": "Retried"
+          },
+          "from_backup": {
+            "type": "boolean",
+            "title": "From Backup"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job",
+          "retried",
+          "from_backup"
+        ],
+        "title": "RetryFailedResponse",
+        "description": "POST /api/jobs/{id}/retry-failed. `retried` kept titles with no file\n(failed, or left out before the rip and kept since) are queued to rip.\n`from_backup`: the job keeps a finished disc backup and its drive's ripper\nwas told to remux them from it, with no disc; otherwise the job is armed\nand the retry starts when the disc goes back in that drive."
       },
       "RipAgainResponse": {
         "properties": {
@@ -15544,6 +17823,40 @@
               }
             ],
             "title": "Min Length Seconds"
+          },
+          "scan_titles": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ScanTitle"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scan Titles"
+          },
+          "retry": {
+            "type": "boolean",
+            "title": "Retry",
+            "default": false
+          },
+          "extract_menu": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MenuExtract"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "park_after_backup": {
+            "type": "boolean",
+            "title": "Park After Backup",
+            "default": false
           }
         },
         "type": "object",
@@ -15590,6 +17903,16 @@
             "type": "integer",
             "title": "Manual Wait Seconds",
             "default": 60
+          },
+          "review_requires_confirm": {
+            "type": "boolean",
+            "title": "Review Requires Confirm",
+            "default": false
+          },
+          "hold_for_review": {
+            "type": "boolean",
+            "title": "Hold For Review",
+            "default": true
           }
         },
         "type": "object",
@@ -15607,6 +17930,16 @@
           },
           "media_status": {
             "$ref": "#/components/schemas/DriveMediaStatus"
+          },
+          "scan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RipperScanActivity"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -15615,7 +17948,34 @@
           "media_status"
         ],
         "title": "RipperHeartbeatRequest",
-        "description": "POST /api/ripper/heartbeat body. Each ripper sends one of these\nevery HEARTBEAT_INTERVAL_SECONDS so the backend can refuse manual-\ntrigger requests against drives whose tray is open / empty without\nwaiting for a doomed identify.\n\nNamed distinctly from the transcoder HeartbeatRequest because the\ntwo services post completely different payloads to different paths."
+        "description": "POST /api/ripper/heartbeat body. Each ripper sends one of these\nevery HEARTBEAT_INTERVAL_SECONDS so the backend can refuse manual-\ntrigger requests against drives whose tray is open / empty without\nwaiting for a doomed identify. It also sends one at once when a disc\nscan starts, moves to a retry, or ends.\n\nNamed distinctly from the transcoder HeartbeatRequest because the\ntwo services post completely different payloads to different paths."
+      },
+      "RipperScanActivity": {
+        "properties": {
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Attempt"
+          },
+          "max_attempts": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Attempts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "started_at",
+          "attempt",
+          "max_attempts"
+        ],
+        "title": "RipperScanActivity",
+        "description": "A disc scan in progress on the reporting ripper's drive.\n\nThe scan runs before identify creates a job and can take minutes across\nnot-ready retries, so this is the only sign the drive is busy.\n`started_at` is when the first attempt began (elapsed time spans\nretries); `attempt` is the 1-based attempt running or being backed off\nbefore."
       },
       "ScanResult": {
         "properties": {
@@ -15683,6 +18043,27 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Raw"
+          },
+          "min_length_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Length Seconds"
+          },
+          "menu_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MenuKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -15691,6 +18072,104 @@
         ],
         "title": "ScanResult"
       },
+      "ScanStream": {
+        "properties": {
+          "index": {
+            "type": "integer",
+            "title": "Index"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "audio",
+              "subtitle"
+            ],
+            "title": "Kind"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language",
+            "default": "und"
+          },
+          "language_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language Name"
+          },
+          "codec_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codec Id"
+          },
+          "codec": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codec"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "channels": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channels"
+          },
+          "forced": {
+            "type": "boolean",
+            "title": "Forced",
+            "default": false
+          },
+          "derived": {
+            "type": "boolean",
+            "title": "Derived",
+            "default": false
+          },
+          "default": {
+            "type": "boolean",
+            "title": "Default",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "index",
+          "kind"
+        ],
+        "title": "ScanStream",
+        "description": "One audio or subtitle stream of a scanned title (MakeMKV `SINFO`).\n\nWhat the disc offers, for the track picker; the transcoder still probes\nthe ripped file, since MakeMKV's own stream selection can leave a stream\n(e.g. a derived forced-only subtitle) out of the rip."
+      },
       "ScanTitle": {
         "properties": {
           "index": {
@@ -15698,7 +18177,14 @@
             "title": "Index"
           },
           "duration_seconds": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Duration Seconds"
           },
           "chapter_count": {
@@ -15733,6 +18219,57 @@
               }
             ],
             "title": "Source File"
+          },
+          "source_playlist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Playlist"
+          },
+          "original_title_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Title Id"
+          },
+          "segment_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Segment Count"
+          },
+          "segment_map": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Segment Map"
+          },
+          "streams": {
+            "items": {
+              "$ref": "#/components/schemas/ScanStream"
+            },
+            "type": "array",
+            "title": "Streams"
           }
         },
         "type": "object",
@@ -16645,6 +19182,132 @@
         ],
         "title": "StorageRoot"
       },
+      "SubtitleOcrModelView": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "size": {
+            "type": "integer",
+            "title": "Size"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          },
+          "licence": {
+            "type": "string",
+            "title": "Licence"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "version",
+          "size",
+          "sha256",
+          "licence",
+          "source"
+        ],
+        "title": "SubtitleOcrModelView",
+        "description": "The text-line model built into the transcode image."
+      },
+      "SubtitleOcrRequest": {
+        "properties": {
+          "overwrite": {
+            "type": "boolean",
+            "title": "Overwrite",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "SubtitleOcrRequest",
+        "description": "POST /api/jobs/{id}/subtitle-ocr."
+      },
+      "SubtitleOcrResponse": {
+        "properties": {
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/TranscodeTaskView"
+            },
+            "type": "array",
+            "title": "Tasks"
+          },
+          "skipped": {
+            "items": {
+              "$ref": "#/components/schemas/SubtitleOcrSkip"
+            },
+            "type": "array",
+            "title": "Skipped"
+          }
+        },
+        "type": "object",
+        "title": "SubtitleOcrResponse"
+      },
+      "SubtitleOcrSkip": {
+        "properties": {
+          "encode_task_id": {
+            "type": "string",
+            "title": "Encode Task Id"
+          },
+          "output_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Path"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "running",
+              "exists"
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "encode_task_id",
+          "output_path",
+          "reason"
+        ],
+        "title": "SubtitleOcrSkip"
+      },
+      "SubtitleOutput": {
+        "type": "string",
+        "enum": [
+          "embedded",
+          "separate",
+          "both"
+        ],
+        "title": "SubtitleOutput",
+        "description": "Where kept subtitle tracks go: muxed into the video, written as\nseparate files next to it (Jellyfin/Plex sidecars), or both."
+      },
+      "SubtitleSelection": {
+        "type": "string",
+        "enum": [
+          "preset",
+          "all",
+          "languages",
+          "none"
+        ],
+        "title": "SubtitleSelection",
+        "description": "Which source subtitle tracks a transcode preset keeps (see AudioSelection)."
+      },
       "SystemDiagnosticCheck": {
         "properties": {
           "name": {
@@ -17207,7 +19870,8 @@
           "video_title",
           "audio_track",
           "data_dump",
-          "disc_backup"
+          "disc_backup",
+          "disc_menu"
         ],
         "title": "TrackKind"
       },
@@ -17218,7 +19882,9 @@
           "episode",
           "extra",
           "trailer",
-          "other"
+          "other",
+          "play_all",
+          "special"
         ],
         "title": "TrackRole",
         "description": "What one title on a disc is. Set by identity sources via the resolver\n(arm_backend.identity) or by the operator; replaces the old free-text\nrole and the per-track video_type."
@@ -17233,13 +19899,51 @@
         ],
         "title": "TrackSelection"
       },
+      "TrackSelectionSettings": {
+        "properties": {
+          "audio_selection": {
+            "$ref": "#/components/schemas/AudioSelection",
+            "default": "all"
+          },
+          "audio_languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Audio Languages"
+          },
+          "subtitle_selection": {
+            "$ref": "#/components/schemas/SubtitleSelection",
+            "default": "all"
+          },
+          "subtitle_languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Subtitle Languages"
+          },
+          "subtitle_output": {
+            "$ref": "#/components/schemas/SubtitleOutput",
+            "default": "separate"
+          },
+          "audio_format": {
+            "$ref": "#/components/schemas/AudioFormat",
+            "default": "aac_best"
+          }
+        },
+        "type": "object",
+        "title": "TrackSelectionSettings",
+        "description": "Which audio and subtitle tracks a transcode keeps and where the\nsubtitles go: the track fields of a transcode preset, and the shape of a\njob's own override (`jobs.track_selection`), which wins over the preset.\n\nThe defaults keep every audio language (one track each: its best track\nas AAC with up to 5.1 channels) and write every subtitle as a separate file. `audio_format`\napplies only when `audio_selection` is not `preset`."
+      },
       "TrackStatus": {
         "type": "string",
         "enum": [
           "queued",
           "in_progress",
           "done",
-          "failed"
+          "failed",
+          "skipped"
         ],
         "title": "TrackStatus"
       },
@@ -17336,6 +20040,16 @@
             "$ref": "#/components/schemas/TrackStatus"
           },
           "transcode_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscodeTaskStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subtitle_ocr_status": {
             "anyOf": [
               {
                 "$ref": "#/components/schemas/TranscodeTaskStatus"
@@ -17562,6 +20276,11 @@
             "title": "Excluded",
             "default": false
           },
+          "any_length": {
+            "type": "boolean",
+            "title": "Any Length",
+            "default": false
+          },
           "custom_filename": {
             "anyOf": [
               {
@@ -17606,6 +20325,36 @@
       },
       "TranscodePresetCreateRequest": {
         "properties": {
+          "audio_selection": {
+            "$ref": "#/components/schemas/AudioSelection",
+            "default": "all"
+          },
+          "audio_languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Audio Languages"
+          },
+          "subtitle_selection": {
+            "$ref": "#/components/schemas/SubtitleSelection",
+            "default": "all"
+          },
+          "subtitle_languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Subtitle Languages"
+          },
+          "subtitle_output": {
+            "$ref": "#/components/schemas/SubtitleOutput",
+            "default": "separate"
+          },
+          "audio_format": {
+            "$ref": "#/components/schemas/AudioFormat",
+            "default": "aac_best"
+          },
           "name": {
             "type": "string",
             "minLength": 1,
@@ -17749,6 +20498,74 @@
               }
             ],
             "title": "Extra Args"
+          },
+          "audio_selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AudioSelection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "audio_languages": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audio Languages"
+          },
+          "subtitle_selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleSelection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subtitle_languages": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle Languages"
+          },
+          "subtitle_output": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleOutput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "audio_format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AudioFormat"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -17814,6 +20631,36 @@
               }
             ],
             "title": "Extra Args"
+          },
+          "audio_selection": {
+            "$ref": "#/components/schemas/AudioSelection",
+            "default": "preset"
+          },
+          "audio_languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Audio Languages"
+          },
+          "subtitle_selection": {
+            "$ref": "#/components/schemas/SubtitleSelection",
+            "default": "preset"
+          },
+          "subtitle_languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Subtitle Languages"
+          },
+          "subtitle_output": {
+            "$ref": "#/components/schemas/SubtitleOutput",
+            "default": "embedded"
+          },
+          "audio_format": {
+            "$ref": "#/components/schemas/AudioFormat",
+            "default": "preset"
           },
           "created_by_user_id": {
             "anyOf": [
@@ -17922,6 +20769,13 @@
             "type": "integer",
             "title": "Total Tasks"
           },
+          "subtitle_ocr_tasks_by_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Subtitle Ocr Tasks By Status"
+          },
           "gpus_total": {
             "type": "integer",
             "title": "Gpus Total"
@@ -17949,6 +20803,17 @@
           "max_parallel"
         ],
         "title": "TranscodeStatsView"
+      },
+      "TranscodeTaskKind": {
+        "type": "string",
+        "enum": [
+          "encode",
+          "subtitle_ocr",
+          "menu_preview",
+          "menu_pack"
+        ],
+        "title": "TranscodeTaskKind",
+        "description": "What a `transcode_tasks` row runs in its transcoder container.\n\n`encode` writes a video (or audio) file from a raw rip. `subtitle_ocr`\nreads the image subtitle sidecars its parent encode task wrote (`.sup`)\nand writes a text subtitle (`.srt`) beside each; it needs no GPU, no\npreset and no raw rip, and never changes its session application's\nstatus."
       },
       "TranscodeTaskStatus": {
         "type": "string",
@@ -17988,6 +20853,21 @@
           "status": {
             "$ref": "#/components/schemas/TranscodeTaskStatus"
           },
+          "kind": {
+            "$ref": "#/components/schemas/TranscodeTaskKind",
+            "default": "encode"
+          },
+          "parent_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Task Id"
+          },
           "output_path": {
             "anyOf": [
               {
@@ -17998,6 +20878,20 @@
               }
             ],
             "title": "Output Path"
+          },
+          "sidecar_paths": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sidecar Paths"
           },
           "progress_pct": {
             "type": "integer",
@@ -18153,6 +21047,10 @@
           "task_id": {
             "type": "string",
             "title": "Task Id"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TranscodeTaskKind",
+            "default": "encode"
           },
           "claimed_by": {
             "anyOf": [

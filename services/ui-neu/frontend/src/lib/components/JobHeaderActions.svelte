@@ -41,7 +41,7 @@
 			Apply session
 		</button>
 	{/if}
-	{#if subtitleOcr && subtitleOcr.eligible_encodes > 0 && $isAdmin}
+	{#if (subtitleOcr?.eligible_encodes ?? 0) > 0 && subtitleOcr && $isAdmin}
 		<MakeTextSubtitlesButton jobId={job.id} view={subtitleOcr} ondone={ontextsubtitles} />
 	{/if}
 	{#if $isAdmin}

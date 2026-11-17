@@ -68,6 +68,8 @@ const RIPPED: Record<JobStatus, boolean> = {
 	identified: false,
 	awaiting_review: false,
 	ripping: false,
+	awaiting_titles: false,
+	remuxing: false,
 	ripped: true,
 	ripped_partial: true,
 	ripped_awaiting_identify: true,
