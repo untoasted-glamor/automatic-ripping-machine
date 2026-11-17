@@ -193,6 +193,7 @@
 							{tracks}
 							{matching}
 							onsearchseries={() => showSearch('tv')}
+							{onchanged}
 							onapplied={accepted}
 						/>
 					</section>
