@@ -1,29 +1,21 @@
 <script lang="ts">
 	import type { SetupView } from '$lib/types/api.gen';
 	import Glyph from '$lib/components/Glyph.svelte';
-	import { STEPS } from './steps';
+	import { REVIEWABLE_STEPS, STATE_BADGE, progressState, type SummaryState } from './steps';
 
 	// One row per step: what was set up, with a way back to it. Used by the
 	// walkthrough's Finish step.
 	let { view, summaries = {} }: { view: SetupView; summaries?: Record<string, string> } = $props();
 
-	const rows = $derived(STEPS.filter((s) => s.id !== 'finish'));
-	function state(id: string): 'done' | 'skipped' | 'attention' | 'pending' {
-		const s = view.progress[id]?.state;
-		return s === 'done' || s === 'skipped' || s === 'attention' ? s : 'pending';
+	function state(id: string): SummaryState {
+		return progressState(id, view.progress) ?? 'pending';
 	}
-	const BADGE = {
-		done: { text: 'Done', glyph: 'check', cls: 'chip-success' },
-		skipped: { text: 'Skipped', glyph: 'minus-circle', cls: '' },
-		attention: { text: 'Needs attention', glyph: 'warning', cls: 'chip-warning' },
-		pending: { text: 'Not done', glyph: 'clock', cls: '' }
-	} as const;
 </script>
 
 <ul class="finish-summary">
-	{#each rows as r (r.id)}
+	{#each REVIEWABLE_STEPS as r (r.id)}
 		{@const st = state(r.id)}
-		{@const b = BADGE[st]}
+		{@const b = STATE_BADGE[st]}
 		<li class="finish-summary-row" data-testid="finish-row-{r.id}" data-state={st}>
 			<span class="chip chip-sm {b.cls} finish-summary-badge"><Glyph name={b.glyph} class="h-3 w-3" />{b.text}</span>
 			<span class="finish-summary-main">

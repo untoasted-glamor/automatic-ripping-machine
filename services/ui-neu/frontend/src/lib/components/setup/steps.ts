@@ -1,4 +1,5 @@
-import type { SetupStep, SetupView } from '$lib/types/api.gen';
+import type { GlyphName } from '$lib/components/glyph-names';
+import type { SetupStep, SetupStepState, SetupView } from '$lib/types/api.gen';
 
 // The walkthrough's nine steps, in order (setup spec 2026-10-01 §5).
 export interface StepMeta {
@@ -11,6 +12,8 @@ export interface StepMeta {
 	optional: boolean;
 	/** 'continue': saved on Continue. 'live': the step's controls save as they change. */
 	saveHint: 'continue' | 'live';
+	/** Skip for now is drawn as a plain button rather than a link. */
+	skipEmphasis?: boolean;
 }
 
 export const STEPS: StepMeta[] = [
@@ -79,7 +82,8 @@ export const STEPS: StepMeta[] = [
 		title: 'Notifications',
 		intro: 'Get told when a rip finishes, needs you, or fails.',
 		optional: true,
-		saveHint: 'continue'
+		saveHint: 'continue',
+		skipEmphasis: true
 	},
 	{
 		id: 'finish',
@@ -111,10 +115,59 @@ export function prevStep(id: SetupStep): SetupStep | null {
 
 export type StepUiState = 'not-started' | 'current' | 'done' | 'skipped' | 'attention';
 
+/**
+ * A step's recorded state, or null when it has none; a state the UI does not
+ * know counts as none.
+ */
+export function progressState(id: string, progress: SetupView['progress']): SetupStepState | null {
+	const state = progress[id]?.state;
+	return state === 'done' || state === 'skipped' || state === 'attention' ? state : null;
+}
+
+/** A step's state as the summary shows it: recorded, or 'pending'. */
+export type SummaryState = SetupStepState | 'pending';
+
+/** The chip a step state is drawn with. */
+export interface StateBadge {
+	text: string;
+	glyph: GlyphName;
+	cls: string;
+}
+
+/** The chip text, glyph and class for each step state. */
+export const STATE_BADGE: Record<SummaryState, StateBadge> = {
+	done: { text: 'Done', glyph: 'check', cls: 'chip-success' },
+	skipped: { text: 'Skipped', glyph: 'minus-circle', cls: '' },
+	attention: { text: 'Needs attention', glyph: 'warning', cls: 'chip-warning' },
+	pending: { text: 'Not done', glyph: 'clock', cls: '' }
+};
+
+/** The steps summarised after setup: every step but Finish, in order. */
+export const REVIEWABLE_STEPS: StepMeta[] = STEPS.filter((s) => s.id !== 'finish');
+
+/** A step setup left open, with its state. */
+export interface OpenStep {
+	step: StepMeta;
+	state: 'skipped' | 'attention';
+}
+
+/**
+ * The reviewable steps setup left skipped or needing attention, in order;
+ * none while progress is undefined (the setup view has not loaded).
+ */
+export function openSteps(progress: SetupView['progress'] | undefined): OpenStep[] {
+	if (!progress) return [];
+	const open: OpenStep[] = [];
+	for (const step of REVIEWABLE_STEPS) {
+		const state = progressState(step.id, progress);
+		if (state === 'skipped' || state === 'attention') open.push({ step, state });
+	}
+	return open;
+}
+
 export function uiState(id: SetupStep, current: SetupStep, progress: SetupView['progress']): StepUiState {
 	if (id === current) return 'current';
-	const p = progress[id]?.state;
-	return p === 'done' ? 'done' : p === 'skipped' ? 'skipped' : p === 'attention' ? 'attention' : 'not-started';
+	return progressState(id, progress) ?? 'not-started';
 }
 
 export const STATE_WORD: Record<StepUiState, string> = {

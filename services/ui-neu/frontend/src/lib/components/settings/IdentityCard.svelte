@@ -1,14 +1,20 @@
 <script lang="ts">
 	import type { ConfigFieldMeta } from '$lib/types/api.gen';
 	import {
-		DISC_KIND_LABELS,
+		DISC_DATABASES,
+		IGNORE_OPTIONS,
+		SOURCE_LISTS,
+		TRUST_OPTIONS,
 		hintIgnored,
+		isEmptyList,
 		withHintIgnored,
 		type DiscHint,
 		type DiscKind
 	} from '$lib/utils/identity-card';
 	import ConfigSchemaField from './ConfigSchemaField.svelte';
 	import RankedListField from './RankedListField.svelte';
+	import DiscKindSwitch from './DiscKindSwitch.svelte';
+	import IdentityCheckbox from './IdentityCheckbox.svelte';
 	import IdentityPreview from './IdentityPreview.svelte';
 
 	// Settings › Identification › Identity: the four pipeline steps over the
@@ -29,7 +35,6 @@
 	} = $props();
 
 	let kind = $state<DiscKind>('bluray');
-	const KINDS: DiscKind[] = ['bluray', 'dvd', 'cd'];
 
 	const meta = (key: string) => fields.find((f) => f.key === key);
 	const off = (key: string) => disabled || !meta(key)?.editable;
@@ -37,41 +42,8 @@
 	// merged under the live values (a key typed on another tab is not here).
 	const keyConfig = $derived({ ...config, ...values });
 
-	const DISC_DB = [
-		{
-			key: 'thediscdb_enabled',
-			label: 'TheDiscDB disc map',
-			chips: ['Blu-ray', 'UHD', 'DVD'],
-			description:
-				"Matches the disc itself and names its titles before any online lookup. When it matches, it wins over the disc's labels, and ARM confirms the title with the first online source below."
-		},
-		{ key: 'crc64service_enabled', label: 'ARM community database (CRC64)', chips: ['DVD'], description: null }
-	];
-	const LISTS = [
-		{ key: 'movie_sources', heading: 'Movies' },
-		{ key: 'episode_sources', heading: 'TV shows' }
-	];
-	const TRUST = [
-		{ key: 'movie_auto_apply', label: 'Apply confident matches · Movies' },
-		{ key: 'episode_auto_apply', label: 'Apply confident matches · TV shows' },
-		{ key: 'music_auto_apply', label: 'Apply confident matches · Music' }
-	];
-	const IGNORE: { hint: DiscHint; label: string; help: string }[] = [
-		{
-			hint: 'bd_title',
-			label: 'Ignore the disc title metadata',
-			help: "Blu-ray and UHD only. ARM won't use the title stored on the disc and identifies it from the volume label, TheDiscDB and online lookup instead."
-		},
-		{
-			hint: 'label',
-			label: 'Ignore the volume label',
-			help: "ARM won't use the volume label and identifies the disc from its title metadata, TheDiscDB and online lookup instead. A DVD with no title metadata then gets no automatic title search."
-		}
-	];
-
 	const hasHints = $derived(meta('disc_hint_sources') !== undefined);
 	const isIgnored = (hint: DiscHint) => hasHints && hintIgnored(values, hint);
-	const isEmpty = (key: string) => Array.isArray(values[key]) && (values[key] as unknown[]).length === 0;
 </script>
 
 {#snippet heading(title: string)}
@@ -81,38 +53,24 @@
 <div class="identity-card stack stack-lg" data-testid="identity-card">
 	<div class="identity-card-step stack" data-step="preview">
 		<span class="identity-card-caption">Preview</span>
-		<div class="identity-card-segment" role="radiogroup" aria-label="Disc kind">
-			{#each KINDS as k (k)}
-				<button
-					type="button"
-					role="radio"
-					aria-checked={kind === k}
-					class="identity-card-segment-btn"
-					onclick={() => (kind = k)}>{DISC_KIND_LABELS[k]}</button
-				>
-			{/each}
-		</div>
+		<DiscKindSwitch bind:kind />
 		<IdentityPreview {kind} {values} {fields} />
 	</div>
 
 	<div class="identity-card-step stack" data-step="2">
 		{@render heading('Disc database')}
-		{#each DISC_DB as db (db.key)}
+		{#each DISC_DATABASES as db (db.key)}
 			{@const field = meta(db.key)}
 			{#if field}
 				<div class="identity-card-option" id="setting-{db.key}" data-testid="setting-{db.key}">
 					<div class="identity-card-row-head">
-						<label class="field field-row">
-							<input
-								type="checkbox"
-								aria-label={db.label}
-								aria-describedby="identity-help-{db.key}"
-								checked={Boolean(values[db.key])}
-								disabled={off(db.key)}
-								onchange={(e) => (values[db.key] = (e.currentTarget as HTMLInputElement).checked)}
-							/>
-							<span class="field-label">{db.label}</span>
-						</label>
+						<IdentityCheckbox
+							label={db.label}
+							describedby="identity-help-{db.key}"
+							checked={Boolean(values[db.key])}
+							disabled={off(db.key)}
+							onchange={(on) => (values[db.key] = on)}
+						/>
 						{#each db.chips as chip (chip)}<span class="chip identity-card-kind">{chip}</span>{/each}
 					</div>
 					<p class="field-help" id="identity-help-{db.key}">{db.description ?? field.help}</p>
@@ -125,12 +83,12 @@
 		{@render heading('Online lookup')}
 		<p class="identity-card-note" id="identity-help-lookup">Tried top to bottom; the first confident match wins.</p>
 		<div class="identity-card-columns">
-			{#each LISTS as list (list.key)}
+			{#each SOURCE_LISTS as list (list.key)}
 				{@const field = meta(list.key)}
 				{#if field}
 					<div class="stack identity-card-column" id="setting-{list.key}" data-testid="setting-{list.key}">
 						<h5 class="field-label">{list.heading}</h5>
-						{#if isEmpty(list.key)}
+						{#if isEmptyList(values, list.key)}
 							<p class="identity-card-note">No sources on</p>
 						{/if}
 						<RankedListField
@@ -160,20 +118,16 @@
 	<div class="identity-card-step stack" data-step="4">
 		{@render heading('Trust')}
 		<div class="identity-card-trust">
-			{#each TRUST as t (t.key)}
+			{#each TRUST_OPTIONS as t (t.key)}
 				{#if meta(t.key)}
 					<div class="identity-card-option" id="setting-{t.key}" data-testid="setting-{t.key}">
-						<label class="field field-row">
-							<input
-								type="checkbox"
-								aria-label={t.label}
-								aria-describedby="identity-help-trust"
-								checked={Boolean(values[t.key])}
-								disabled={off(t.key)}
-								onchange={(e) => (values[t.key] = (e.currentTarget as HTMLInputElement).checked)}
-							/>
-							<span class="field-label">{t.label}</span>
-						</label>
+						<IdentityCheckbox
+							label={t.label}
+							describedby="identity-help-trust"
+							checked={Boolean(values[t.key])}
+							disabled={off(t.key)}
+							onchange={(on) => (values[t.key] = on)}
+						/>
 					</div>
 				{/if}
 			{/each}
@@ -188,24 +142,15 @@
 	{#if hasHints}
 		<div class="identity-card-step stack" data-step="advanced" id="setting-disc_hint_sources">
 			<span class="label-caps">Advanced</span>
-			{#each IGNORE as box (box.hint)}
+			{#each IGNORE_OPTIONS as box (box.hint)}
 				<div class="identity-card-option">
-					<label class="field field-row">
-						<input
-							type="checkbox"
-							aria-label={box.label}
-							aria-describedby="identity-help-ignore-{box.hint}"
-							checked={isIgnored(box.hint)}
-							disabled={off('disc_hint_sources')}
-							onchange={(e) =>
-								(values.disc_hint_sources = withHintIgnored(
-									values,
-									box.hint,
-									(e.currentTarget as HTMLInputElement).checked
-								))}
-						/>
-						<span class="field-label">{box.label}</span>
-					</label>
+					<IdentityCheckbox
+						label={box.label}
+						describedby="identity-help-ignore-{box.hint}"
+						checked={isIgnored(box.hint)}
+						disabled={off('disc_hint_sources')}
+						onchange={(on) => (values.disc_hint_sources = withHintIgnored(values, box.hint, on))}
+					/>
 					<p class="field-help" id="identity-help-ignore-{box.hint}">{box.help}</p>
 				</div>
 			{/each}
@@ -307,36 +252,5 @@
 	.identity-card-trust {
 		display: flex;
 		flex-direction: column;
-	}
-	/* Segmented radiogroup: one outlined group, the selected kind filled. */
-	.identity-card-segment {
-		display: inline-flex;
-		align-self: flex-start;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		overflow: hidden;
-		background: transparent;
-	}
-	.identity-card-segment-btn {
-		padding: 0.5rem 1.125rem;
-		font-size: 0.9375rem;
-		font-weight: 500;
-		line-height: 1.25rem;
-		background: transparent;
-		color: var(--color-text);
-		cursor: pointer;
-		transition:
-			background-color var(--motion-fast) var(--ease),
-			color var(--motion-fast) var(--ease);
-	}
-	.identity-card-segment-btn + .identity-card-segment-btn {
-		border-left: 1px solid var(--color-border);
-	}
-	.identity-card-segment-btn:hover {
-		background: color-mix(in srgb, var(--color-primary) 8%, transparent);
-	}
-	.identity-card-segment-btn[aria-checked='true'] {
-		background: var(--color-primary);
-		color: var(--color-primary-contrast, var(--color-on-primary));
 	}
 </style>

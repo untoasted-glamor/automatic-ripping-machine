@@ -15,8 +15,11 @@
 	import Toggle from '$lib/components/notifications/Toggle.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import Glyph from '$lib/components/Glyph.svelte';
+	import GpuEncoderChips from './GpuEncoderChips.svelte';
 	import GpuInventoryRow from '$lib/components/GpuInventoryRow.svelte';
 	import StatusStrip from '$lib/components/StatusStrip.svelte';
+	import { PendingKeys } from './pendingKeys.svelte';
+	import { ProbeTimers } from './probeTimers.svelte';
 
 	// Shared by Settings > Transcoding and the setup walkthrough's Transcoding
 	// step. A probe is a real test encode run in a container (10-60 s); its
@@ -24,39 +27,13 @@
 	// in-progress state until that event (or a 2-minute timeout).
 	let { location = null }: { location?: { label: string } | null } = $props();
 
-	const PROBE_TIMEOUT_MS = 120_000;
-
 	let gpus = $state<GpuView[]>([]);
 	let loaded = $state(false);
 	let error = $state<string | null>(null);
-	let pending = $state<Set<string>>(new Set());
+	const pending = new PendingKeys();
 	let probingAll = $state(false);
 	let confirmTarget = $state<GpuView | null>(null);
-	let probing = $state<Record<string, ReturnType<typeof setTimeout>>>({});
-	let probeTimedOut = $state<Record<string, boolean>>({});
-
-	function startProbing(ids: string[]) {
-		const next = { ...probing };
-		const timedOut = { ...probeTimedOut };
-		for (const id of ids) {
-			if (next[id]) clearTimeout(next[id]);
-			delete timedOut[id];
-			next[id] = setTimeout(() => {
-				const { [id]: _t, ...rest } = probing;
-				probing = rest;
-				probeTimedOut = { ...probeTimedOut, [id]: true };
-			}, PROBE_TIMEOUT_MS);
-		}
-		probing = next;
-		probeTimedOut = timedOut;
-	}
-
-	function stopProbing(id: string) {
-		if (!probing[id]) return;
-		clearTimeout(probing[id]);
-		const { [id]: _t, ...rest } = probing;
-		probing = rest;
-	}
+	const probes = new ProbeTimers();
 
 	async function load() {
 		try {
@@ -70,27 +47,22 @@
 	}
 
 	async function reprobe(g: GpuView) {
-		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- copy-on-write; reassigning the $state variable triggers updates
-		pending = new Set(pending).add(g.id);
-		try {
-			await probeGpu(g.id);
-			startProbing([g.id]);
-			error = null;
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Re-probe failed.';
-		} finally {
-			// eslint-disable-next-line svelte/prefer-svelte-reactivity -- copy-on-write; reassigning the $state variable triggers updates
-			const p = new Set(pending);
-			p.delete(g.id);
-			pending = p;
-		}
+		await pending.run(g.id, async () => {
+			try {
+				await probeGpu(g.id);
+				probes.start([g.id]);
+				error = null;
+			} catch (e) {
+				error = e instanceof Error ? e.message : 'Re-probe failed.';
+			}
+		});
 	}
 
 	async function reprobeAll() {
 		probingAll = true;
 		try {
 			await probeAllGpus();
-			startProbing(gpus.filter((g) => g.enabled).map((g) => g.id));
+			probes.start(gpus.filter((g) => g.enabled).map((g) => g.id));
 			error = null;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Re-probe failed.';
@@ -100,46 +72,36 @@
 	}
 
 	async function toggle(g: GpuView, next: boolean) {
-		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- copy-on-write; reassigning the $state variable triggers updates
-		pending = new Set(pending).add(g.id);
-		try {
-			const updated = await updateGpu(g.id, next);
-			gpus = gpus.map((x) => (x.id === g.id ? updated : x));
-			error = null;
-			encodersStore.refresh();
-		} catch {
-			error = 'Saving the GPU switch failed.';
-		} finally {
-			// eslint-disable-next-line svelte/prefer-svelte-reactivity -- copy-on-write; reassigning the $state variable triggers updates
-			const p = new Set(pending);
-			p.delete(g.id);
-			pending = p;
-		}
+		await pending.run(g.id, async () => {
+			try {
+				const updated = await updateGpu(g.id, next);
+				gpus = gpus.map((x) => (x.id === g.id ? updated : x));
+				error = null;
+				encodersStore.refresh();
+			} catch {
+				error = 'Saving the GPU switch failed.';
+			}
+		});
 	}
 
 	async function removeConfirmed() {
 		const g = confirmTarget;
 		confirmTarget = null;
 		if (!g) return;
-		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- copy-on-write; reassigning the $state variable triggers updates
-		pending = new Set(pending).add(g.id);
-		try {
-			await deleteGpu(g.id);
-			gpus = gpus.filter((x) => x.id !== g.id);
-			error = null;
-			encodersStore.refresh();
-		} catch (e) {
-			// The client puts the server's detail in the message; the status is the signal.
-			error =
-				e instanceof ApiError && e.status === 409
-					? 'That GPU is in use by a running transcode. Disable it instead, or wait for the task to finish.'
-					: 'Deleting the GPU failed.';
-		} finally {
-			// eslint-disable-next-line svelte/prefer-svelte-reactivity -- copy-on-write; reassigning the $state variable triggers updates
-			const p = new Set(pending);
-			p.delete(g.id);
-			pending = p;
-		}
+		await pending.run(g.id, async () => {
+			try {
+				await deleteGpu(g.id);
+				gpus = gpus.filter((x) => x.id !== g.id);
+				error = null;
+				encodersStore.refresh();
+			} catch (e) {
+				// The client puts the server's detail in the message; the status is the signal.
+				error =
+					e instanceof ApiError && e.status === 409
+						? 'That GPU is in use by a running transcode. Disable it instead, or wait for the task to finish.'
+						: 'Deleting the GPU failed.';
+			}
+		});
 	}
 
 	onMount(() => {
@@ -150,12 +112,12 @@
 			// The encoders store follows gpu.probed itself.
 			if (env.event_type !== 'gpu.probed') return;
 			const id = (env.payload as { gpu_id?: string }).gpu_id;
-			if (id) stopProbing(id);
+			if (id) probes.stop(id);
 			load();
 		});
 		return () => {
 			unsubscribe?.();
-			for (const t of Object.values(probing)) clearTimeout(t);
+			probes.dispose();
 		};
 	});
 </script>
@@ -190,19 +152,7 @@
 				<div class="panel-section gpus-card-row-wrap" data-testid="gpu-row-{g.id}">
 					<GpuInventoryRow gpu={g}>
 						{#snippet kinds()}
-							<span class="gpus-card-kinds">
-								{#if !g.probed_at}
-									<span class="chip chip-sm"><Glyph name="clock" class="h-3 w-3" />Not tested</span>
-								{:else if g.encoder_kinds.length === 0}
-									<span class="chip chip-sm chip-danger"><Glyph name="x" class="h-3 w-3" />Nothing verified</span>
-								{:else}
-									{#each g.encoder_kinds as kind (kind)}
-										<span class="chip chip-sm chip-success"
-											><Glyph name="check" class="h-3 w-3" />{kind.toUpperCase()} available</span
-										>
-									{/each}
-								{/if}
-							</span>
+							<GpuEncoderChips gpu={g} />
 						{/snippet}
 						{#snippet controls()}
 							{#if $isAdmin}
@@ -232,9 +182,9 @@
 							{/if}
 						{/snippet}
 					</GpuInventoryRow>
-					{#if probing[g.id]}
+					{#if probes.isProbing(g.id)}
 						<StatusStrip tone="busy" title="Testing encoders..." detail="Takes 10 to 60 seconds" progress />
-					{:else if probeTimedOut[g.id]}
+					{:else if probes.timedOut(g.id)}
 						<StatusStrip tone="danger" title="Couldn't test" detail="No result after 2 minutes. Try Re-probe." />
 					{/if}
 					{#if g.probe_error}
@@ -276,12 +226,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.375rem;
-	}
-	.gpus-card-kinds {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.25rem;
-		flex-shrink: 0;
 	}
 	.gpus-card-location {
 		display: flex;

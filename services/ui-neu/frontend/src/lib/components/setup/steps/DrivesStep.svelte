@@ -4,13 +4,13 @@
 	import DriveCard from '$lib/components/DriveCard.svelte';
 	import DriveLifecycleLists from '$lib/components/DriveLifecycleLists.svelte';
 	import DriveMaintenance from '$lib/components/DriveMaintenance.svelte';
-	import CopyBlock from '$lib/components/CopyBlock.svelte';
-	import Glyph from '$lib/components/Glyph.svelte';
+	import IsoLibraryCard from '$lib/components/setup/IsoLibraryCard.svelte';
 	import { fetchDrives } from '$lib/api/drives';
 	import { fetchSystemDiagnostics } from '$lib/api/system';
 	import { fetchIsoLibrary } from '$lib/api/iso';
 	import { createPollingStore } from '$lib/stores/polling';
 	import { partitionDrives } from '$lib/utils/drives';
+	import { enrollBlockReason, isoStatus, type IsoStatus } from '$lib/utils/setup-drives';
 	import type { StepCommitResult } from '../steps';
 
 	// Step 3, the core step: enroll the drives to rip with (setup spec §5.4).
@@ -21,20 +21,13 @@
 	const drives = createPollingStore(fetchDrives, [] as DriveView[], 3000);
 	const parts = $derived(partitionDrives($drives));
 	let enrollDisabledReason = $state<string | null>(null);
-	let iso = $state<{ on: boolean; count: number; path: string | null } | null>(null);
+	let iso = $state<IsoStatus | null>(null);
 
 	onMount(async () => {
 		drives.start();
 		const [diag, lib] = await Promise.allSettled([fetchSystemDiagnostics(), fetchIsoLibrary()]);
-		if (diag.status === 'fulfilled') {
-			const rm = diag.value.checks.find((c) => c.name === 'ripper_manager');
-			if (rm && rm.status !== 'ok')
-				enrollDisabledReason = "Drives can't be enrolled until the ripper service is fixed. See System check.";
-		}
-		iso =
-			lib.status === 'fulfilled'
-				? { on: true, count: lib.value.entries.filter((e) => e.kind === 'iso').length, path: lib.value.host_path }
-				: { on: false, count: 0, path: null };
+		if (diag.status === 'fulfilled') enrollDisabledReason = enrollBlockReason(diag.value);
+		iso = isoStatus(lib.status === 'fulfilled' ? lib.value : null);
 	});
 	onDestroy(() => drives.stop());
 
@@ -86,26 +79,7 @@
 	{/if}
 
 	{#if iso}
-		<section class="panel stack drives-step-iso" data-testid="drives-iso">
-			<div class="drives-step-iso-head">
-				<span class="drives-step-iso-title"><Glyph name="disc-3" /> Rip from image files</span>
-				<span class="chip chip-sm {iso.on ? 'chip-success' : ''}">
-					<Glyph name={iso.on ? 'check-circle' : 'minus-circle'} class="h-3 w-3" />
-					ISO library: {iso.on ? `on, ${iso.count} image${iso.count === 1 ? '' : 's'}` : 'off'}
-				</span>
-			</div>
-			<p class="drives-step-help">ARM can rip ISO image files with no drive at all.</p>
-			{#if iso.on && iso.path}
-				<p class="drives-step-help">Images are read from <code class="mono">{iso.path}</code> on the server.</p>
-			{/if}
-			{#if !iso.on}
-				<p class="drives-step-help">To turn it on, add this line to .env:</p>
-				<CopyBlock text="ARM_HOST_ISO_LIBRARY_PATH=/path/to/your/isos" />
-				<p class="drives-step-help">
-					Then restart ARM; it mounts that folder read-only for you. <a href="/help">Read how</a>
-				</p>
-			{/if}
-		</section>
+		<IsoLibraryCard {iso} />
 	{/if}
 
 	<p class="drives-step-help">More drive options are in Settings, Drives once setup is finished.</p>
@@ -136,18 +110,5 @@
 		margin: 0;
 		padding-left: 1.25rem;
 		font-size: 0.875rem;
-	}
-	.drives-step-iso-head {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.5rem;
-	}
-	.drives-step-iso-title {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.5rem;
-		font-weight: 600;
 	}
 </style>

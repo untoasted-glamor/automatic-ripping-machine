@@ -1,16 +1,17 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { reveal } from '$lib/transitions';
 	import TimeAgo from '$lib/components/TimeAgo.svelte';
 	import GuestAccessField from '$lib/components/settings/GuestAccessField.svelte';
 	import ChangePasswordForm from '$lib/components/settings/ChangePasswordForm.svelte';
 	import CloseButton from '$lib/components/CloseButton.svelte';
 	import { fetchUsers } from '$lib/api/users';
 	import type { UserView } from '$lib/types/api.gen';
+	import { TimedFeedback } from './timedFeedback.svelte';
+	import FeedbackAlert from './FeedbackAlert.svelte';
 
 	let users = $state<UserView[]>([]);
 	let loading = $state(true);
-	let feedback = $state<{ type: 'success' | 'error'; message: string } | null>(null);
+	const feedback = new TimedFeedback();
 
 	const admin = $derived(users.find((u) => u.role === 'admin') ?? null);
 	const guest = $derived(users.find((u) => u.role === 'guest') ?? null);
@@ -25,20 +26,13 @@
 		try {
 			users = await fetchUsers();
 		} catch (e) {
-			feedback = { type: 'error', message: e instanceof Error ? e.message : 'Failed to load users' };
+			feedback.hold('error', e instanceof Error ? e.message : 'Failed to load users');
 		} finally {
 			loading = false;
 		}
 	}
 
 	onMount(load);
-
-	function showFeedback(type: 'success' | 'error', message: string) {
-		feedback = { type, message };
-		setTimeout(() => {
-			feedback = null;
-		}, 4000);
-	}
 
 	function closePanel() {
 		panel = null;
@@ -50,13 +44,7 @@
 
 	function handleAdminPasswordSuccess() {
 		closePanel();
-		showFeedback('success', 'Admin password changed');
-	}
-
-	// bg-blue-100/text-blue-700 and bg-amber-100/text-amber-700 were soft
-	// tints, not badge-info/badge-warning's solid fills.
-	function roleBadgeClass(role: string): string {
-		return role === 'admin' ? 'users-card-role-badge-info' : 'users-card-role-badge-warning';
+		feedback.show('success', 'Admin password changed');
 	}
 </script>
 
@@ -64,11 +52,7 @@
 	<h3 class="users-card-title">Users</h3>
 	<p class="users-card-intro">Manage the admin password and guest access.</p>
 
-	{#if feedback}
-		<p in:reveal class="alert {feedback.type === 'success' ? 'alert-success' : 'alert-danger'} mb-3">
-			{feedback.message}
-		</p>
-	{/if}
+	<FeedbackAlert feedback={feedback.current} />
 
 	{#if loading}
 		<p class="users-card-loading">Loading...</p>
@@ -79,7 +63,7 @@
 				<div class="panel-section users-card-row">
 					<div class="users-card-row-main">
 						<span class="truncate users-card-username">{admin.username}</span>
-						<span class="badge badge-sm users-card-role-badge {roleBadgeClass(admin.role)}">
+						<span class="badge badge-sm users-card-role-badge users-card-role-badge-info">
 							{admin.role}
 						</span>
 						<span class="users-card-meta">
@@ -101,9 +85,9 @@
 				{guest}
 				onsaved={async (enabled) => {
 					await load();
-					showFeedback('success', enabled ? 'Guest access enabled' : 'Guest access disabled');
+					feedback.show('success', enabled ? 'Guest access enabled' : 'Guest access disabled');
 				}}
-				onerror={(message) => showFeedback('error', message)}
+				onerror={(message) => feedback.show('error', message)}
 			/>
 		</div>
 	{/if}
@@ -195,13 +179,11 @@
 		font-weight: 700;
 		letter-spacing: 0.1em;
 	}
+	/* bg-blue-100/text-blue-700 was a soft tint, not badge-info's solid
+	   fill. */
 	.users-card-role-badge-info {
 		background: var(--color-info-soft);
 		color: var(--color-on-info-soft);
-	}
-	.users-card-role-badge-warning {
-		background: var(--color-warning-soft);
-		color: var(--color-on-warning-soft);
 	}
 	/* the original was border-primary/30 bg-primary/10 text-primary (a
 	   tinted fill with a border), not .btn's plain outlined default. Its
