@@ -14,6 +14,7 @@
 	} from '$lib/utils/settings-sections';
 	import { formatDateTime } from '$lib/utils/format';
 	import { unchanged } from '$lib/utils/unchanged';
+	import { buildConfigPayload } from '$lib/utils/config-payload';
 	import ConfigSchemaField from './ConfigSchemaField.svelte';
 	import Glyph from '$lib/components/Glyph.svelte';
 	import IdentityCard from './IdentityCard.svelte';
@@ -61,7 +62,7 @@
 	let values = $state<Record<string, unknown>>({});
 
 	// Each key this form has itself saved, merged over `config` to form the
-	// real baseline for change detection (buildPayload). Without this, a
+	// real baseline for change detection (buildConfigPayload). Without this, a
 	// revert-then-resave in one visit diffs against the original `config`
 	// prop (never refreshed by the parent) and silently drops the second
 	// change. Reset whenever `config` itself changes identity (e.g. the
@@ -101,28 +102,12 @@
 		return { ...config, ...savedOverrides };
 	}
 
-	function buildPayload(): Record<string, unknown> {
-		const base = baseline();
-		const out: Record<string, unknown> = {};
-		for (const f of editable) {
-			const v = values[f.key];
-			if (f.tier === 'secret' && cleared[f.key] && (v === '' || v == null)) {
-				out[f.key] = null;
-				continue;
-			}
-			if (f.tier === 'secret' && (v === HIDDEN_SECRET || v === '' || v == null)) continue;
-			if (unchanged(v, base[f.key])) continue;
-			out[f.key] = v;
-		}
-		return out;
-	}
-
 	/** Save the changed fields. Resolves false (with the error shown inline) on failure. */
 	export async function save(): Promise<boolean> {
 		saving = true;
 		feedback = null;
 		try {
-			const payload = buildPayload();
+			const payload = buildConfigPayload(editable, values, baseline(), cleared);
 			await saveArmConfig(payload as never);
 			const mergedOverrides = { ...savedOverrides };
 			const mergedValues = { ...values };
@@ -158,7 +143,7 @@
 
 	/** True when Save would send something. */
 	export function isDirty(): boolean {
-		return Object.keys(buildPayload()).length > 0;
+		return Object.keys(buildConfigPayload(editable, values, baseline(), cleared)).length > 0;
 	}
 
 	/** True when `key` holds a value after the pending edits (a saved secret counts). */
